@@ -1,0 +1,9 @@
+.vs/
+.vscode/
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+*.sln
+*.code-workspace
+*.slnx
