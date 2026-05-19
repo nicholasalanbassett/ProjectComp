@@ -48,6 +48,14 @@ protected:
 	/** Mouse Look Input Action */
 	UPROPERTY(EditAnywhere, Category ="Input")
 	class UInputAction* MouseLookAction;
+
+	/** Walk Input Action (Hold Shift)*/
+	UPROPERTY(EditAnywhere, Category ="Input")
+	class UInputAction* WalkAction;
+
+	/** Crouch Input Action (Hold Ctrl) */
+    UPROPERTY(EditAnywhere, Category ="Input")
+    class UInputAction* CrouchAction;
 	
 public:
 	AProjectCompCharacter();
@@ -75,6 +83,17 @@ protected:
 	/** Handles jump end inputs from either controls or UI interfaces */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoJumpEnd();
+
+	/** Built-in engine override that fires exactly when your boots touch the ground */
+    virtual void Landed(const FHitResult& Hit) override;
+
+	/** Handles tactical walk start */
+    UFUNCTION(BlueprintCallable, Category="Input")
+    virtual void DoWalkStart();
+
+    /** Handles tactical walk end */
+    UFUNCTION(BlueprintCallable, Category="Input")
+    virtual void DoWalkEnd();
 
 protected:
 

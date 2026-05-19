@@ -44,7 +44,7 @@ AProjectCompCharacter::AProjectCompCharacter()
     // =====================================================================
     
     // 1. Instant Acceleration (Hits top speed the millisecond input is pressed)
-    GetCharacterMovement()->MaxAcceleration = 8000.0f;
+    GetCharacterMovement()->MaxAcceleration = 10000.0f;
 
     // 2. Dead-Stop Braking (Completely eliminates the default Unreal slide)
     GetCharacterMovement()->GroundFriction = 10.0f;
@@ -52,17 +52,16 @@ AProjectCompCharacter::AProjectCompCharacter()
     GetCharacterMovement()->BrakingFrictionFactor = 1.0f;
 
     // 3. Exact Tactical Pacing (Valorant run speed is 5.4 m/s -> 540 cm/s)
-    GetCharacterMovement()->MaxWalkSpeed = 540.0f;
+    GetCharacterMovement()->MaxWalkSpeed = 600.0f;
 
-	// 4. Responsive Air Strafing (Source/CS-style steering power)
-    GetCharacterMovement()->AirControl = 0.4f;                  // High lateral steering force
-    GetCharacterMovement()->AirControlBoostMultiplier = 2.0f;   // Extra snappiness at low speeds
-    GetCharacterMovement()->AirControlBoostVelocityThreshold = 250.0f; 
-    GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;  // Removes air drag so you keep full sprint momentum
-	
-	// 5. Hardcore Tactical Gravity (Crushes the air apex hang time)
-	GetCharacterMovement()->GravityScale = 2.0f;
-	GetCharacterMovement()->JumpZVelocity = 720.0f;
+    // 4. Tactical Air Strafing (Valorant Arc)
+    GetCharacterMovement()->AirControl = 0.40f;                 // Enough to curve, not enough to hyper-steer
+    GetCharacterMovement()->AirControlBoostMultiplier = 1.0f;   // Kills the unnatural low-speed steering boost
+    GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;  // Keeps forward momentum alive
+    
+    // 5. Hardcore Tactical Gravity (Valorant heavy drop)
+    GetCharacterMovement()->GravityScale = 3.5f;                // Snappy, heavy downward pull
+    GetCharacterMovement()->JumpZVelocity = 660.0f;             // Sharp upward burst to clear 62cm tactical crates
 }
 
 void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -80,6 +79,10 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         // Looking/Aiming
         EnhancedInputComponent->BindAction(LookAction, ETriggerEvent::Triggered, this, &AProjectCompCharacter::LookInput);
         EnhancedInputComponent->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &AProjectCompCharacter::LookInput);
+    
+        // Tactical Walk (Hold Shift)
+        EnhancedInputComponent->BindAction(WalkAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoWalkStart);
+        EnhancedInputComponent->BindAction(WalkAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoWalkEnd);
     }
     else
     {
@@ -127,12 +130,62 @@ void AProjectCompCharacter::DoMove(float Right, float Forward)
 
 void AProjectCompCharacter::DoJumpStart()
 {
-    // pass Jump to the character
+    if (GetCharacterMovement())
+    {
+        // 1. Get the player's current horizontal speed
+        FVector HorizontalVelocity = GetCharacterMovement()->Velocity;
+        HorizontalVelocity.Z = 0.0f;
+        float GroundSpeedAtJump = HorizontalVelocity.Size();
+
+        // 2. Map the speed to a precise control scale
+        // Input: Speed from 0 (Dead stop) to 600 (Sprint)
+        FVector2D InputSpeedRange(0.0f, 600.0f);
+        
+        // Output: Air control from 0.015 (Micro-nudge) to 0.40 (Full curve)
+        FVector2D OutputControlRange(0.015f, 0.40f);
+        
+        GetCharacterMovement()->AirControl = FMath::GetMappedRangeValueClamped(InputSpeedRange, OutputControlRange, GroundSpeedAtJump);
+
+        // 3. Ensure momentum carries smoothly
+        GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;
+    }
+
     Jump();
 }
 
 void AProjectCompCharacter::DoJumpEnd()
 {
-    // pass StopJumping to the character
+    // ONLY stop the jump logic when spacebar is released. 
+    // Do not reset air control here!
     StopJumping();
+}
+
+void AProjectCompCharacter::Landed(const FHitResult& Hit)
+{
+    // 1. Call the original Unreal Engine landing math first
+    Super::Landed(Hit);
+
+    // 2. Reset baseline air control the exact millisecond boots touch the floor
+    if (GetCharacterMovement())
+    {
+        GetCharacterMovement()->AirControl = 1.0f;
+    }
+}
+
+void AProjectCompCharacter::DoWalkStart()
+{
+    // pass WalkStart to the character
+    if (GetCharacterMovement())
+    {
+        GetCharacterMovement()->MaxWalkSpeed = 350.0f; // Valorant walk speed is 2.7 m/s -> 270 cm/s
+    }
+}
+
+void AProjectCompCharacter::DoWalkEnd()
+{
+    // pass WalkEnd to the character
+    if (GetCharacterMovement())
+    {
+        GetCharacterMovement()->MaxWalkSpeed = 600.0f; // Reset to default run speed
+    }
 }
