@@ -12,6 +12,7 @@ class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
 class UProjectCompHealthComponent;
+class AProjectCompHitscanWeapon;
 struct FInputActionValue;
 
 /** High-level movement state for animation/gameplay code to read. */
@@ -72,6 +73,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* CrouchAction;
 
+	/** Hold-mouse1: fire equipped weapon. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* FireAction;
+
+	/** Weapon class spawned for every freshly-possessed character. Set in BP defaults. */
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
+
 public:
 	AProjectCompCharacter(const FObjectInitializer& ObjectInitializer);
 
@@ -108,6 +117,19 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoCrouchEnd();
 
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoFireStart();
+
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoFireEnd();
+
+	/** Server: forward trigger state from client RPC down to the equipped weapon. */
+	UFUNCTION(Server, Reliable)
+	void Server_SetTriggerHeld(bool bHeld);
+
+	/** Server: spawn + equip the DefaultWeaponClass for this character. Called on possession. */
+	virtual void Server_EquipDefaultWeapon();
+
 	// ---- Engine overrides --------------------------------------------------
 
 	virtual bool CanJumpInternal_Implementation() const override;
@@ -117,6 +139,9 @@ protected:
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
 	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
+	virtual void PossessedBy(AController* NewController) override;
+	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	/** Console command for testing damage flow without weapons. Type "SelfDamage 100" in PIE console. */
 	UFUNCTION(Exec)
@@ -163,5 +188,9 @@ protected:
 
 	/** Reserved (unused). */
 	float DefaultEyeHeight;
+
+	/** Server-spawned weapon actor currently equipped. Replicated so clients can render it. */
+	UPROPERTY(Replicated)
+	TObjectPtr<AProjectCompHitscanWeapon> CurrentWeapon;
 };
 

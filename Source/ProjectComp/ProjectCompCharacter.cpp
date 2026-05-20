@@ -8,9 +8,11 @@
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/DamageEvents.h"
+#include "Net/UnrealNetwork.h"
 #include "ProjectComp.h"
 #include "ProjectCompCharacterMovementComponent.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompHitscanWeapon.h"
 
 AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectInitializer)
     : Super(ObjectInitializer.SetDefaultSubobjectClass<UProjectCompCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -26,6 +28,12 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     MinNetUpdateFrequency = 30.0f;
 
     GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
+
+    // Capsule handles character/world collision but IGNORES weapon traces, so
+    // bullets pass through to the skeletal mesh (which has per-bone shapes for
+    // headshot detection). Standard tac-FPS rig — CS/Valorant work the same way.
+    GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+    GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 
     // ---- Camera rig (tac-FPS) ---------------------------------------------
     // Camera is attached to the capsule (world-aligned axes), NOT the head
@@ -53,6 +61,9 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     // Third-person mesh: body other players see; hidden from the local owner.
     GetMesh()->SetOwnerNoSee(true);
     GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
+    // The mesh is what enables headshot detection — explicitly block hitscan
+    // traces (the capsule above is the fallback if the BP has no skeletal mesh).
+    GetMesh()->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 
     GetCapsuleComponent()->SetCapsuleSize(34.0f, 96.0f);
 
@@ -118,6 +129,13 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         {
             EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCrouchStart);
             EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoCrouchEnd);
+        }
+
+        // Hold Mouse1: fire equipped weapon.
+        if (FireAction)
+        {
+            EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoFireStart);
+            EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoFireEnd);
         }
     }
     else
@@ -279,6 +297,102 @@ void AProjectCompCharacter::DoCrouchEnd()
     if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
     {
         CharMov->bWantsToCrouch = false;
+    }
+}
+
+// Fire input handlers route through Server_SetTriggerHeld so the authoritative
+// weapon (which lives server-side) starts/stops its fire loop.
+void AProjectCompCharacter::DoFireStart()
+{
+    Server_SetTriggerHeld(true);
+}
+
+void AProjectCompCharacter::DoFireEnd()
+{
+    Server_SetTriggerHeld(false);
+}
+
+void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
+{
+    if (CurrentWeapon)
+    {
+        CurrentWeapon->Server_SetTriggerHeld(bHeld);
+    }
+}
+
+// Spawn the default weapon for newly-possessed characters on the server.
+// Called from PossessedBy (also fires on respawn since RestartPlayer creates
+// a new character that gets a fresh possession).
+void AProjectCompCharacter::Server_EquipDefaultWeapon()
+{
+    if (!HasAuthority() || !DefaultWeaponClass)
+    {
+        return;
+    }
+
+    if (CurrentWeapon)
+    {
+        // Already equipped (e.g. PossessedBy fired twice). Don't double-spawn.
+        return;
+    }
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Owner = this;
+    SpawnParams.Instigator = this;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    CurrentWeapon = GetWorld()->SpawnActor<AProjectCompHitscanWeapon>(
+        DefaultWeaponClass,
+        GetActorLocation(),
+        GetActorRotation(),
+        SpawnParams);
+
+    if (CurrentWeapon)
+    {
+        CurrentWeapon->AttachToActor(this, FAttachmentTransformRules::SnapToTargetIncludingScale);
+    }
+}
+
+void AProjectCompCharacter::PossessedBy(AController* NewController)
+{
+    Super::PossessedBy(NewController);
+    Server_EquipDefaultWeapon();
+}
+
+void AProjectCompCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AProjectCompCharacter, CurrentWeapon);
+}
+
+// Force collision responses for hitscan even if the BP has its own collision
+// preset saved. Runs after CDO + BP defaults are applied, so this wins.
+void AProjectCompCharacter::BeginPlay()
+{
+    Super::BeginPlay();
+
+    UE_LOG(LogProjectComp, Warning, TEXT("Character BeginPlay running on %s"), *GetName());
+
+    if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+    {
+        Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+        Capsule->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+
+        const ECollisionResponse VisResponse = Capsule->GetCollisionResponseToChannel(ECC_Visibility);
+        UE_LOG(LogProjectComp, Warning, TEXT("  Capsule %s Visibility response after set: %d (1=Ignore, 2=Overlap, 3=Block)"),
+            *Capsule->GetName(), (int32)VisResponse);
+    }
+    if (USkeletalMeshComponent* BodyMesh = GetMesh())
+    {
+        // Force collision on. Default character meshes often ship with
+        // CollisionEnabled=NoCollision in templates; bullets can't hit a mesh
+        // with collision turned off, regardless of response channels.
+        BodyMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+        BodyMesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+
+        const ECollisionResponse MeshVisResponse = BodyMesh->GetCollisionResponseToChannel(ECC_Visibility);
+        UE_LOG(LogProjectComp, Warning, TEXT("  Mesh %s Visibility response=%d (0=Ignore, 1=Overlap, 2=Block); CollisionEnabled=%d (0=No, 1=Query, 2=Physics, 3=QueryAndPhysics)"),
+            *BodyMesh->GetName(), (int32)MeshVisResponse, (int32)BodyMesh->GetCollisionEnabled());
     }
 }
 
