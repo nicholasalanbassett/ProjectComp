@@ -71,6 +71,29 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Layout")
 	float CornerPadding = 40.0f;
 
+	// ---- Crosshair tuning -------------------------------------------------
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair")
+	FLinearColor CrosshairColor = FLinearColor(0.98f, 0.98f, 0.98f, 1.0f);
+
+	/** Length of each of the four ticks (pixels). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.0"))
+	float CrosshairLineLength = 8.0f;
+
+	/** Thickness of each tick (pixels). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.5"))
+	float CrosshairLineThickness = 2.0f;
+
+	/** Pixel gap between the screen-center and the inner edge of each tick. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.0"))
+	float CrosshairGap = 4.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair")
+	bool bShowCenterDot = true;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.5"))
+	float CenterDotSize = 2.0f;
+
 protected:
 
 	virtual void NativeOnInitialized() override;

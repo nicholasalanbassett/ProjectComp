@@ -19,6 +19,12 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.bStartWithTickEnabled = false;
 
+    // Align character replication to the server tickrate (set in DefaultEngine.ini
+    // → NetServerMaxTickRate). At 64Hz server, replicate at 64Hz, allow throttle
+    // down to 30Hz if the character is idle/distant.
+    NetUpdateFrequency = 64.0f;
+    MinNetUpdateFrequency = 30.0f;
+
     GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 
     // ---- Camera rig (tac-FPS) ---------------------------------------------

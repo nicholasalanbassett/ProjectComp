@@ -168,6 +168,47 @@ void UProjectCompHUDWidget::BuildLayout()
 	AbilityIndicatorImage->SetDesiredSizeOverride(FVector2D(20.0f, 20.0f));
 	UHorizontalBoxSlot* AbilityIndicatorSlot = AbilityBox->AddChildToHorizontalBox(AbilityIndicatorImage);
 	AbilityIndicatorSlot->SetVerticalAlignment(VAlign_Center);
+
+	// ---- Center crosshair (4 ticks + optional center dot) -----------------
+	// Each tick is positioned relative to the viewport center via anchor
+	// (0.5, 0.5). Sized in pixels — visual fidelity depends on DPI scale
+	// (set Project Settings -> UI -> DPI Scaling to Constant 1.0 for
+	// pixel-accurate competitive aim feel).
+	auto BuildCrosshairTick = [&](const TCHAR* Name, FVector2D Position, FVector2D Size)
+	{
+		UImage* Tick = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), Name);
+		Tick->SetColorAndOpacity(CrosshairColor);
+		Tick->SetDesiredSizeOverride(Size);
+		UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(Tick);
+		Slot->SetAnchors(FAnchors(0.5f, 0.5f));
+		Slot->SetAlignment(FVector2D(0.5f, 0.5f));
+		Slot->SetPosition(Position);
+		Slot->SetSize(Size);
+		Slot->SetAutoSize(false);
+	};
+
+	const float DistFromCenter = CrosshairGap + (CrosshairLineLength * 0.5f);
+	const FVector2D VerticalTickSize(CrosshairLineThickness, CrosshairLineLength);
+	const FVector2D HorizontalTickSize(CrosshairLineLength, CrosshairLineThickness);
+
+	BuildCrosshairTick(TEXT("CrosshairTop"),    FVector2D(0.0f, -DistFromCenter), VerticalTickSize);
+	BuildCrosshairTick(TEXT("CrosshairBottom"), FVector2D(0.0f,  DistFromCenter), VerticalTickSize);
+	BuildCrosshairTick(TEXT("CrosshairLeft"),   FVector2D(-DistFromCenter, 0.0f), HorizontalTickSize);
+	BuildCrosshairTick(TEXT("CrosshairRight"),  FVector2D( DistFromCenter, 0.0f), HorizontalTickSize);
+
+	if (bShowCenterDot)
+	{
+		UImage* Dot = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("CrosshairCenterDot"));
+		Dot->SetColorAndOpacity(CrosshairColor);
+		const FVector2D DotSize(CenterDotSize, CenterDotSize);
+		Dot->SetDesiredSizeOverride(DotSize);
+		UCanvasPanelSlot* DotSlot = RootCanvas->AddChildToCanvas(Dot);
+		DotSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+		DotSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		DotSlot->SetPosition(FVector2D(0.0f, 0.0f));
+		DotSlot->SetSize(DotSize);
+		DotSlot->SetAutoSize(false);
+	}
 }
 
 // =====================================================================
