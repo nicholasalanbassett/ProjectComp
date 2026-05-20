@@ -4,10 +4,25 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "ProjectCompGameTypes.h"
 #include "ProjectCompGameMode.generated.h"
 
+class AProjectCompGameState;
+class AProjectCompPlayerState;
+class AController;
+class APlayerController;
+
 /**
- *  Simple GameMode for a first person game
+ * Server-only authority for the match.
+ *
+ * Owns the round state machine, vote tallying, ability cast validation,
+ * respawn timing, and team score updates. Never replicated; clients have no
+ * GameMode instance.
+ *
+ * Ticking is enabled because we run two server-side loops:
+ *   1. Phase timer countdown (PhaseTimeRemaining decrement).
+ *   2. Per-team cooldown pool recharge.
+ * Both are cheap (single-digit float ops).
  */
 UCLASS(abstract)
 class AProjectCompGameMode : public AGameModeBase
@@ -16,7 +31,97 @@ class AProjectCompGameMode : public AGameModeBase
 
 public:
 	AProjectCompGameMode();
+
+	virtual void StartPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
+	virtual void Logout(AController* Exiting) override;
+
+	// ---- RPC entry points (called by the PlayerController) ----------------
+
+	/**
+	 * Records a player's two ability votes for the current PreRound.
+	 * Validates: caller exists, has a valid team, both abilities distinct,
+	 * neither is None, current phase is PreRound. Returns true if accepted.
+	 */
+	bool Server_SubmitAbilityVote(APlayerController* Voter, EAbilityType First, EAbilityType Second);
+
+	/**
+	 * Resolves a Ghost Commander ability cast request.
+	 * Validates: caller is dead, round is active, team's pool is full, the
+	 * requested ability is one of the two drafted for the team. On success,
+	 * deducts the pool and multicasts the VFX hook on the GameState.
+	 */
+	bool Server_RequestAbilityCast(APlayerController* Caster, EAbilityType Type, FVector TargetLocation);
+
+	/** Public so the HealthComponent (or other damage source) can drive the death cascade. */
+	void HandlePlayerDeath(APlayerController* Victim, AController* Killer);
+
+protected:
+
+	// ---- Phase transition handlers (server only) --------------------------
+
+	void StartPreRound();
+	void StartRoundActive();
+	void StartPostRound();
+	void EndMatch();
+
+	/** Tally votes for both teams and write the top-2 picks into the GameState team loadouts. */
+	void TallyAndLockTeamDraft(ETeamID Team);
+
+	/** Recharge both teams' shared cooldown pools by DeltaSeconds * CooldownRechargeRate, clamped to [0,1]. */
+	void TickCooldownPools(float DeltaSeconds);
+
+	/** Sets phase timer and pushes the value to GameState. */
+	void SetPhaseTimer(float Duration);
+
+	// ---- Player lifecycle hooks ------------------------------------------
+
+	/** Move a freshly-spawned player into the world and back to alive state. */
+	void HandlePlayerRespawn(APlayerController* Player);
+
+	/** Auto-balance: assigns the next joining player to whichever team has fewer members. */
+	ETeamID PickTeamForNewPlayer() const;
+
+	// ---- Tuning knobs (editable in BP defaults) ---------------------------
+
+	/** Duration of the PreRound phase in seconds (draft + barrier). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float PreRoundDuration = 15.0f;
+
+	/** Duration of an active round in seconds. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float RoundActiveDuration = 100.0f;
+
+	/** Duration of the PostRound phase in seconds (killfeed/MVP cleanup). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float PostRoundDuration = 5.0f;
+
+	/** Seconds before a dead player is respawned during RoundActive. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float RespawnDelay = 5.0f;
+
+	/**
+	 * Fraction of the cooldown pool restored per second. 0.1 = 10s to recharge
+	 * from empty to full. Applied uniformly to both teams; only ticks during
+	 * RoundActive.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float CooldownRechargeRate = 0.1f;
+
+	/** Total rounds in a match. Match ends when CurrentRound exceeds this. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "1"))
+	int32 RoundsPerMatch = 12;
+
+private:
+
+	/** Convenience getter for the typed GameState. */
+	AProjectCompGameState* GetTypedGameState() const;
+
+	/** Returns true if the given pair is a valid draft submission (distinct, non-None). */
+	static bool IsValidVotePair(EAbilityType First, EAbilityType Second);
+
+	/** Per-player respawn timer handles, keyed by PlayerController. */
+	UPROPERTY()
+	TMap<TObjectPtr<APlayerController>, FTimerHandle> RespawnTimers;
 };
-
-
-

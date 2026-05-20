@@ -11,6 +11,7 @@ class UInputComponent;
 class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
+class UProjectCompHealthComponent;
 struct FInputActionValue;
 
 /** High-level movement state for animation/gameplay code to read. */
@@ -42,6 +43,10 @@ class AProjectCompCharacter : public ACharacter
 	/** First-person camera, parented to the capsule (world-aligned, no head-bone sway). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* FirstPersonCameraComponent;
+
+	/** Health container — replicated; routes damage into the GameMode death flow. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	UProjectCompHealthComponent* HealthComponent;
 
 protected:
 
@@ -105,11 +110,17 @@ protected:
 
 	// ---- Engine overrides --------------------------------------------------
 
+	virtual bool CanJumpInternal_Implementation() const override;
 	virtual void Landed(const FHitResult& Hit) override;
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* InputComponent) override;
+	virtual float TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
+
+	/** Console command for testing damage flow without weapons. Type "SelfDamage 100" in PIE console. */
+	UFUNCTION(Exec)
+	void SelfDamage(float Amount);
 
 	// ---- Camera tuning (exposed to BP) ------------------------------------
 
@@ -139,6 +150,7 @@ public:
 
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
+	UProjectCompHealthComponent* GetHealthComponent() const { return HealthComponent; }
 	EMovementState GetMovementState() const { return MovementState; }
 
 protected:

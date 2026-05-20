@@ -30,7 +30,7 @@ public:
 
     /** Standing speed when the walk modifier is held (cm/s). */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Walking")
-    float TacticalWalkSpeed = 350.0f;
+    float TacticalWalkSpeed = 320.0f;
 
     /**
      * Per-frame fraction of mouse-yaw rotation applied to horizontal velocity
@@ -49,7 +49,15 @@ public:
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0"))
     float StandstillAirSpeedCap = 50.0f;
 
+    /**
+     * Scale applied to JumpZVelocity when jumping from a crouched state.
+     * 0.7 ≈ a noticeably shorter hop while still clearing low cover.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float CrouchJumpZScale = 0.7f;
+
     virtual float GetMaxSpeed() const override;
+    virtual bool DoJump(bool bReplayingMoves) override;
     virtual void UpdateFromCompressedFlags(uint8 Flags) override;
     virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
     virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;

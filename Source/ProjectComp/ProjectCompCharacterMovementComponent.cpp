@@ -23,6 +23,23 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
     return BaseMax;
 }
 
+// Crouch-jump impulse is a scaled version of the standing jump. The base
+// implementation does `Velocity.Z = max(Velocity.Z, JumpZVelocity)`; we
+// temporarily lower JumpZVelocity so the same prediction path runs on owning
+// client, server, and replay with no extra state to sync.
+bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves)
+{
+    if (CharacterOwner && CharacterOwner->bIsCrouched && CrouchJumpZScale < 1.0f)
+    {
+        const float SavedZ = JumpZVelocity;
+        JumpZVelocity = SavedZ * CrouchJumpZScale;
+        const bool bJumped = Super::DoJump(bReplayingMoves);
+        JumpZVelocity = SavedZ;
+        return bJumped;
+    }
+    return Super::DoJump(bReplayingMoves);
+}
+
 // Server replay: rebuild bWantsToWalk from the compressed flag the client sent.
 void UProjectCompCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {

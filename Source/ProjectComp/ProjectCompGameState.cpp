@@ -1,0 +1,137 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "ProjectCompGameState.h"
+#include "Net/UnrealNetwork.h"
+#include "ProjectComp.h"
+
+AProjectCompGameState::AProjectCompGameState()
+{
+	// State only; never tick on the GameState (logic lives in GameMode).
+	PrimaryActorTick.bCanEverTick = false;
+
+	// Two teams: Attackers (0), Defenders (1). Initialized with default loadouts.
+	Teams.SetNum(2);
+}
+
+void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AProjectCompGameState, CurrentPhase);
+	DOREPLIFETIME(AProjectCompGameState, CurrentRound);
+	DOREPLIFETIME(AProjectCompGameState, PhaseTimeRemaining);
+	DOREPLIFETIME(AProjectCompGameState, Teams);
+}
+
+// =====================================================================
+// Public accessors
+// =====================================================================
+
+FTeamLoadout AProjectCompGameState::GetTeamLoadout(ETeamID Team) const
+{
+	if (const FTeamLoadout* Loadout = GetTeamLoadoutConst(Team))
+	{
+		return *Loadout;
+	}
+	return FTeamLoadout{};
+}
+
+bool AProjectCompGameState::IsTeamAbilityReady(ETeamID Team) const
+{
+	const FTeamLoadout* Loadout = GetTeamLoadoutConst(Team);
+	return Loadout && Loadout->SharedCooldownPool >= 1.0f;
+}
+
+// =====================================================================
+// Server mutators — only callable by the GameMode (HasAuthority guarded)
+// =====================================================================
+
+void AProjectCompGameState::Server_SetPhase(ERoundPhase NewPhase)
+{
+	if (!ensure(HasAuthority())) return;
+	CurrentPhase = NewPhase;
+	OnRep_CurrentPhase();  // fire on server too so any local UI updates uniformly
+}
+
+void AProjectCompGameState::Server_SetRound(int32 NewRound)
+{
+	if (!ensure(HasAuthority())) return;
+	CurrentRound = NewRound;
+}
+
+void AProjectCompGameState::Server_SetPhaseTimeRemaining(float NewTime)
+{
+	if (!ensure(HasAuthority())) return;
+	PhaseTimeRemaining = NewTime;
+}
+
+void AProjectCompGameState::Server_SetTeamLoadout(ETeamID Team, const FTeamLoadout& NewLoadout)
+{
+	if (!ensure(HasAuthority())) return;
+	if (FTeamLoadout* Loadout = GetTeamLoadoutMutable(Team))
+	{
+		*Loadout = NewLoadout;
+	}
+}
+
+void AProjectCompGameState::Server_SetTeamCooldownPool(ETeamID Team, float NewPool)
+{
+	if (!ensure(HasAuthority())) return;
+	if (FTeamLoadout* Loadout = GetTeamLoadoutMutable(Team))
+	{
+		Loadout->SharedCooldownPool = FMath::Clamp(NewPool, 0.0f, 1.0f);
+	}
+}
+
+void AProjectCompGameState::Server_AddTeamScore(ETeamID Team, int32 Delta)
+{
+	if (!ensure(HasAuthority())) return;
+	if (FTeamLoadout* Loadout = GetTeamLoadoutMutable(Team))
+	{
+		Loadout->Score += Delta;
+	}
+}
+
+// =====================================================================
+// Multicast — runs on server + all clients to play VFX/SFX uniformly
+// =====================================================================
+
+void AProjectCompGameState::Multicast_OnAbilityCast_Implementation(EAbilityType Type, FVector TargetLocation, ETeamID Team)
+{
+	// Hook for UI/VFX/audio. Effects are local-only; never alter authoritative state here.
+	UE_LOG(LogProjectComp, Log, TEXT("Ability cast: Type=%d Team=%d Loc=%s"),
+		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
+}
+
+// =====================================================================
+// RepNotify handlers
+// =====================================================================
+
+void AProjectCompGameState::OnRep_CurrentPhase()
+{
+	// Hook for client-side phase-change reactions (UI panels, music cues, etc.).
+}
+
+// =====================================================================
+// Internal helpers
+// =====================================================================
+
+FTeamLoadout* AProjectCompGameState::GetTeamLoadoutMutable(ETeamID Team)
+{
+	const int32 Index = static_cast<int32>(Team);
+	if (Index < 0 || Index >= Teams.Num())
+	{
+		return nullptr;
+	}
+	return &Teams[Index];
+}
+
+const FTeamLoadout* AProjectCompGameState::GetTeamLoadoutConst(ETeamID Team) const
+{
+	const int32 Index = static_cast<int32>(Team);
+	if (Index < 0 || Index >= Teams.Num())
+	{
+		return nullptr;
+	}
+	return &Teams[Index];
+}

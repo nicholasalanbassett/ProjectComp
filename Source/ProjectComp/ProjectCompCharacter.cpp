@@ -7,8 +7,10 @@
 #include "EnhancedInputComponent.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Engine/DamageEvents.h"
 #include "ProjectComp.h"
 #include "ProjectCompCharacterMovementComponent.h"
+#include "ProjectCompHealthComponent.h"
 
 AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectInitializer)
     : Super(ObjectInitializer.SetDefaultSubobjectClass<UProjectCompCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -39,6 +41,9 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     FirstPersonMesh->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::FirstPerson;
     FirstPersonMesh->SetCollisionProfileName(FName("NoCollision"));
 
+    // Health container — replicated; bridges damage events into GameMode death flow.
+    HealthComponent = CreateDefaultSubobject<UProjectCompHealthComponent>(TEXT("Health Component"));
+
     // Third-person mesh: body other players see; hidden from the local owner.
     GetMesh()->SetOwnerNoSee(true);
     GetMesh()->FirstPersonPrimitiveType = EFirstPersonPrimitiveType::WorldSpaceRepresentation;
@@ -58,8 +63,8 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     GetCharacterMovement()->BrakingDecelerationWalking = 10000.0f;
     GetCharacterMovement()->BrakingFrictionFactor = 1.0f;
 
-    // Run speed (cm/s). A bit faster than Valorant's 540.
-    GetCharacterMovement()->MaxWalkSpeed = 600.0f;
+    // Run speed (cm/s). Slightly faster than Valorant's 540.
+    GetCharacterMovement()->MaxWalkSpeed = 560.0f;
 
     // Air control governs how strongly input redirects velocity mid-air. The
     // resulting horizontal speed is then capped to jump-time speed by
@@ -78,7 +83,7 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     // Engine-driven crouch: bIsCrouched is replicated, ceiling-aware on uncrouch.
     GetCharacterMovement()->NavAgentProps.bCanCrouch = true;
     GetCharacterMovement()->SetCrouchedHalfHeight(48.0f);       // 96 -> 48 = capsule drops 48 cm.
-    GetCharacterMovement()->MaxWalkSpeedCrouched = 200.0f;      // Note: BP currently overrides to 300.
+    GetCharacterMovement()->MaxWalkSpeedCrouched = 250.0f;
 
     MovementState = EMovementState::Walking;
     CrouchEyeHeight = 40.0f;
@@ -152,16 +157,38 @@ void AProjectCompCharacter::DoMove(float Right, float Forward)
 
 void AProjectCompCharacter::DoJumpStart()
 {
-    // Tac-FPS convention: no jumping while crouched.
+    // Request uncrouch alongside the jump so the capsule expands on the next
+    // movement tick. CanJumpInternal_Implementation lets the jump through even
+    // while bIsCrouched is still true (the engine default would refuse it).
     if (bIsCrouched)
     {
-        return;
+        UnCrouch();
     }
 
     MovementState = EMovementState::Airborne;
     UpdateAnimationState();
 
     Jump();
+}
+
+// Allow jump-from-crouch. Both Super::CanJumpInternal_Implementation and
+// JumpIsAllowedInternal refuse while bIsCrouched is set, so we replicate the
+// same gates here minus the crouch check. DoJumpStart has already requested
+// the uncrouch — the capsule resizes on the next movement tick.
+bool AProjectCompCharacter::CanJumpInternal_Implementation() const
+{
+    UCharacterMovementComponent* CharMov = GetCharacterMovement();
+    if (!CharMov || !CharMov->IsJumpAllowed())
+    {
+        return false;
+    }
+    if (!CharMov->IsMovingOnGround() && !CharMov->IsFalling())
+    {
+        return false;
+    }
+    // Mirror ACharacter::CanJumpInternal hold-jump logic.
+    const bool bJumpKeyHeld = (bPressedJump && JumpKeyHoldTime < GetJumpMaxHoldTime());
+    return !bWasJumping && (JumpCurrentCount == 0 || (bJumpKeyHeld && JumpCurrentCount < JumpMaxCount));
 }
 
 void AProjectCompCharacter::DoJumpEnd()
@@ -176,6 +203,32 @@ void AProjectCompCharacter::Landed(const FHitResult& Hit)
 
     MovementState = EMovementState::Walking;
     UpdateAnimationState();
+}
+
+// Standard UE damage entry point. Forward into the HealthComponent on the
+// server; clients drop. Compatible with any engine damage source (UDamageType,
+// UGameplayStatics::ApplyDamage, projectile hit events, etc.).
+float AProjectCompCharacter::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+    const float Actual = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+    if (HasAuthority() && HealthComponent && Actual > 0.0f)
+    {
+        return HealthComponent->Server_TakeDamage(Actual, EventInstigator);
+    }
+    return Actual;
+}
+
+// Console command for damage testing: type "SelfDamage 100" in the PIE
+// console. Runs through the standard damage chain so the GameMode death flow
+// fires exactly as it would from a real weapon.
+void AProjectCompCharacter::SelfDamage(float Amount)
+{
+    if (Amount <= 0.0f)
+    {
+        return;
+    }
+    FDamageEvent DamageEvent;
+    TakeDamage(Amount, DamageEvent, GetController(), this);
 }
 
 // Setting bWantsToWalk on the CMC routes through saved moves; both server
@@ -203,16 +256,24 @@ void AProjectCompCharacter::DoWalkEnd()
     UpdateAnimationState();
 }
 
-// Crouch()/UnCrouch() are the engine's prediction-safe path. CanCrouch() gates
-// the ground check on entry; ceiling check on exit happens automatically.
+// Drive bWantsToCrouch directly (instead of Crouch()/UnCrouch()) so a crouch
+// requested mid-air persists and engages the moment we land. The CMC honors
+// the flag during UpdateCharacterStateBeforeMovement and runs its own ground
+// check on entry and ceiling check on exit.
 void AProjectCompCharacter::DoCrouchStart()
 {
-    Crouch();
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        CharMov->bWantsToCrouch = true;
+    }
 }
 
 void AProjectCompCharacter::DoCrouchEnd()
 {
-    UnCrouch();
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        CharMov->bWantsToCrouch = false;
+    }
 }
 
 // OnStartCrouch/OnEndCrouch: engine fires these after the capsule has snapped
