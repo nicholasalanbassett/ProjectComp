@@ -75,10 +75,10 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     GetCharacterMovement()->BrakingDecelerationFalling = 0.0f;  // Zero air drag — jump momentum is preserved.
 
     // Heavy gravity for a committed, snappy jump arc.
-    // With JumpZ=660 and effective gravity 2.0 × 980 = 1960 cm/s²:
-    //   apex height ≈ 111 cm, total air time ≈ 0.67 s.
+    // With JumpZ=600 and effective gravity 2.0 × 980 = 1960 cm/s²:
+    //   apex height ≈ 92 cm, total air time ≈ 0.61 s.
     GetCharacterMovement()->GravityScale = 2.0f;
-    GetCharacterMovement()->JumpZVelocity = 660.0f;
+    GetCharacterMovement()->JumpZVelocity = 600.0f;
 
     // Engine-driven crouch: bIsCrouched is replicated, ceiling-aware on uncrouch.
     GetCharacterMovement()->NavAgentProps.bCanCrouch = true;
