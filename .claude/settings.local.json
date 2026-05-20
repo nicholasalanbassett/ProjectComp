@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"C:\\\\Program Files\\\\Epic Games\\\\UE_5.7\\\\Engine\\\\Build\\\\BatchFiles\\\\Build.bat\" ProjectCompEditor Win64 Development -Project=\"C:\\\\Users\\\\nickb\\\\Documents\\\\Unreal Projects\\\\ProjectComp\\\\ProjectComp.uproject\" -WaitMutex 2>&1)"
+    ]
+  }
+}
