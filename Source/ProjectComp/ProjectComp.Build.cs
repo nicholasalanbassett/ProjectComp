@@ -16,7 +16,8 @@ public class ProjectComp : ModuleRules
 			"EnhancedInput",
 			"AIModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

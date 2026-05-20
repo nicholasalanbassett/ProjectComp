@@ -6,6 +6,7 @@
 #include "ProjectCompPlayerController.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompHUD.h"
 #include "ProjectComp.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -23,6 +24,7 @@ AProjectCompGameMode::AProjectCompGameMode()
 	GameStateClass = AProjectCompGameState::StaticClass();
 	PlayerStateClass = AProjectCompPlayerState::StaticClass();
 	PlayerControllerClass = AProjectCompPlayerController::StaticClass();
+	HUDClass = AProjectCompHUD::StaticClass();
 }
 
 void AProjectCompGameMode::StartPlay()
