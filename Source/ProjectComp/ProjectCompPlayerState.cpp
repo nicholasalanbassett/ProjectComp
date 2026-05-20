@@ -18,6 +18,8 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME(AProjectCompPlayerState, VotedAbility2);
 	DOREPLIFETIME(AProjectCompPlayerState, Kills);
 	DOREPLIFETIME(AProjectCompPlayerState, Deaths);
+	DOREPLIFETIME(AProjectCompPlayerState, LivesRemaining);
+	DOREPLIFETIME(AProjectCompPlayerState, RespawnEndTime);
 }
 
 void AProjectCompPlayerState::Server_SetTeamID(ETeamID NewTeam)
@@ -74,4 +76,31 @@ void AProjectCompPlayerState::Server_AddDeath()
 		return;
 	}
 	++Deaths;
+}
+
+void AProjectCompPlayerState::Server_DecrementLife()
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	LivesRemaining = FMath::Max(0, LivesRemaining - 1);
+}
+
+void AProjectCompPlayerState::Server_ResetLives()
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	LivesRemaining = MaxLives;
+}
+
+void AProjectCompPlayerState::Server_SetRespawnEndTime(float NewTime)
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	RespawnEndTime = NewTime;
 }

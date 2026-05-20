@@ -209,6 +209,37 @@ void UProjectCompHUDWidget::BuildLayout()
 		DotSlot->SetSize(DotSize);
 		DotSlot->SetAutoSize(false);
 	}
+
+	// ---- Death status overlay (center-ish; hidden while alive) ------------
+	// Positioned slightly above screen center so it doesn't crash into the
+	// crosshair. Title shows state ("RESPAWN IN N" or "ELIMINATED"); subtitle
+	// adds context ("SPECTATING TEAM" for permanent ghosts).
+	DeathStatusBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("DeathStatusBox"));
+	UCanvasPanelSlot* DeathSlot = RootCanvas->AddChildToCanvas(DeathStatusBox);
+	DeathSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	DeathSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+	DeathSlot->SetPosition(FVector2D(0.0f, -120.0f));
+	DeathSlot->SetAutoSize(true);
+	DeathStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+
+	DeathStatusTitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("DeathStatusTitle"));
+	DeathStatusTitle->SetFont(MakeFont(44));
+	DeathStatusTitle->SetText(FText::FromString(TEXT("DEAD")));
+	DeathStatusTitle->SetColorAndOpacity(RespawnTextColor);
+	DeathStatusTitle->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(DeathStatusTitle);
+	UVerticalBoxSlot* TitleSlot = DeathStatusBox->AddChildToVerticalBox(DeathStatusTitle);
+	TitleSlot->SetHorizontalAlignment(HAlign_Center);
+
+	DeathStatusSubtitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("DeathStatusSubtitle"));
+	DeathStatusSubtitle->SetFont(MakeFont(20));
+	DeathStatusSubtitle->SetText(FText::FromString(TEXT("")));
+	DeathStatusSubtitle->SetColorAndOpacity(LabelTextColor);
+	DeathStatusSubtitle->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(DeathStatusSubtitle);
+	UVerticalBoxSlot* SubtitleSlot = DeathStatusBox->AddChildToVerticalBox(DeathStatusSubtitle);
+	SubtitleSlot->SetHorizontalAlignment(HAlign_Center);
+	SubtitleSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 0.0f));
 }
 
 // =====================================================================
@@ -265,6 +296,47 @@ void UProjectCompHUDWidget::RefreshDisplay()
 		{
 			const bool bReady = GS->IsTeamAbilityReady(Team);
 			AbilityIndicatorImage->SetColorAndOpacity(bReady ? AbilityReadyColor : AbilityCooldownColor);
+		}
+	}
+
+	// Death status overlay: shown only while dead.
+	if (DeathStatusBox && PS)
+	{
+		if (PS->IsAlive())
+		{
+			DeathStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else if (PS->IsPermanentlyDead())
+		{
+			DeathStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+			if (DeathStatusTitle)
+			{
+				DeathStatusTitle->SetText(NSLOCTEXT("HUD", "Eliminated", "ELIMINATED"));
+				DeathStatusTitle->SetColorAndOpacity(EliminatedTextColor);
+			}
+			if (DeathStatusSubtitle)
+			{
+				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "Spectating", "SPECTATING — GHOST COMMANDER"));
+			}
+		}
+		else
+		{
+			// Temporary ghost: respawn countdown.
+			DeathStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+			const float ServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			const float Remaining = FMath::Max(0.0f, PS->GetRespawnEndTime() - ServerTime);
+			const int32 RemainingInt = FMath::CeilToInt(Remaining);
+
+			if (DeathStatusTitle)
+			{
+				DeathStatusTitle->SetText(FText::FromString(FString::Printf(TEXT("RESPAWN IN %d"), RemainingInt)));
+				DeathStatusTitle->SetColorAndOpacity(RespawnTextColor);
+			}
+			if (DeathStatusSubtitle)
+			{
+				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "GhostCommander", "GHOST COMMANDER ACTIVE"));
+			}
 		}
 	}
 }

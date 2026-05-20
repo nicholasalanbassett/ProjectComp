@@ -65,6 +65,12 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Colors")
 	FLinearColor AbilityCooldownColor = FLinearColor(0.40f, 0.40f, 0.40f, 0.7f);
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Colors")
+	FLinearColor RespawnTextColor = FLinearColor(0.95f, 0.95f, 0.95f, 1.0f);
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Colors")
+	FLinearColor EliminatedTextColor = FLinearColor(0.95f, 0.30f, 0.28f, 1.0f);
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Layout")
 	float TopBarTopMargin = 30.0f;
 
@@ -115,6 +121,9 @@ protected:
 	UPROPERTY() TObjectPtr<UTextBlock> HealthLabelText;
 	UPROPERTY() TObjectPtr<UTextBlock> AbilityLabelText;
 	UPROPERTY() TObjectPtr<UImage> AbilityIndicatorImage;
+	UPROPERTY() TObjectPtr<UVerticalBox> DeathStatusBox;
+	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusTitle;
+	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusSubtitle;
 
 	// ---- State accessors (null-safe traversal) ---------------------------
 

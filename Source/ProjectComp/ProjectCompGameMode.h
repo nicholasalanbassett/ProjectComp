@@ -57,6 +57,13 @@ public:
 	/** Public so the HealthComponent (or other damage source) can drive the death cascade. */
 	void HandlePlayerDeath(APlayerController* Victim, AController* Killer);
 
+	/**
+	 * Scan both teams; if one is entirely permanent-ghost (all dead AND no lives
+	 * remaining), end the round with an elimination point for the other team.
+	 * Called after every death and respawn.
+	 */
+	void CheckRoundEndCondition();
+
 protected:
 
 	// ---- Phase transition handlers (server only) --------------------------
@@ -97,9 +104,15 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
 	float PostRoundDuration = 5.0f;
 
-	/** Seconds before a dead player is respawned during RoundActive. */
+	/**
+	 * Seconds a player spends in temporary-ghost mode before respawning at
+	 * the team spawn. Designed as the player's "low-cortisol support window" —
+	 * time for ghost-casting, map reading, and comms. Only applies to deaths
+	 * with lives remaining; on the final death, the player is permanent ghost
+	 * for the rest of the round (no respawn).
+	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
-	float RespawnDelay = 5.0f;
+	float RespawnDelay = 14.0f;
 
 	/**
 	 * Fraction of the cooldown pool restored per second. 0.1 = 10s to recharge

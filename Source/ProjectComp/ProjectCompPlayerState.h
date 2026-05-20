@@ -42,6 +42,20 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player")
 	int32 GetDeaths() const { return Deaths; }
 
+	UFUNCTION(BlueprintPure, Category = "Player")
+	int32 GetLivesRemaining() const { return LivesRemaining; }
+
+	UFUNCTION(BlueprintPure, Category = "Player")
+	int32 GetMaxLives() const { return MaxLives; }
+
+	/** True when the player is dead AND has exhausted their lives for this round. */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	bool IsPermanentlyDead() const { return !bIsAlive && LivesRemaining <= 0; }
+
+	/** Server-time (seconds) at which this player will respawn. 0 = no respawn pending. */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetRespawnEndTime() const { return RespawnEndTime; }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	/** Server: assign this player to a team. */
@@ -61,6 +75,15 @@ public:
 
 	/** Server: increment death count. */
 	void Server_AddDeath();
+
+	/** Server: subtract 1 life. Floors at 0. */
+	void Server_DecrementLife();
+
+	/** Server: restore LivesRemaining to MaxLives. Called between rounds. */
+	void Server_ResetLives();
+
+	/** Server: set the absolute server-time at which this player will respawn. 0 to clear. */
+	void Server_SetRespawnEndTime(float NewTime);
 
 protected:
 
@@ -83,4 +106,16 @@ protected:
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	int32 Deaths = 0;
+
+	/** Lives remaining in the current round. Reset to MaxLives at PreRound start. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	int32 LivesRemaining = 2;
+
+	/** Max lives per round. Edit in BP defaults to tune the death model (2 = current design). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Player", meta = (ClampMin = "1"))
+	int32 MaxLives = 2;
+
+	/** Server-time (seconds) at which this player will respawn. 0 = none pending. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	float RespawnEndTime = 0.0f;
 };

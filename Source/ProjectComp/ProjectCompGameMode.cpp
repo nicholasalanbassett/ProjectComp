@@ -65,7 +65,15 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 		switch (GS->GetCurrentPhase())
 		{
 			case ERoundPhase::PreRound:    StartRoundActive(); break;
-			case ERoundPhase::RoundActive: StartPostRound();   break;
+			case ERoundPhase::RoundActive:
+				// Round timeout with no plant resolution = defenders win the round (1 pt).
+				// When the bomb mechanic lands, this branch will check bomb state first.
+				GS->Server_AddTeamScore(ETeamID::Defenders, 1);
+				UE_LOG(LogProjectComp, Log, TEXT("Round %d: Timer expired with no plant. Defenders +1 (now %d)."),
+					GS->GetCurrentRound(),
+					GS->GetTeamLoadout(ETeamID::Defenders).Score);
+				StartPostRound();
+				break;
 			case ERoundPhase::PostRound:
 				if (GS->GetCurrentRound() >= RoundsPerMatch) { EndMatch(); }
 				else { GS->Server_SetRound(GS->GetCurrentRound() + 1); StartPreRound(); }
@@ -222,7 +230,7 @@ void AProjectCompGameMode::StartPreRound()
 		GS->Server_SetTeamLoadout(static_cast<ETeamID>(i), Loadout);
 	}
 
-	// Clear all player votes; reset alive state for the new round.
+	// Clear all player votes; reset alive state + lives for the new round.
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
@@ -231,6 +239,8 @@ void AProjectCompGameMode::StartPreRound()
 			{
 				PS->Server_ClearVotes();
 				PS->Server_SetIsAlive(true);
+				PS->Server_ResetLives();
+				PS->Server_SetRespawnEndTime(0.0f);
 			}
 		}
 	}
@@ -288,6 +298,56 @@ void AProjectCompGameMode::EndMatch()
 	GS->Server_SetPhase(ERoundPhase::MatchEnded);
 	GS->Server_SetPhaseTimeRemaining(0.0f);
 	UE_LOG(LogProjectComp, Log, TEXT("Match ended after %d rounds."), GS->GetCurrentRound());
+}
+
+void AProjectCompGameMode::CheckRoundEndCondition()
+{
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+	{
+		return;
+	}
+
+	int32 AttackerTotal = 0, AttackerPermaGhost = 0;
+	int32 DefenderTotal = 0, DefenderPermaGhost = 0;
+
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		const APlayerController* PC = It->Get();
+		const AProjectCompPlayerState* PS = PC ? PC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		if (!PS) continue;
+
+		const ETeamID Team = PS->GetTeamID();
+		if (Team == ETeamID::Attackers)
+		{
+			++AttackerTotal;
+			if (PS->IsPermanentlyDead()) ++AttackerPermaGhost;
+		}
+		else if (Team == ETeamID::Defenders)
+		{
+			++DefenderTotal;
+			if (PS->IsPermanentlyDead()) ++DefenderPermaGhost;
+		}
+	}
+
+	// Elimination (no bomb mechanic yet, so any full-team-out is a 1-point elim).
+	// When the bomb system lands, plant state takes precedence over elimination scoring.
+	if (AttackerTotal > 0 && AttackerPermaGhost == AttackerTotal)
+	{
+		GS->Server_AddTeamScore(ETeamID::Defenders, 1);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Attackers eliminated. Defenders +1 (now %d)."),
+			GS->GetCurrentRound(),
+			GS->GetTeamLoadout(ETeamID::Defenders).Score);
+		StartPostRound();
+	}
+	else if (DefenderTotal > 0 && DefenderPermaGhost == DefenderTotal)
+	{
+		GS->Server_AddTeamScore(ETeamID::Attackers, 1);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Defenders eliminated. Attackers +1 (now %d)."),
+			GS->GetCurrentRound(),
+			GS->GetTeamLoadout(ETeamID::Attackers).Score);
+		StartPostRound();
+	}
 }
 
 // =====================================================================
@@ -400,6 +460,7 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 	{
 		PS->Server_SetIsAlive(false);
 		PS->Server_AddDeath();
+		PS->Server_DecrementLife();
 	}
 
 	if (AProjectCompPlayerState* KillerPS = Killer ? Killer->GetPlayerState<AProjectCompPlayerState>() : nullptr)
@@ -422,15 +483,29 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 		}
 	}
 
-	// Schedule respawn. Only fires if we're still in RoundActive when the timer elapses.
-	if (RespawnDelay > 0.0f)
+	// Schedule respawn only if lives remain. On the final death, player stays
+	// in permanent ghost mode for the rest of the round.
+	const bool bHasLivesLeft = PS && PS->GetLivesRemaining() > 0;
+	if (bHasLivesLeft && RespawnDelay > 0.0f)
 	{
+		// Stamp the absolute server-time the respawn will happen at, so clients
+		// can render an accurate countdown without timer drift.
+		const float ServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		PS->Server_SetRespawnEndTime(ServerTime + RespawnDelay);
+
 		FTimerHandle& Handle = RespawnTimers.FindOrAdd(Victim);
 		GetWorldTimerManager().SetTimer(Handle, [this, Victim]()
 		{
 			HandlePlayerRespawn(Victim);
 		}, RespawnDelay, false);
 	}
+	else if (PS)
+	{
+		PS->Server_SetRespawnEndTime(0.0f);
+	}
+
+	// Check if this death triggers a round-end (full team permanent-ghost).
+	CheckRoundEndCondition();
 }
 
 void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
@@ -456,6 +531,7 @@ void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
 	if (AProjectCompPlayerState* PS = Player->GetPlayerState<AProjectCompPlayerState>())
 	{
 		PS->Server_SetIsAlive(true);
+		PS->Server_SetRespawnEndTime(0.0f);
 	}
 
 	// Re-use the engine's RestartPlayer flow (SpawnDefaultPawnFor + Possess).
