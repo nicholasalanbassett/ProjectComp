@@ -87,11 +87,14 @@ protected:
 	/** Move a freshly-spawned player into the world and back to alive state. */
 	void HandlePlayerRespawn(APlayerController* Player);
 
-	/** Auto-balance: assigns the next joining player to whichever team has fewer members. */
-	ETeamID PickTeamForNewPlayer() const;
+	/** Deterministic alternation by join order — see implementation comment. Non-const because GetNumPlayers() is non-const. */
+	ETeamID PickTeamForNewPlayer();
 
 	/** Flip every player's TeamID (Attackers ↔ Defenders). Triggered at halftime. */
 	void Server_SwapAllPlayerTeams();
+
+	/** Raise (true) / drop (false) every barrier in the world. Called at phase transitions. */
+	void Server_SetAllBarriersActive(bool bActive);
 
 	/** Filter team-tagged PlayerStarts so attackers/defenders spawn on the right side of the map. */
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
@@ -150,4 +153,11 @@ private:
 	/** Per-player respawn timer handles, keyed by PlayerController. */
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, FTimerHandle> RespawnTimers;
+
+	/**
+	 * Monotonic counter incremented once per PostLogin. Used by PickTeamForNewPlayer
+	 * to alternate team assignment deterministically (odd → Attackers, even → Defenders)
+	 * without relying on engine-counted state that can race in PIE listen-server.
+	 */
+	int32 JoinSequence = 0;
 };

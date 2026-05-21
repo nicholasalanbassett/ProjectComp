@@ -5,6 +5,7 @@
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompPlayerController.h"
 #include "ProjectCompPlayerStart.h"
+#include "ProjectCompBarrier.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHUD.h"
@@ -105,13 +106,35 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 
 void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 {
-	Super::PostLogin(NewPlayer);
-
-	if (AProjectCompPlayerState* PS = NewPlayer ? NewPlayer->GetPlayerState<AProjectCompPlayerState>() : nullptr)
+	AProjectCompPlayerState* PS = NewPlayer ? NewPlayer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (PS)
 	{
 		PS->Server_SetTeamID(PickTeamForNewPlayer());
 		PS->Server_SetIsAlive(true);
 		PS->Server_ClearVotes();
+	}
+
+	Super::PostLogin(NewPlayer);
+
+	// The engine's Login() runs FindPlayerStart before our team is assigned,
+	// so the pawn ends up at a random PlayerStart (TeamID was still Spectator).
+	// Relocate it to a team-correct start now. Move position only; apply only
+	// the yaw to the controller view — passing a full rotation to TeleportTo
+	// can confuse the camera setup.
+	if (NewPlayer && PS && PS->GetTeamID() != ETeamID::Spectator)
+	{
+		if (AActor* TeamStart = ChoosePlayerStart(NewPlayer))
+		{
+			if (APawn* Pawn = NewPlayer->GetPawn())
+			{
+				Pawn->SetActorLocation(TeamStart->GetActorLocation(),
+					/*bSweep*/ false, /*OutSweepHitResult*/ nullptr,
+					ETeleportType::TeleportPhysics);
+
+				const FRotator YawOnly(0.0f, TeamStart->GetActorRotation().Yaw, 0.0f);
+				NewPlayer->SetControlRotation(YawOnly);
+			}
+		}
 	}
 }
 
@@ -265,6 +288,9 @@ void AProjectCompGameMode::StartPreRound()
 		}
 	}
 
+	// Raise spawn-room barriers — players are locked in until the round goes active.
+	Server_SetAllBarriersActive(true);
+
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: PreRound started (%.1fs)."), GS->GetCurrentRound(), PreRoundDuration);
 }
 
@@ -282,6 +308,9 @@ void AProjectCompGameMode::StartRoundActive()
 
 	GS->Server_SetPhase(ERoundPhase::RoundActive);
 	SetPhaseTimer(RoundActiveDuration);
+
+	// Drop barriers so players can leave the spawn rooms.
+	Server_SetAllBarriersActive(false);
 
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: RoundActive started (%.1fs)."), GS->GetCurrentRound(), RoundActiveDuration);
 }
@@ -339,9 +368,8 @@ AActor* AProjectCompGameMode::ChoosePlayerStart_Implementation(AController* Play
 		return Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
 	}
 
-	// Fallback: no team-tagged start matched — let the engine pick any PlayerStart
-	// so we don't strand the player. Logged at Warning so designers notice.
-	UE_LOG(LogProjectComp, Warning, TEXT("ChoosePlayerStart: no AProjectCompPlayerStart for team %d; falling back to default."), (int32)WantedTeam);
+	// Fallback: no team-tagged start matched (common during Login() before the
+	// team is assigned — PostLogin then relocates the pawn). Use any PlayerStart.
 	return Super::ChoosePlayerStart_Implementation(Player);
 }
 
@@ -369,7 +397,23 @@ void AProjectCompGameMode::Server_SwapAllPlayerTeams()
 			++SwappedCount;
 		}
 	}
+
+	// Flip barrier ownership too so the see-through rule keeps working for
+	// whichever team now spawns in each room.
+	for (TActorIterator<AProjectCompBarrier> It(GetWorld()); It; ++It)
+	{
+		It->Server_SwapOwnerTeam();
+	}
+
 	UE_LOG(LogProjectComp, Log, TEXT("Half-time swap: %d players changed sides."), SwappedCount);
+}
+
+void AProjectCompGameMode::Server_SetAllBarriersActive(bool bActive)
+{
+	for (TActorIterator<AProjectCompBarrier> It(GetWorld()); It; ++It)
+	{
+		It->Server_SetActive(bActive);
+	}
 }
 
 void AProjectCompGameMode::CheckRoundEndCondition()
@@ -621,19 +665,16 @@ void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
 	RespawnTimers.Remove(Player);
 }
 
-ETeamID AProjectCompGameMode::PickTeamForNewPlayer() const
+ETeamID AProjectCompGameMode::PickTeamForNewPlayer()
 {
-	int32 AttackerCount = 0;
-	int32 DefenderCount = 0;
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-	{
-		const APlayerController* PC = It->Get();
-		const AProjectCompPlayerState* PS = PC ? PC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
-		if (!PS) continue;
-		if (PS->GetTeamID() == ETeamID::Attackers) ++AttackerCount;
-		else if (PS->GetTeamID() == ETeamID::Defenders) ++DefenderCount;
-	}
-	return AttackerCount <= DefenderCount ? ETeamID::Attackers : ETeamID::Defenders;
+	// Deterministic alternation via our own counter: 1st join → Attackers,
+	// 2nd → Defenders, 3rd → Attackers, etc. We use a private counter rather
+	// than GetNumPlayers() or NumPlayers because in PIE listen-server mode the
+	// host's PlayerController is sometimes not yet in the world iterator when
+	// the client's PostLogin fires, which made the engine-based count race.
+	// When real team-select UI lands this becomes irrelevant — players choose.
+	++JoinSequence;
+	return (JoinSequence % 2 == 1) ? ETeamID::Attackers : ETeamID::Defenders;
 }
 
 // =====================================================================
