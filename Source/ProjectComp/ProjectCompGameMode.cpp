@@ -116,25 +116,12 @@ void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 
 	Super::PostLogin(NewPlayer);
 
-	// The engine's Login() runs FindPlayerStart before our team is assigned,
-	// so the pawn ends up at a random PlayerStart (TeamID was still Spectator).
-	// Relocate it to a team-correct start now. Move position only; apply only
-	// the yaw to the controller view — passing a full rotation to TeleportTo
-	// can confuse the camera setup.
-	if (NewPlayer && PS && PS->GetTeamID() != ETeamID::Spectator)
+	// Engine's Login() runs FindPlayerStart with TeamID=Spectator (random spawn).
+	// Now that the team is assigned, relocate to a team-correct start. The
+	// helper caches the assignment so subsequent mid-round respawns reuse it.
+	if (PS && PS->GetTeamID() != ETeamID::Spectator)
 	{
-		if (AActor* TeamStart = ChoosePlayerStart(NewPlayer))
-		{
-			if (APawn* Pawn = NewPlayer->GetPawn())
-			{
-				Pawn->SetActorLocation(TeamStart->GetActorLocation(),
-					/*bSweep*/ false, /*OutSweepHitResult*/ nullptr,
-					ETeleportType::TeleportPhysics);
-
-				const FRotator YawOnly(0.0f, TeamStart->GetActorRotation().Yaw, 0.0f);
-				NewPlayer->SetControlRotation(YawOnly);
-			}
-		}
+		RelocatePlayerToTeamStart(NewPlayer);
 	}
 }
 
@@ -147,6 +134,7 @@ void AProjectCompGameMode::Logout(AController* Exiting)
 			GetWorldTimerManager().ClearTimer(*Handle);
 		}
 		RespawnTimers.Remove(PC);
+		AssignedStarts.Remove(PC);
 	}
 	Super::Logout(Exiting);
 }
@@ -288,6 +276,21 @@ void AProjectCompGameMode::StartPreRound()
 		}
 	}
 
+	// Fresh round = fresh spawn allocation. Clear sticky assignments so the
+	// next ChoosePlayerStart for each player picks a new (teammate-avoiding)
+	// random start; mid-round respawns then reuse that pick. Destroy +
+	// respawn every player's pawn so anyone who was in a frozen-corpse state
+	// from last round (died, didn't respawn before round ended) gets a fresh
+	// fully-functional pawn — otherwise input/collision/movement stay disabled.
+	AssignedStarts.Empty();
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			RespawnPlayerAtAssignedStart(PC);
+		}
+	}
+
 	// Raise spawn-room barriers — players are locked in until the round goes active.
 	Server_SetAllBarriersActive(true);
 
@@ -351,9 +354,24 @@ void AProjectCompGameMode::EndMatch()
 
 AActor* AProjectCompGameMode::ChoosePlayerStart_Implementation(AController* Player)
 {
+	APlayerController* PC = Cast<APlayerController>(Player);
 	const AProjectCompPlayerState* PS = Player ? Player->GetPlayerState<AProjectCompPlayerState>() : nullptr;
 	const ETeamID WantedTeam = PS ? PS->GetTeamID() : ETeamID::Spectator;
 
+	// If this player already has a sticky assignment for the round, use it.
+	// Keeps mid-round respawns landing at the same spot per player.
+	if (PC)
+	{
+		if (TObjectPtr<AActor>* Existing = AssignedStarts.Find(PC))
+		{
+			if (Existing->Get())
+			{
+				return Existing->Get();
+			}
+		}
+	}
+
+	// Collect team-matching candidates.
 	TArray<AProjectCompPlayerStart*> Candidates;
 	for (TActorIterator<AProjectCompPlayerStart> It(GetWorld()); It; ++It)
 	{
@@ -363,14 +381,112 @@ AActor* AProjectCompGameMode::ChoosePlayerStart_Implementation(AController* Play
 		}
 	}
 
-	if (Candidates.Num() > 0)
+	if (Candidates.Num() == 0)
 	{
-		return Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
+		// Fallback: no team-tagged start matched (common during Login() before the
+		// team is assigned — PostLogin then relocates the pawn). Use any PlayerStart.
+		// Don't cache this — we want the real team-correct start when team is set.
+		return Super::ChoosePlayerStart_Implementation(Player);
 	}
 
-	// Fallback: no team-tagged start matched (common during Login() before the
-	// team is assigned — PostLogin then relocates the pawn). Use any PlayerStart.
-	return Super::ChoosePlayerStart_Implementation(Player);
+	// Prefer starts not already assigned to a teammate. Avoids two players
+	// spawning at the same PlayerStart simultaneously on round start.
+	TSet<AActor*> AlreadyAssigned;
+	for (const auto& Pair : AssignedStarts)
+	{
+		if (Pair.Key != PC && Pair.Value)
+		{
+			AlreadyAssigned.Add(Pair.Value.Get());
+		}
+	}
+
+	TArray<AProjectCompPlayerStart*> FreeCandidates;
+	for (AProjectCompPlayerStart* C : Candidates)
+	{
+		if (!AlreadyAssigned.Contains(C))
+		{
+			FreeCandidates.Add(C);
+		}
+	}
+
+	AProjectCompPlayerStart* Chosen = nullptr;
+	if (FreeCandidates.Num() > 0)
+	{
+		Chosen = FreeCandidates[FMath::RandRange(0, FreeCandidates.Num() - 1)];
+	}
+	else
+	{
+		// All team-starts are claimed (more teammates than starts). Pick any.
+		Chosen = Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
+	}
+
+	// Cache the assignment so mid-round respawns land here too.
+	if (PC && Chosen && WantedTeam != ETeamID::Spectator)
+	{
+		AssignedStarts.Add(PC, Chosen);
+	}
+	return Chosen;
+}
+
+void AProjectCompGameMode::RelocatePlayerToTeamStart(APlayerController* PC)
+{
+	if (!PC)
+	{
+		return;
+	}
+	AActor* TeamStart = ChoosePlayerStart(PC);
+	if (!TeamStart)
+	{
+		return;
+	}
+	APawn* Pawn = PC->GetPawn();
+	if (!Pawn)
+	{
+		return;
+	}
+
+	Pawn->SetActorLocation(TeamStart->GetActorLocation(),
+		/*bSweep*/ false, /*OutSweepHitResult*/ nullptr,
+		ETeleportType::TeleportPhysics);
+
+	// Yaw-only — passing a full FRotator confuses the camera setup (sideways
+	// view). Apply to both pawn and controller so the body and view agree
+	// even if SetControlRotation gets clobbered by a post-possession step.
+	const FRotator YawOnly(0.0f, TeamStart->GetActorRotation().Yaw, 0.0f);
+	Pawn->SetActorRotation(YawOnly);
+	PC->SetControlRotation(YawOnly);
+}
+
+void AProjectCompGameMode::RespawnPlayerAtAssignedStart(APlayerController* PC)
+{
+	if (!HasAuthority() || !PC)
+	{
+		return;
+	}
+
+	// Destroy existing pawn (frozen-corpse or otherwise) so we start fresh.
+	// Without this the pawn keeps its disabled input/collision/movement from
+	// HandlePlayerDeath, and the player can't move next round.
+	if (APawn* OldPawn = PC->GetPawn())
+	{
+		OldPawn->Destroy();
+	}
+
+	// Engine's RestartPlayer creates a fresh pawn and possesses it.
+	RestartPlayer(PC);
+
+	// Force to team-correct assigned start (RestartPlayer's spawn location
+	// is unreliable in UE 5.7 — caches StartSpot from Login).
+	RelocatePlayerToTeamStart(PC);
+
+	// Fresh health on the new pawn.
+	if (AProjectCompCharacter* NewChar = Cast<AProjectCompCharacter>(PC->GetPawn()))
+	{
+		if (UProjectCompHealthComponent* HC = NewChar->GetHealthComponent())
+		{
+			HC->Server_ResetHealth();
+		}
+	}
 }
 
 void AProjectCompGameMode::Server_SwapAllPlayerTeams()
@@ -638,29 +754,14 @@ void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
 		return;
 	}
 
-	// Destroy the frozen-corpse pawn before spawning a fresh one at a PlayerStart.
-	if (APawn* OldPawn = Player->GetPawn())
-	{
-		OldPawn->Destroy();
-	}
-
 	if (AProjectCompPlayerState* PS = Player->GetPlayerState<AProjectCompPlayerState>())
 	{
 		PS->Server_SetIsAlive(true);
 		PS->Server_SetRespawnEndTime(0.0f);
 	}
 
-	// Re-use the engine's RestartPlayer flow (SpawnDefaultPawnFor + Possess).
-	RestartPlayer(Player);
-
-	// Reset health on the freshly-spawned pawn.
-	if (AProjectCompCharacter* NewChar = Cast<AProjectCompCharacter>(Player->GetPawn()))
-	{
-		if (UProjectCompHealthComponent* HC = NewChar->GetHealthComponent())
-		{
-			HC->Server_ResetHealth();
-		}
-	}
+	// Destroy + respawn + relocate + reset health, all in one helper.
+	RespawnPlayerAtAssignedStart(Player);
 
 	RespawnTimers.Remove(Player);
 }

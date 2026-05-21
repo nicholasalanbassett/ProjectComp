@@ -160,4 +160,30 @@ private:
 	 * without relying on engine-counted state that can race in PIE listen-server.
 	 */
 	int32 JoinSequence = 0;
+
+	/**
+	 * Each player's sticky PlayerStart assignment for the current round.
+	 * Mid-round respawns reuse the same spot — avoids "two teammates respawn
+	 * to the same PlayerStart at the same instant" bugs. Cleared and
+	 * re-populated each PreRound so a new round gives fresh allocations.
+	 */
+	UPROPERTY()
+	TMap<TObjectPtr<APlayerController>, TObjectPtr<AActor>> AssignedStarts;
+
+	/**
+	 * Server: teleport the player's pawn to its assigned team-correct PlayerStart
+	 * (or lazy-assigns one via ChoosePlayerStart if missing). Position-only
+	 * move plus yaw-only rotation on both pawn and controller — avoids the
+	 * sideways-camera bug we hit when passing a full FRotator to TeleportTo.
+	 */
+	void RelocatePlayerToTeamStart(APlayerController* PC);
+
+	/**
+	 * Server: destroy the existing pawn (frozen-corpse or otherwise), spawn a
+	 * fresh one via the engine's RestartPlayer flow, relocate to the team-
+	 * assigned PlayerStart, and reset health. Used by both mid-round respawn
+	 * and end-of-round reset so every "you're back in the game" path produces
+	 * a fully-functional pawn.
+	 */
+	void RespawnPlayerAtAssignedStart(APlayerController* PC);
 };
