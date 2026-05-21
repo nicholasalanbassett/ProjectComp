@@ -219,7 +219,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 	if (PS->IsAlive())
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: caster is alive (Ghost Commander mechanic requires death)."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: caster is alive (Loom mechanic requires death)."));
 		return false;
 	}
 

@@ -54,9 +54,9 @@ public:
 	// ---- Multicast hooks --------------------------------------------------
 
 	/**
-	 * Fires on every client (and the server) when a Ghost Commander ability
-	 * resolves successfully. Hook visual/audio FX here. Server validates;
-	 * clients are notified-only.
+	 * Fires on every client (and the server) when a Loom ability resolves
+	 * successfully. Hook visual/audio FX here. Server validates; clients are
+	 * notified-only.
 	 */
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_OnAbilityCast(EAbilityType Type, FVector TargetLocation, ETeamID Team);

@@ -47,9 +47,9 @@ public:
 	bool Server_SubmitAbilityVote(APlayerController* Voter, EAbilityType First, EAbilityType Second);
 
 	/**
-	 * Resolves a Ghost Commander ability cast request.
-	 * Validates: caller is dead, round is active, team's pool is full, the
-	 * requested ability is one of the two drafted for the team. On success,
+	 * Resolves a Loom ability cast request.
+	 * Validates: caller is looming (dead), round is active, team's pool is full,
+	 * the requested ability is one of the two drafted for the team. On success,
 	 * deducts the pool and multicasts the VFX hook on the GameState.
 	 */
 	bool Server_RequestAbilityCast(APlayerController* Caster, EAbilityType Type, FVector TargetLocation);

@@ -15,7 +15,7 @@ class UInputMappingContext;
  *  Owns:
  *    - Input mapping contexts (added to the Enhanced Input subsystem on login)
  *    - Custom camera manager class assignment
- *    - Client-to-server RPC entry points for the Ghost Commander system
+ *    - Client-to-server RPC entry points for the Loom system
  *      (ability draft votes + cast requests). RPCs validate cheaply on the
  *      client side then forward to the GameMode for full authoritative checks.
  */
@@ -34,7 +34,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void SubmitAbilityVote(EAbilityType First, EAbilityType Second);
 
-	/** Owning-client entry point: request a Ghost Commander ability cast. */
+	/** Owning-client entry point: request a Loom ability cast (player must be looming). */
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void RequestAbilityCast(EAbilityType Type, FVector TargetLocation);
 
