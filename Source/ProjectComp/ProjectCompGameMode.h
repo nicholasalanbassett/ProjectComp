@@ -90,6 +90,12 @@ protected:
 	/** Auto-balance: assigns the next joining player to whichever team has fewer members. */
 	ETeamID PickTeamForNewPlayer() const;
 
+	/** Flip every player's TeamID (Attackers ↔ Defenders). Triggered at halftime. */
+	void Server_SwapAllPlayerTeams();
+
+	/** Filter team-tagged PlayerStarts so attackers/defenders spawn on the right side of the map. */
+	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
+
 	// ---- Tuning knobs (editable in BP defaults) ---------------------------
 
 	/** Duration of the PreRound phase in seconds (draft + barrier). */
@@ -122,9 +128,16 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
 	float CooldownRechargeRate = 0.1f;
 
-	/** Total rounds in a match. Match ends when CurrentRound exceeds this. */
+	/** Score threshold that ends the match (first team to reach this many round wins). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "1"))
-	int32 RoundsPerMatch = 12;
+	int32 RoundsToWinMatch = 13;
+
+	/**
+	 * After this round ends, every player's TeamID flips (Attackers ↔ Defenders).
+	 * Scores stay with the team, not the player. Set to 0 to disable.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0"))
+	int32 HalftimeRoundNumber = 8;
 
 private:
 

@@ -4,11 +4,13 @@
 #include "ProjectCompGameState.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompPlayerController.h"
+#include "ProjectCompPlayerStart.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHUD.h"
 #include "ProjectComp.h"
 #include "Components/CapsuleComponent.h"
+#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
@@ -75,9 +77,27 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 				StartPostRound();
 				break;
 			case ERoundPhase::PostRound:
-				if (GS->GetCurrentRound() >= RoundsPerMatch) { EndMatch(); }
-				else { GS->Server_SetRound(GS->GetCurrentRound() + 1); StartPreRound(); }
+			{
+				// First-to-RoundsToWinMatch ends the match. Otherwise advance,
+				// performing the half-time team swap on the round boundary if
+				// the round we just finished matches HalftimeRoundNumber.
+				const int32 AttackerScore = GS->GetTeamLoadout(ETeamID::Attackers).Score;
+				const int32 DefenderScore = GS->GetTeamLoadout(ETeamID::Defenders).Score;
+				if (AttackerScore >= RoundsToWinMatch || DefenderScore >= RoundsToWinMatch)
+				{
+					EndMatch();
+				}
+				else
+				{
+					if (HalftimeRoundNumber > 0 && GS->GetCurrentRound() == HalftimeRoundNumber)
+					{
+						Server_SwapAllPlayerTeams();
+					}
+					GS->Server_SetRound(GS->GetCurrentRound() + 1);
+					StartPreRound();
+				}
 				break;
+			}
 			default: break;
 		}
 	}
@@ -298,6 +318,58 @@ void AProjectCompGameMode::EndMatch()
 	GS->Server_SetPhase(ERoundPhase::MatchEnded);
 	GS->Server_SetPhaseTimeRemaining(0.0f);
 	UE_LOG(LogProjectComp, Log, TEXT("Match ended after %d rounds."), GS->GetCurrentRound());
+}
+
+AActor* AProjectCompGameMode::ChoosePlayerStart_Implementation(AController* Player)
+{
+	const AProjectCompPlayerState* PS = Player ? Player->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	const ETeamID WantedTeam = PS ? PS->GetTeamID() : ETeamID::Spectator;
+
+	TArray<AProjectCompPlayerStart*> Candidates;
+	for (TActorIterator<AProjectCompPlayerStart> It(GetWorld()); It; ++It)
+	{
+		if (It->GetTeamID() == WantedTeam)
+		{
+			Candidates.Add(*It);
+		}
+	}
+
+	if (Candidates.Num() > 0)
+	{
+		return Candidates[FMath::RandRange(0, Candidates.Num() - 1)];
+	}
+
+	// Fallback: no team-tagged start matched — let the engine pick any PlayerStart
+	// so we don't strand the player. Logged at Warning so designers notice.
+	UE_LOG(LogProjectComp, Warning, TEXT("ChoosePlayerStart: no AProjectCompPlayerStart for team %d; falling back to default."), (int32)WantedTeam);
+	return Super::ChoosePlayerStart_Implementation(Player);
+}
+
+void AProjectCompGameMode::Server_SwapAllPlayerTeams()
+{
+	int32 SwappedCount = 0;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		AProjectCompPlayerState* PS = PC ? PC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		if (!PS)
+		{
+			continue;
+		}
+
+		const ETeamID Current = PS->GetTeamID();
+		if (Current == ETeamID::Attackers)
+		{
+			PS->Server_SetTeamID(ETeamID::Defenders);
+			++SwappedCount;
+		}
+		else if (Current == ETeamID::Defenders)
+		{
+			PS->Server_SetTeamID(ETeamID::Attackers);
+			++SwappedCount;
+		}
+	}
+	UE_LOG(LogProjectComp, Log, TEXT("Half-time swap: %d players changed sides."), SwappedCount);
 }
 
 void AProjectCompGameMode::CheckRoundEndCondition()
