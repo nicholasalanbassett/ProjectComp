@@ -371,16 +371,10 @@ void AProjectCompCharacter::BeginPlay()
 {
     Super::BeginPlay();
 
-    UE_LOG(LogProjectComp, Warning, TEXT("Character BeginPlay running on %s"), *GetName());
-
     if (UCapsuleComponent* Capsule = GetCapsuleComponent())
     {
         Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
         Capsule->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
-
-        const ECollisionResponse VisResponse = Capsule->GetCollisionResponseToChannel(ECC_Visibility);
-        UE_LOG(LogProjectComp, Warning, TEXT("  Capsule %s Visibility response after set: %d (1=Ignore, 2=Overlap, 3=Block)"),
-            *Capsule->GetName(), (int32)VisResponse);
     }
     if (USkeletalMeshComponent* BodyMesh = GetMesh())
     {
@@ -389,10 +383,6 @@ void AProjectCompCharacter::BeginPlay()
         // with collision turned off, regardless of response channels.
         BodyMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         BodyMesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-
-        const ECollisionResponse MeshVisResponse = BodyMesh->GetCollisionResponseToChannel(ECC_Visibility);
-        UE_LOG(LogProjectComp, Warning, TEXT("  Mesh %s Visibility response=%d (0=Ignore, 1=Overlap, 2=Block); CollisionEnabled=%d (0=No, 1=Query, 2=Physics, 3=QueryAndPhysics)"),
-            *BodyMesh->GetName(), (int32)MeshVisResponse, (int32)BodyMesh->GetCollisionEnabled());
     }
 }
 

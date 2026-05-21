@@ -103,20 +103,8 @@ void AProjectCompHitscanWeapon::FireOneShot()
 		const bool bIsHeadshot = (Hit.BoneName == HeadBoneName);
 		const float Damage = bIsHeadshot ? BodyDamage * HeadDamageMultiplier : BodyDamage;
 
-		UE_LOG(LogProjectComp, Warning, TEXT("Weapon trace hit %s (component=%s bone=%s) — applying %.1f damage"),
-			*Hit.GetActor()->GetName(),
-			Hit.GetComponent() ? *Hit.GetComponent()->GetName() : TEXT("none"),
-			*Hit.BoneName.ToString(),
-			Damage);
-
 		FPointDamageEvent DamageEvent(Damage, Hit, -TraceDir, /*DamageTypeClass*/ nullptr);
-		const float Actual = Hit.GetActor()->TakeDamage(Damage, DamageEvent, OwnerController, this);
-
-		UE_LOG(LogProjectComp, Warning, TEXT("TakeDamage returned %.1f"), Actual);
-	}
-	else if (bDidHit)
-	{
-		UE_LOG(LogProjectComp, Warning, TEXT("Weapon trace hit something but Hit.GetActor() is null"));
+		Hit.GetActor()->TakeDamage(Damage, DamageEvent, OwnerController, this);
 	}
 
 	// Cosmetic broadcast to all clients (including the firer for now — no
