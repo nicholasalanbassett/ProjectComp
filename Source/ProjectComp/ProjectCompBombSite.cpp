@@ -46,11 +46,8 @@ void AProjectCompBombSite::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (HasAuthority())
-	{
-		Trigger->OnComponentBeginOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerBeginOverlap);
-		Trigger->OnComponentEndOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerEndOverlap);
-	}
+	Trigger->OnComponentBeginOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerBeginOverlap);
+	Trigger->OnComponentEndOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerEndOverlap);
 }
 
 void AProjectCompBombSite::Tick(float DeltaTime)
@@ -90,7 +87,16 @@ void AProjectCompBombSite::OnTriggerBeginOverlap(UPrimitiveComponent* Overlapped
 {
 	if (APawn* Pawn = Cast<APawn>(OtherActor))
 	{
-		PawnsInside.AddUnique(Pawn);
+		if (HasAuthority())
+		{
+			PawnsInside.AddUnique(Pawn);
+		}
+		// Both sides notify the character so its lock state can re-evaluate.
+		// This is what enables the case "press F outside, walk in while holding".
+		if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(Pawn))
+		{
+			Char->NotifyBombSiteOverlapChanged();
+		}
 	}
 }
 
@@ -99,7 +105,14 @@ void AProjectCompBombSite::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedCo
 {
 	if (APawn* Pawn = Cast<APawn>(OtherActor))
 	{
-		PawnsInside.Remove(Pawn);
+		if (HasAuthority())
+		{
+			PawnsInside.Remove(Pawn);
+		}
+		if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(Pawn))
+		{
+			Char->NotifyBombSiteOverlapChanged();
+		}
 	}
 }
 

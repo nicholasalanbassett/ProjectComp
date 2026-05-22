@@ -61,6 +61,20 @@ public:
 	UFUNCTION(NetMulticast, Reliable)
 	void Multicast_OnAbilityCast(EAbilityType Type, FVector TargetLocation, ETeamID Team);
 
+	/**
+	 * Fires on every client when a player is killed. Implementation pushes
+	 * into PendingKillFeedEvents so the HUD widget can consume it next tick
+	 * without needing a delegate binding.
+	 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_OnPlayerKilled(const FString& KillerName, const FString& VictimName, ETeamID KillerTeam, ETeamID VictimTeam);
+
+	/**
+	 * Client-side queue consumed by UProjectCompHUDWidget::UpdateKillFeed each
+	 * tick. Not replicated — populated by Multicast_OnPlayerKilled.
+	 */
+	TArray<FKillFeedData> PendingKillFeedEvents;
+
 protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentPhase, BlueprintReadOnly, Category = "Round State")

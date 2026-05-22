@@ -43,6 +43,18 @@ enum class EAbilityType : uint8
 	MM, MA, MC
 };
 
+/** Payload for a single kill event; pushed into the GameState queue on every client. */
+USTRUCT()
+struct FKillFeedData
+{
+	GENERATED_BODY()
+
+	FString KillerName;
+	FString VictimName;
+	ETeamID KillerTeam = ETeamID::Spectator;
+	ETeamID VictimTeam = ETeamID::Spectator;
+};
+
 /**
  * Per-team state, replicated as a TArray on the GameState (one entry per team).
  * All fields are server-authoritative; clients receive read-only copies.

@@ -195,6 +195,11 @@ public:
 	/** Server: true while the Use key is currently held. Polled by ABombSite for plant/defuse. */
 	bool IsUseHeld() const { return bUseHeld; }
 
+	/** Called by an overlapping bomb site when its trigger begin/end-overlaps this pawn.
+	 *  Both client and server invoke this from their respective overlap callbacks so the
+	 *  lock state can be re-evaluated when the player walks in/out while holding Use. */
+	void NotifyBombSiteOverlapChanged();
+
 	/**
 	 * Server → owning client: apply one shot's recoil kick and configure recovery.
 	 * PitchKick > 0 = camera kicks up (degrees). YawKick > 0 = kicks right.
@@ -225,17 +230,33 @@ protected:
 	float DefaultMaxWalkSpeed = 560.0f;
 	float DefaultMaxWalkSpeedCrouched = 250.0f;
 
-	// ---- Recoil recovery (owning client only) ------------------------------
-	// Tracks how many degrees of recoil have been applied to the control rotation
-	// and still need to be recovered. Positive pitch = camera was kicked up.
+	// ---- Recoil (owning client only) ---------------------------------------
+	// Tracks outstanding kick degrees for intra-spray smooth recovery.
+	// Reset at the start of each new spray; recovery only runs while firing.
 	float AccumulatedRecoilPitch = 0.0f;
 	float AccumulatedRecoilYaw = 0.0f;
-	float RecoilRecoveryRate = 12.0f;     // Set by weapon on each kick.
-	float TimeUntilRecoilRecovery = 0.0f; // Countdown before recovery starts.
+	float RecoilRecoveryRate = 4.0f;
+	float TimeUntilRecoilRecovery = 0.0f;
+	bool bIsFiring = false;
+
 
 	/** True if the player was already crouching when they began interacting (plant/defuse).
 	 *  If so, DoUseEnd does not uncrouch — the crouch belongs to the player, not the interaction. */
 	bool bWasCrouchingBeforeInteract = false;
+
+	/** True while the interaction-imposed movement lock is active.
+	 *  Set on DoUseStart / Server_SetUseHeld(true) only when overlapping a bomb site;
+	 *  cleared on the matching end. Without this, releasing E outside a site would
+	 *  spuriously uncrouch a Ctrl-crouched player and reset MaxWalkSpeed. */
+	bool bInteractLockActive = false;
+
+	/** Returns true when the capsule currently overlaps any AProjectCompBombSite trigger. */
+	bool IsOverlappingBombSite() const;
+
+	/** Apply or release the interact movement lock based on bUseHeld + bomb site overlap.
+	 *  Called from input edges, RPC, and overlap-changed events. Idempotent — safe to
+	 *  call repeatedly; only transitions when the desired state differs from current. */
+	void UpdateInteractLock();
 
 	/**
 	 * Per-client mesh visibility refresh. Runs on every client (including listen

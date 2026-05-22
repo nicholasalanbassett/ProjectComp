@@ -64,67 +64,70 @@ public:
 
 	// ---- Spread -----------------------------------------------------------
 
-	/** Minimum bullet spread half-angle (degrees) when standing still. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float BaseSpreadDegrees = 0.15f;
-
 	/** Extra spread (degrees) added when moving at full run speed. Scales linearly with speed. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float MovingSpreadAdd = 3.5f;
+	float MovingSpreadAdd = 4.0f;
 
 	/** Ground speed (cm/s) below which the character is considered stationary for spread purposes. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float MoveSpeedThreshold = 50.0f;
+	float MoveSpeedThreshold = 100.0f;
+
+	/**
+	 * Horizontal spread as a fraction of vertical spread (0–1).
+	 * 1.0 = circular cone. 0.4 = horizontal spread is 40% of vertical.
+	 * Tune this to reduce side-to-side jitter while keeping vertical recoil spread.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float HorizontalSpreadMult = 0.4f;
 
 	/** Spread multiplier when crouched (< 1.0 = tighter cone). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.01", ClampMax = "2.0"))
 	float CrouchSpreadMult = 0.75f;
 
+	/** Extra spread added when crouch-walking (replaces MovingSpreadAdd while crouched). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float CrouchMovingSpreadAdd = 1.0f;
+
 	/** Extra spread (degrees) added unconditionally when airborne. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
 	float AirSpreadAdd = 4.0f;
 
-	/** Spread (degrees) added to CurrentSpread per shot fired. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float SpreadPerShot = 0.5f;
-
-	/** Maximum CurrentSpread allowed (caps per-shot accumulation). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float MaxSpread = 6.0f;
-
-	/** Degrees per second that CurrentSpread decays while the trigger is released. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float SpreadRecoveryRate = 5.0f;
-
-	/**
-	 * Runtime spread accumulation (degrees). Replicated owner-only so the HUD
-	 * can display a dynamic crosshair without an extra server query.
-	 */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Weapon|Spread")
-	float CurrentSpread = 0.0f;
 
 	// ---- Recoil -----------------------------------------------------------
 
 	/**
-	 * Per-shot camera kick pattern (degrees). X = pitch up, Y = yaw right.
-	 * Pattern clamps on the last entry once exhausted; resets to index 0 after
-	 * RecoilPatternResetDelay seconds of not firing.
-	 * Default is a Phantom-like moderate pattern; override per weapon in BP.
+	 * Per-shot spray pattern (degrees). X = pitch up (bullet goes high), Y = yaw right.
+	 * Entry N defines exactly where bullet N lands relative to the crosshair.
+	 * Pattern clamps on the last entry once the mag is exhausted.
+	 * Resets to index 0 after RecoilPatternResetDelay seconds of not firing.
+	 * The camera kicks by the same values so the player feels the recoil.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil")
 	TArray<FVector2D> RecoilPattern;
 
-	/** Degrees per second at which the client camera auto-recovers after the last shot. */
+	/**
+	 * Degrees per second at which the camera smoothly eases back during a spray.
+	 * Recovery only runs while the trigger is held; camera stays put on release.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
-	float RecoilRecoveryRate = 12.0f;
+	float RecoilRecoveryRate = 2.0f;
 
-	/** Seconds after the last shot before camera recovery begins. */
+	/** Seconds after each shot before intra-spray recovery begins (usually 0). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
-	float RecoilRecoveryDelay = 0.1f;
+	float RecoilRecoveryDelay = 0.0f;
 
-	/** Seconds of idle before RecoilPatternIndex resets to 0 (allows a tight first shot again). */
+	/** Seconds of idle before RecoilPatternIndex resets to 0. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
-	float RecoilPatternResetDelay = 0.4f;
+	float RecoilPatternResetDelay = 0.15f;
+
+	// ---- Skill modifier ----------------------------------------------------
+
+	/**
+	 * Multiplier on movement/air spread. 1.0 = full penalty. 0.0 = no penalty.
+	 * Reduced by the "spray control" skill upgrade at runtime.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread")
+	float TransitionSpreadMultiplier = 1.0f;
 
 	// ---- Server interface ------------------------------------------------
 
@@ -152,11 +155,16 @@ protected:
 	/** Current index into RecoilPattern; advances each shot, resets after idle. */
 	int32 RecoilPatternIndex = 0;
 
+	/** Server-side running total of recoil applied this burst (degrees).
+	 *  Used to offset the bullet trace so it matches what the client camera shows. */
+	float ServerRecoilPitch = 0.0f;
+	float ServerRecoilYaw   = 0.0f;
+
 	/** Server: fire a single shot. Trace + damage + multicast. */
 	void FireOneShot();
 
-	/** Compute the total spread half-angle (degrees) for one shot given owner's movement state. */
-	float CalcTotalSpread(const AProjectCompCharacter* Char) const;
+	/** Returns movement/air/crouch spread (degrees) to add on top of the deterministic pattern. 0 when standing still. */
+	float CalcMovementSpread(const AProjectCompCharacter* Char) const;
 
 	/** Cosmetic-only: muzzle flash, tracer, impact decal. Runs on all clients. */
 	UFUNCTION(NetMulticast, Unreliable)

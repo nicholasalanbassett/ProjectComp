@@ -27,17 +27,17 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
 // implementation does `Velocity.Z = max(Velocity.Z, JumpZVelocity)`; we
 // temporarily lower JumpZVelocity so the same prediction path runs on owning
 // client, server, and replay with no extra state to sync.
-bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves)
+bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float DeltaTime)
 {
     if (CharacterOwner && CharacterOwner->bIsCrouched && CrouchJumpZScale < 1.0f)
     {
         const float SavedZ = JumpZVelocity;
         JumpZVelocity = SavedZ * CrouchJumpZScale;
-        const bool bJumped = Super::DoJump(bReplayingMoves);
+        const bool bJumped = Super::DoJump(bReplayingMoves, DeltaTime);
         JumpZVelocity = SavedZ;
         return bJumped;
     }
-    return Super::DoJump(bReplayingMoves);
+    return Super::DoJump(bReplayingMoves, DeltaTime);
 }
 
 // Server replay: rebuild bWantsToWalk from the compressed flag the client sent.

@@ -57,7 +57,7 @@ public:
     float CrouchJumpZScale = 0.7f;
 
     virtual float GetMaxSpeed() const override;
-    virtual bool DoJump(bool bReplayingMoves) override;
+    virtual bool DoJump(bool bReplayingMoves, float DeltaTime) override;
     virtual void UpdateFromCompressedFlags(uint8 Flags) override;
     virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
     virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;

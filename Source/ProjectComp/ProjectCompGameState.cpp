@@ -96,6 +96,15 @@ void AProjectCompGameState::Server_AddTeamScore(ETeamID Team, int32 Delta)
 // Multicast — runs on server + all clients to play VFX/SFX uniformly
 // =====================================================================
 
+void AProjectCompGameState::Multicast_OnPlayerKilled_Implementation(const FString& KillerName, const FString& VictimName, ETeamID KillerTeam, ETeamID VictimTeam)
+{
+	FKillFeedData& Event = PendingKillFeedEvents.AddDefaulted_GetRef();
+	Event.KillerName = KillerName;
+	Event.VictimName = VictimName;
+	Event.KillerTeam = KillerTeam;
+	Event.VictimTeam = VictimTeam;
+}
+
 void AProjectCompGameState::Multicast_OnAbilityCast_Implementation(EAbilityType Type, FVector TargetLocation, ETeamID Team)
 {
 	// Hook for UI/VFX/audio. Effects are local-only; never alter authoritative state here.

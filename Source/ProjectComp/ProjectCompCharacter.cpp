@@ -12,6 +12,7 @@
 #include "ProjectComp.h"
 #include "ProjectCompCharacterMovementComponent.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompBombSite.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompPlayerState.h"
 #include "Engine/World.h"
@@ -28,8 +29,8 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     // Align character replication to the server tickrate (set in DefaultEngine.ini
     // → NetServerMaxTickRate). At 64Hz server, replicate at 64Hz, allow throttle
     // down to 30Hz if the character is idle/distant.
-    NetUpdateFrequency = 64.0f;
-    MinNetUpdateFrequency = 30.0f;
+    SetNetUpdateFrequency(64.0f);
+    SetMinNetUpdateFrequency(30.0f);
 
     GetCapsuleComponent()->InitCapsuleSize(55.f, 96.0f);
 
@@ -315,11 +316,16 @@ void AProjectCompCharacter::DoCrouchEnd()
 // weapon (which lives server-side) starts/stops its fire loop.
 void AProjectCompCharacter::DoFireStart()
 {
+    bIsFiring = true;
+    // Reset accumulated recoil so each new spray starts clean.
+    AccumulatedRecoilPitch = 0.0f;
+    AccumulatedRecoilYaw   = 0.0f;
     Server_SetTriggerHeld(true);
 }
 
 void AProjectCompCharacter::DoFireEnd()
 {
+    bIsFiring = false;
     Server_SetTriggerHeld(false);
 }
 
@@ -331,20 +337,18 @@ void AProjectCompCharacter::Client_ApplyRecoilKick_Implementation(float PitchKic
 		return;
 	}
 
-	// Apply the kick directly to the control rotation.
-	// UE control pitch: positive = look down, negative = look up.
-	// So PitchKick > 0 should push the camera up → subtract from pitch.
+	// UE control pitch: positive = look up. PitchKick > 0 kicks camera up.
 	FRotator Rot = PC->GetControlRotation();
-	Rot.Pitch -= PitchKick;
+	Rot.Pitch += PitchKick;
 	Rot.Yaw   += YawKick;
 	PC->SetControlRotation(Rot);
 
-	AccumulatedRecoilPitch += PitchKick;
-	AccumulatedRecoilYaw   += YawKick;
-	RecoilRecoveryRate      = RecoveryRate;
-	TimeUntilRecoilRecovery = RecoveryDelay;
+	// Track the outstanding kick for intra-spray smooth recovery.
+	AccumulatedRecoilPitch  += PitchKick;
+	AccumulatedRecoilYaw    += YawKick;
+	RecoilRecoveryRate       = RecoveryRate;
+	TimeUntilRecoilRecovery  = RecoveryDelay;
 
-	// Wake tick to run the recovery loop.
 	SetActorTickEnabled(true);
 }
 
@@ -358,51 +362,75 @@ void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
 
 void AProjectCompCharacter::DoUseStart()
 {
-    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
-    {
-        // Remember whether the player chose to crouch independently so DoUseEnd
-        // knows whether to uncrouch on release.
-        bWasCrouchingBeforeInteract = CharMov->bWantsToCrouch;
-
-        CharMov->MaxWalkSpeed = 0.0f;
-        CharMov->MaxWalkSpeedCrouched = 0.0f;
-        CharMov->bWantsToCrouch = true;
-    }
+    bUseHeld = true;
+    UpdateInteractLock();
     Server_SetUseHeld(true);
 }
 
 void AProjectCompCharacter::DoUseEnd()
 {
-    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
-    {
-        CharMov->MaxWalkSpeed = DefaultMaxWalkSpeed;
-        CharMov->MaxWalkSpeedCrouched = DefaultMaxWalkSpeedCrouched;
-        // Only uncrouch if the crouch was forced by the interaction, not by the
-        // player holding Ctrl before or during the interaction.
-        if (!bWasCrouchingBeforeInteract)
-        {
-            CharMov->bWantsToCrouch = false;
-        }
-    }
+    bUseHeld = false;
+    UpdateInteractLock();
     Server_SetUseHeld(false);
 }
 
 void AProjectCompCharacter::Server_SetUseHeld_Implementation(bool bHeld)
 {
     bUseHeld = bHeld;
-    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    UpdateInteractLock();
+}
+
+bool AProjectCompCharacter::IsOverlappingBombSite() const
+{
+    TArray<AActor*> Overlapping;
+    GetOverlappingActors(Overlapping, AProjectCompBombSite::StaticClass());
+    return Overlapping.Num() > 0;
+}
+
+// Single source of truth for the plant/defuse movement lock.
+//
+// Why this is a re-evaluating helper rather than edge-triggered code at the
+// input callbacks:
+//   1. Pressing F outside a site then walking in must engage the lock — needs
+//      to react to overlap changes, not just key edges.
+//   2. On a listen-server host, DoUseStart and Server_SetUseHeld_Implementation
+//      both run for the same key press. If both independently captured
+//      bWasCrouchingBeforeInteract from bWantsToCrouch, the second read would
+//      see the value the first just wrote (true) and the player would never
+//      uncrouch. Idempotent transitions on a single helper avoid that.
+void AProjectCompCharacter::UpdateInteractLock()
+{
+    UCharacterMovementComponent* CharMov = GetCharacterMovement();
+    if (!CharMov)
     {
-        CharMov->MaxWalkSpeed = bHeld ? 0.0f : DefaultMaxWalkSpeed;
-        CharMov->MaxWalkSpeedCrouched = bHeld ? 0.0f : DefaultMaxWalkSpeedCrouched;
-        if (bHeld)
-        {
-            CharMov->bWantsToCrouch = true;
-        }
-        else if (!bWasCrouchingBeforeInteract)
+        return;
+    }
+
+    const bool bShouldLock = bUseHeld && IsOverlappingBombSite();
+
+    if (bShouldLock && !bInteractLockActive)
+    {
+        bWasCrouchingBeforeInteract = CharMov->bWantsToCrouch;
+        CharMov->MaxWalkSpeed = 0.0f;
+        CharMov->MaxWalkSpeedCrouched = 0.0f;
+        CharMov->bWantsToCrouch = true;
+        bInteractLockActive = true;
+    }
+    else if (!bShouldLock && bInteractLockActive)
+    {
+        CharMov->MaxWalkSpeed = DefaultMaxWalkSpeed;
+        CharMov->MaxWalkSpeedCrouched = DefaultMaxWalkSpeedCrouched;
+        if (!bWasCrouchingBeforeInteract)
         {
             CharMov->bWantsToCrouch = false;
         }
+        bInteractLockActive = false;
     }
+}
+
+void AProjectCompCharacter::NotifyBombSiteOverlapChanged()
+{
+    UpdateInteractLock();
 }
 
 // Spawn the default weapon for newly-possessed characters on the server.
@@ -556,9 +584,6 @@ void AProjectCompCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalf
 //
 // Crouch: the engine snaps the capsule instantly for accurate hit-reg; we
 // undo that snap on the camera and re-apply it gradually so the view eases.
-//
-// Recoil: each shot applies a rotation kick to ControlRotation; this loop
-// slowly reverses it after a short delay, matching Valorant's auto-recovery.
 void AProjectCompCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
@@ -589,10 +614,12 @@ void AProjectCompCharacter::Tick(float DeltaTime)
     Loc.Z = StandingCameraZ + EngineOffset - VisualOffset;
     FirstPersonCameraComponent->SetRelativeLocation(Loc);
 
-    // ---- Recoil recovery (owning client only) -----------------------------
+    // ---- Intra-spray recoil recovery (owning client only) -----------------
+    // Smoothly ease the camera back down between shots while the trigger is
+    // held. When firing stops the camera stays at its current position.
     const bool bHasRecoil = !FMath::IsNearlyZero(AccumulatedRecoilPitch, 0.01f)
                           || !FMath::IsNearlyZero(AccumulatedRecoilYaw, 0.01f);
-    if (IsLocallyControlled() && bHasRecoil)
+    if (IsLocallyControlled() && bIsFiring && bHasRecoil)
     {
         TimeUntilRecoilRecovery = FMath::Max(0.0f, TimeUntilRecoilRecovery - DeltaTime);
         if (TimeUntilRecoilRecovery <= 0.0f)
@@ -602,13 +629,10 @@ void AProjectCompCharacter::Tick(float DeltaTime)
                 const float RecoverThisFrame = RecoilRecoveryRate * DeltaTime;
                 FRotator Rot = PC->GetControlRotation();
 
-                // Pitch: we subtracted PitchKick from Rot.Pitch on kick, so
-                // recover by adding back proportional amounts each frame.
                 const float PitchRecover = FMath::Min(RecoverThisFrame, FMath::Abs(AccumulatedRecoilPitch));
-                Rot.Pitch += FMath::Sign(AccumulatedRecoilPitch) * PitchRecover;
+                Rot.Pitch -= FMath::Sign(AccumulatedRecoilPitch) * PitchRecover;
                 AccumulatedRecoilPitch -= FMath::Sign(AccumulatedRecoilPitch) * PitchRecover;
 
-                // Yaw: we added YawKick, so recover by subtracting.
                 const float YawRecover = FMath::Min(RecoverThisFrame, FMath::Abs(AccumulatedRecoilYaw));
                 Rot.Yaw -= FMath::Sign(AccumulatedRecoilYaw) * YawRecover;
                 AccumulatedRecoilYaw -= FMath::Sign(AccumulatedRecoilYaw) * YawRecover;
@@ -617,12 +641,6 @@ void AProjectCompCharacter::Tick(float DeltaTime)
             }
         }
         bTickStillNeeded = true;
-    }
-    else if (IsLocallyControlled())
-    {
-        // Snap sub-threshold residual to zero so the loop terminates cleanly.
-        AccumulatedRecoilPitch = 0.0f;
-        AccumulatedRecoilYaw   = 0.0f;
     }
 
     if (!bTickStillNeeded)

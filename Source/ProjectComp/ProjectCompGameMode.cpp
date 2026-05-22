@@ -897,6 +897,17 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 
 	// Check if this death triggers a round-end (full team permanent-ghost).
 	CheckRoundEndCondition();
+
+	// Broadcast to all clients for kill feed display.
+	if (AProjectCompGameState* GS = GetTypedGameState())
+	{
+		const AProjectCompPlayerState* KillerPS2 = Killer ? Killer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		const FString KillerName = KillerPS2 ? KillerPS2->GetPlayerName() : TEXT("??");
+		const FString VictimName = PS ? PS->GetPlayerName() : TEXT("Unknown");
+		const ETeamID KillerTeam = KillerPS2 ? KillerPS2->GetTeamID() : ETeamID::Spectator;
+		const ETeamID VictimTeam = PS ? PS->GetTeamID() : ETeamID::Spectator;
+		GS->Multicast_OnPlayerKilled(KillerName, VictimName, KillerTeam, VictimTeam);
+	}
 }
 
 void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)

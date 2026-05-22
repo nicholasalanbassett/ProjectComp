@@ -57,6 +57,7 @@ void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	RefreshDisplay();
+	UpdateKillFeed(InDeltaTime);
 }
 
 // =====================================================================
@@ -271,6 +272,166 @@ void UProjectCompHUDWidget::BuildLayout()
 	UVerticalBoxSlot* BombSubSlot = BombStatusBox->AddChildToVerticalBox(BombStatusSubtitle);
 	BombSubSlot->SetHorizontalAlignment(HAlign_Center);
 	BombSubSlot->SetPadding(FMargin(0.0f, 4.0f, 0.0f, 0.0f));
+
+	// ---- Kill feed (top-right) ---------------------------------------------
+	// Rows are added dynamically at runtime; this box is just the container.
+	KillFeedBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("KillFeedBox"));
+	UCanvasPanelSlot* KillFeedSlot = RootCanvas->AddChildToCanvas(KillFeedBox);
+	KillFeedSlot->SetAnchors(FAnchors(1.0f, 0.0f));
+	KillFeedSlot->SetAlignment(FVector2D(1.0f, 0.0f));
+	KillFeedSlot->SetPosition(FVector2D(-CornerPadding, TopBarTopMargin + 80.0f));
+	KillFeedSlot->SetAutoSize(true);
+
+	// ---- Personal kill / death notification (bottom-center) ----------------
+	KillNotifText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("KillNotifText"));
+	KillNotifText->SetFont(MakeFont(20));
+	KillNotifText->SetJustification(ETextJustify::Center);
+	KillNotifText->SetColorAndOpacity(KillNotifColor);
+	ApplyTextShadow(KillNotifText);
+	UCanvasPanelSlot* NotifSlot = RootCanvas->AddChildToCanvas(KillNotifText);
+	NotifSlot->SetAnchors(FAnchors(0.5f, 1.0f));
+	NotifSlot->SetAlignment(FVector2D(0.5f, 1.0f));
+	NotifSlot->SetPosition(FVector2D(0.0f, -(CornerPadding + 90.0f)));
+	NotifSlot->SetAutoSize(true);
+	KillNotifText->SetVisibility(ESlateVisibility::Hidden);
+}
+
+// =====================================================================
+// Kill feed
+// =====================================================================
+
+void UProjectCompHUDWidget::UpdateKillFeed(float DeltaTime)
+{
+	// Consume any new events queued by Multicast_OnPlayerKilled.
+	if (AProjectCompGameState* GS = GetTypedGameState())
+	{
+		for (const FKillFeedData& Event : GS->PendingKillFeedEvents)
+		{
+			AddKillFeedEntry(Event.KillerName, Event.VictimName, Event.KillerTeam, Event.VictimTeam);
+		}
+		GS->PendingKillFeedEvents.Empty();
+	}
+
+	// Tick timers, fade rows, remove expired ones (iterate backward for safe removal).
+	static constexpr float FeedDuration  = 5.0f;
+	static constexpr float FeedFadeStart = 1.5f;
+
+	for (int32 i = KillFeedTimers.Num() - 1; i >= 0; --i)
+	{
+		KillFeedTimers[i] -= DeltaTime;
+		if (KillFeedTimers[i] <= 0.0f)
+		{
+			if (KillFeedRows.IsValidIndex(i) && KillFeedRows[i])
+			{
+				KillFeedRows[i]->RemoveFromParent();
+			}
+			KillFeedRows.RemoveAt(i);
+			KillFeedTimers.RemoveAt(i);
+		}
+		else if (KillFeedRows.IsValidIndex(i) && KillFeedRows[i])
+		{
+			const float Alpha = KillFeedTimers[i] < FeedFadeStart
+				? KillFeedTimers[i] / FeedFadeStart
+				: 1.0f;
+			KillFeedRows[i]->SetRenderOpacity(Alpha);
+		}
+	}
+
+	// Fade the personal notification.
+	if (KillNotifTimeRemaining > 0.0f && KillNotifText)
+	{
+		KillNotifTimeRemaining -= DeltaTime;
+		if (KillNotifTimeRemaining <= 0.0f)
+		{
+			KillNotifText->SetVisibility(ESlateVisibility::Hidden);
+		}
+		else
+		{
+			static constexpr float NotifFadeStart = 0.8f;
+			const float Alpha = KillNotifTimeRemaining < NotifFadeStart
+				? KillNotifTimeRemaining / NotifFadeStart
+				: 1.0f;
+			KillNotifText->SetRenderOpacity(Alpha);
+		}
+	}
+}
+
+void UProjectCompHUDWidget::AddKillFeedEntry(const FString& KillerName, const FString& VictimName, ETeamID KillerTeam, ETeamID VictimTeam)
+{
+	if (!KillFeedBox)
+	{
+		return;
+	}
+
+	// Is the local player the killer or the victim?
+	const AProjectCompPlayerState* LocalPS = GetLocalPlayerState();
+	const FString LocalName = LocalPS ? LocalPS->GetPlayerName() : TEXT("");
+	const bool bLocalKilled = !LocalName.IsEmpty() && KillerName == LocalName;
+	const bool bLocalDied   = !LocalName.IsEmpty() && VictimName == LocalName;
+
+	// Cap at 6 rows — evict the oldest (top of the list).
+	static constexpr int32 MaxEntries = 6;
+	while (KillFeedTimers.Num() >= MaxEntries)
+	{
+		if (KillFeedRows.Num() > 0 && KillFeedRows[0])
+		{
+			KillFeedRows[0]->RemoveFromParent();
+			KillFeedRows.RemoveAt(0);
+		}
+		if (KillFeedTimers.Num() > 0)
+		{
+			KillFeedTimers.RemoveAt(0);
+		}
+	}
+
+	// Build the row: [KillerName]  >  [VictimName]
+	UHorizontalBox* Row = NewObject<UHorizontalBox>(this);
+
+	auto AppendText = [&](const FString& Str, FLinearColor Color)
+	{
+		UTextBlock* Txt = NewObject<UTextBlock>(this);
+		Txt->SetText(FText::FromString(Str));
+		Txt->SetFont(MakeFont(16));
+		Txt->SetColorAndOpacity(Color);
+		ApplyTextShadow(Txt);
+		UHorizontalBoxSlot* S = Row->AddChildToHorizontalBox(Txt);
+		S->SetVerticalAlignment(VAlign_Center);
+	};
+
+	AppendText(KillerName,  GetTeamColor(KillerTeam));
+	AppendText(TEXT("  >  "), LabelTextColor);
+	AppendText(VictimName,  GetTeamColor(VictimTeam));
+
+	// Rows that involve the local player start fully opaque; others at 80%
+	// so self-relevant entries pop slightly from the rest of the feed.
+	Row->SetRenderOpacity((bLocalKilled || bLocalDied) ? 1.0f : 0.80f);
+
+	UVerticalBoxSlot* RowSlot = KillFeedBox->AddChildToVerticalBox(Row);
+	RowSlot->SetPadding(FMargin(0.0f, 2.0f));
+
+	KillFeedRows.Add(Row);
+	KillFeedTimers.Add(5.0f);
+
+	// Personal notification — only for the local player.
+	if (KillNotifText)
+	{
+		if (bLocalKilled)
+		{
+			KillNotifText->SetText(FText::FromString(FString::Printf(TEXT("YOU KILLED  %s"), *VictimName)));
+			KillNotifText->SetColorAndOpacity(KillNotifColor);
+			KillNotifText->SetVisibility(ESlateVisibility::HitTestInvisible);
+			KillNotifText->SetRenderOpacity(1.0f);
+			KillNotifTimeRemaining = 2.5f;
+		}
+		else if (bLocalDied)
+		{
+			KillNotifText->SetText(FText::FromString(FString::Printf(TEXT("KILLED BY  %s"), *KillerName)));
+			KillNotifText->SetColorAndOpacity(EliminatedTextColor);
+			KillNotifText->SetVisibility(ESlateVisibility::HitTestInvisible);
+			KillNotifText->SetRenderOpacity(1.0f);
+			KillNotifTimeRemaining = 2.5f;
+		}
+	}
 }
 
 // =====================================================================

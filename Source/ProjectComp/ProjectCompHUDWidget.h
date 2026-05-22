@@ -71,6 +71,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Colors")
 	FLinearColor EliminatedTextColor = FLinearColor(0.95f, 0.30f, 0.28f, 1.0f);
 
+	/** Color for "YOU KILLED [Name]" personal notification. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Colors")
+	FLinearColor KillNotifColor = FLinearColor(1.0f, 0.85f, 0.20f, 1.0f);
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Layout")
 	float TopBarTopMargin = 30.0f;
 
@@ -129,6 +133,29 @@ protected:
 	UPROPERTY() TObjectPtr<UVerticalBox> BombStatusBox;
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusSubtitle;
+
+	// ---- Kill feed (top-right) + personal notification (bottom-center) ------
+
+	/** Vertical container holding kill feed rows. */
+	UPROPERTY() TObjectPtr<UVerticalBox> KillFeedBox;
+
+	/** Bottom-center "YOU KILLED / KILLED BY" flash. */
+	UPROPERTY() TObjectPtr<UTextBlock> KillNotifText;
+
+	/** Live kill-feed rows (parallel to KillFeedTimers). UPROPERTY keeps GC safe. */
+	UPROPERTY() TArray<TObjectPtr<UHorizontalBox>> KillFeedRows;
+
+	/** Remaining display time (seconds) for each row, mirroring KillFeedRows. */
+	TArray<float> KillFeedTimers;
+
+	/** Remaining display time for the personal kill/death notification. */
+	float KillNotifTimeRemaining = 0.0f;
+
+	/** Consume pending events from GameState and advance fade timers. */
+	void UpdateKillFeed(float DeltaTime);
+
+	/** Build and insert one row into the kill feed. */
+	void AddKillFeedEntry(const FString& KillerName, const FString& VictimName, ETeamID KillerTeam, ETeamID VictimTeam);
 
 	// ---- State accessors (null-safe traversal) ---------------------------
 
