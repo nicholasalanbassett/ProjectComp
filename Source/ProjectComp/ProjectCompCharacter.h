@@ -213,6 +213,14 @@ protected:
 	/** Server-only: tracked Use-key state for plant/defuse interactions. */
 	bool bUseHeld = false;
 
+	/** Walk speed defaults cached in BeginPlay. Restored when Use is released. */
+	float DefaultMaxWalkSpeed = 560.0f;
+	float DefaultMaxWalkSpeedCrouched = 250.0f;
+
+	/** True if the player was already crouching when they began interacting (plant/defuse).
+	 *  If so, DoUseEnd does not uncrouch — the crouch belongs to the player, not the interaction. */
+	bool bWasCrouchingBeforeInteract = false;
+
 	/**
 	 * Per-client mesh visibility refresh. Runs on every client (including listen
 	 * server) on a 0.1s timer. When this character is dead (looming), hide the

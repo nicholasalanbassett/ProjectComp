@@ -126,11 +126,8 @@ void AProjectCompBombSite::TickPlanting(float DeltaTime)
 	}
 	else if (PlantProgress > 0.0f)
 	{
-		// No active planter — bleed back to 0 so a momentary interrupt
-		// doesn't waste all the player's effort. Faster decay than buildup
-		// so a 4s plant resets in ~1s if abandoned.
-		const float Decay = DeltaTime / (PlantDuration * 0.25f);
-		PlantProgress = FMath::Max(PlantProgress - Decay, 0.0f);
+		// No active planter — reset immediately. Players must hold the full duration without releasing.
+		PlantProgress = 0.0f;
 	}
 }
 
@@ -150,8 +147,8 @@ void AProjectCompBombSite::TickDefusing(float DeltaTime)
 	}
 	else if (DefuseProgress > 0.0f)
 	{
-		const float Decay = DeltaTime / (DefuseDuration * 0.25f);
-		DefuseProgress = FMath::Max(DefuseProgress - Decay, 0.0f);
+		// No active defuser — reset immediately. Players must hold the full duration without releasing.
+		DefuseProgress = 0.0f;
 	}
 }
 

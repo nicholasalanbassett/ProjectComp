@@ -46,9 +46,9 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "1.0"))
 	float HeadDamageMultiplier = 4.0f;
 
-	/** Maximum trace range in cm. */
+	/** Maximum trace range in cm. Map diagonal is ~6800 cm; 10000 gives full coverage plus buffer. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.0"))
-	float MaxRange = 5000.0f;
+	float MaxRange = 10000.0f;
 
 	/** Skeletal bone name treated as a head hit for damage multiplier. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")

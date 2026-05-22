@@ -144,4 +144,7 @@ protected:
 
 	/** Update BombStatusBox text/visibility from any active bomb site in the world. */
 	void RefreshBombStatus();
+
+	/** Server time at which the "BOMB DEFUSED" banner should stop showing. 0 = inactive. */
+	float DefuseMessageEndTime = 0.0f;
 };

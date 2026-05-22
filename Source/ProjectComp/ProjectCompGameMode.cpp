@@ -659,14 +659,6 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		return;
 	}
 
-	// While a bomb is planted, elimination doesn't end the round — bomb
-	// detonation/defuse is the only resolution path. (Attackers can all die
-	// after planting and still win via detonation if no defender defuses.)
-	if (IsAnyBombPlanted())
-	{
-		return;
-	}
-
 	int32 AttackerTotal = 0, AttackerPermaGhost = 0;
 	int32 DefenderTotal = 0, DefenderPermaGhost = 0;
 
@@ -689,9 +681,37 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		}
 	}
 
-	// Elimination (no bomb mechanic yet, so any full-team-out is a 1-point elim).
-	// When the bomb system lands, plant state takes precedence over elimination scoring.
-	if (AttackerTotal > 0 && AttackerPermaGhost == AttackerTotal)
+	const bool bAllAttackersDead = AttackerTotal > 0 && AttackerPermaGhost == AttackerTotal;
+	const bool bAllDefendersDead = DefenderTotal > 0 && DefenderPermaGhost == DefenderTotal;
+
+	if (IsAnyBombPlanted())
+	{
+		// Bomb planted: attackers win immediately if all defenders are eliminated
+		// (nobody left to defuse — detonation is inevitable). Defenders killing all
+		// attackers does NOT end the round — they must still defuse or lose to the timer.
+		if (bAllDefendersDead)
+		{
+			// Score as if the bomb detonated — find the planted site for PointValue.
+			for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+			{
+				if (It->bIsPlanted && !It->IsTerminal())
+				{
+					GS->Server_AddTeamScore(ETeamID::Attackers, It->PointValue);
+					UE_LOG(LogProjectComp, Log,
+						TEXT("Round %d: Defenders eliminated with bomb planted at %s. Attackers +%d (now %d)."),
+						GS->GetCurrentRound(), *It->Label.ToString(),
+						It->PointValue, GS->GetTeamLoadout(ETeamID::Attackers).Score);
+					StartPostRound();
+					return;
+				}
+			}
+		}
+		// All attackers dead but bomb still ticking — defenders must defuse; no round-end.
+		return;
+	}
+
+	// No bomb planted: standard elimination — full team permanently dead = opponent wins 1 pt.
+	if (bAllAttackersDead)
 	{
 		GS->Server_AddTeamScore(ETeamID::Defenders, 1);
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Attackers eliminated. Defenders +1 (now %d)."),
@@ -699,7 +719,7 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 			GS->GetTeamLoadout(ETeamID::Defenders).Score);
 		StartPostRound();
 	}
-	else if (DefenderTotal > 0 && DefenderPermaGhost == DefenderTotal)
+	else if (bAllDefendersDead)
 	{
 		GS->Server_AddTeamScore(ETeamID::Attackers, 1);
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Defenders eliminated. Attackers +1 (now %d)."),

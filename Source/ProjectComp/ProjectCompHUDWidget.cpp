@@ -385,6 +385,43 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 		return;
 	}
 
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+
+	// Check for a freshly-defused site and start the 3s banner timer.
+	bool bAnyDefused = false;
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		AProjectCompBombSite* Site = *It;
+		if (Site && Site->bIsDefused)
+		{
+			bAnyDefused = true;
+			if (DefuseMessageEndTime == 0.0f)
+			{
+				DefuseMessageEndTime = Now + 3.0f;
+			}
+			break;
+		}
+	}
+	if (!bAnyDefused)
+	{
+		DefuseMessageEndTime = 0.0f;
+	}
+
+	if (DefuseMessageEndTime > 0.0f && Now < DefuseMessageEndTime)
+	{
+		BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		if (BombStatusTitle)
+		{
+			BombStatusTitle->SetText(NSLOCTEXT("HUD", "BombDefused", "BOMB DEFUSED"));
+			BombStatusTitle->SetColorAndOpacity(DefendersColor);
+		}
+		if (BombStatusSubtitle)
+		{
+			BombStatusSubtitle->SetText(FText::GetEmpty());
+		}
+		return;
+	}
+
 	// Find the most-interesting bomb site to display. Priority: planted >
 	// active plant > active defuse > nothing. We only show one at a time.
 	AProjectCompBombSite* DisplaySite = nullptr;

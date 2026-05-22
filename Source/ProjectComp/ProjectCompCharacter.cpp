@@ -333,17 +333,51 @@ void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
 
 void AProjectCompCharacter::DoUseStart()
 {
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        // Remember whether the player chose to crouch independently so DoUseEnd
+        // knows whether to uncrouch on release.
+        bWasCrouchingBeforeInteract = CharMov->bWantsToCrouch;
+
+        CharMov->MaxWalkSpeed = 0.0f;
+        CharMov->MaxWalkSpeedCrouched = 0.0f;
+        CharMov->bWantsToCrouch = true;
+    }
     Server_SetUseHeld(true);
 }
 
 void AProjectCompCharacter::DoUseEnd()
 {
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        CharMov->MaxWalkSpeed = DefaultMaxWalkSpeed;
+        CharMov->MaxWalkSpeedCrouched = DefaultMaxWalkSpeedCrouched;
+        // Only uncrouch if the crouch was forced by the interaction, not by the
+        // player holding Ctrl before or during the interaction.
+        if (!bWasCrouchingBeforeInteract)
+        {
+            CharMov->bWantsToCrouch = false;
+        }
+    }
     Server_SetUseHeld(false);
 }
 
 void AProjectCompCharacter::Server_SetUseHeld_Implementation(bool bHeld)
 {
     bUseHeld = bHeld;
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        CharMov->MaxWalkSpeed = bHeld ? 0.0f : DefaultMaxWalkSpeed;
+        CharMov->MaxWalkSpeedCrouched = bHeld ? 0.0f : DefaultMaxWalkSpeedCrouched;
+        if (bHeld)
+        {
+            CharMov->bWantsToCrouch = true;
+        }
+        else if (!bWasCrouchingBeforeInteract)
+        {
+            CharMov->bWantsToCrouch = false;
+        }
+    }
 }
 
 // Spawn the default weapon for newly-possessed characters on the server.
@@ -396,6 +430,12 @@ void AProjectCompCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 void AProjectCompCharacter::BeginPlay()
 {
     Super::BeginPlay();
+
+    if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
+    {
+        DefaultMaxWalkSpeed = CharMov->MaxWalkSpeed;
+        DefaultMaxWalkSpeedCrouched = CharMov->MaxWalkSpeedCrouched;
+    }
 
     if (UCapsuleComponent* Capsule = GetCapsuleComponent())
     {
