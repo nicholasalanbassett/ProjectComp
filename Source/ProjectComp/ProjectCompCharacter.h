@@ -195,6 +195,14 @@ public:
 	/** Server: true while the Use key is currently held. Polled by ABombSite for plant/defuse. */
 	bool IsUseHeld() const { return bUseHeld; }
 
+	/**
+	 * Server → owning client: apply one shot's recoil kick and configure recovery.
+	 * PitchKick > 0 = camera kicks up (degrees). YawKick > 0 = kicks right.
+	 * Camera auto-recovers at RecoveryRate deg/s after RecoveryDelay seconds.
+	 */
+	UFUNCTION(Client, Reliable)
+	void Client_ApplyRecoilKick(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay);
+
 protected:
 
 	/** Local-only movement state — anim BP reads it via the getter; not replicated. */
@@ -216,6 +224,14 @@ protected:
 	/** Walk speed defaults cached in BeginPlay. Restored when Use is released. */
 	float DefaultMaxWalkSpeed = 560.0f;
 	float DefaultMaxWalkSpeedCrouched = 250.0f;
+
+	// ---- Recoil recovery (owning client only) ------------------------------
+	// Tracks how many degrees of recoil have been applied to the control rotation
+	// and still need to be recovered. Positive pitch = camera was kicked up.
+	float AccumulatedRecoilPitch = 0.0f;
+	float AccumulatedRecoilYaw = 0.0f;
+	float RecoilRecoveryRate = 12.0f;     // Set by weapon on each kick.
+	float TimeUntilRecoilRecovery = 0.0f; // Countdown before recovery starts.
 
 	/** True if the player was already crouching when they began interacting (plant/defuse).
 	 *  If so, DoUseEnd does not uncrouch — the crouch belongs to the player, not the interaction. */

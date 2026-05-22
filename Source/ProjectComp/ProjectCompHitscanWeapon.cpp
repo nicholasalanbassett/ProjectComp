@@ -7,7 +7,9 @@
 #include "Camera/CameraComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/World.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "Net/UnrealNetwork.h"
 
 AProjectCompHitscanWeapon::AProjectCompHitscanWeapon()
 {
@@ -18,6 +20,29 @@ AProjectCompHitscanWeapon::AProjectCompHitscanWeapon()
 	bReplicates = true;
 
 	// No mesh / visual on the MVP weapon. Added later when art exists.
+
+	// Default spray pattern (degrees): X = pitch up, Y = yaw deviation.
+	// Phantom-like: steady vertical climb with light left/right alternation.
+	// Override per weapon in BP defaults.
+	RecoilPattern = {
+		{ 0.50f,  0.00f },
+		{ 0.80f,  0.05f },
+		{ 0.90f, -0.10f },
+		{ 0.85f,  0.15f },
+		{ 0.80f, -0.20f },
+		{ 0.75f,  0.20f },
+		{ 0.70f, -0.15f },
+		{ 0.65f,  0.10f },
+		{ 0.60f, -0.05f },
+		{ 0.55f,  0.05f },
+	};
+}
+
+void AProjectCompHitscanWeapon::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	// Owner-only: only the firer needs their own spread value for HUD display.
+	DOREPLIFETIME_CONDITION(AProjectCompHitscanWeapon, CurrentSpread, COND_OwnerOnly);
 }
 
 void AProjectCompHitscanWeapon::BeginPlay()
@@ -44,9 +69,21 @@ void AProjectCompHitscanWeapon::Tick(float DeltaTime)
 		// Cap accumulation while trigger is released so we don't bank infinite
 		// shots; one frame of "ready" is enough for an instant first shot.
 		TimeSinceLastShot = FMath::Min(TimeSinceLastShot + DeltaTime, FireInterval);
+
+		// Spread decays back to zero while idle.
+		CurrentSpread = FMath::Max(0.0f, CurrentSpread - SpreadRecoveryRate * DeltaTime);
+
+		// After prolonged idle the spray pattern resets so the next burst starts
+		// from index 0 (tight, predictable first shot).
+		ShotIdleTime += DeltaTime;
+		if (ShotIdleTime >= RecoilPatternResetDelay)
+		{
+			RecoilPatternIndex = 0;
+		}
 		return;
 	}
 
+	ShotIdleTime = 0.0f;
 	TimeSinceLastShot += DeltaTime;
 
 	// Tickrate-independent fire loop, bounded by MaxShotsPerTick to defeat
@@ -71,7 +108,7 @@ void AProjectCompHitscanWeapon::Server_SetTriggerHeld(bool bHeld)
 
 void AProjectCompHitscanWeapon::FireOneShot()
 {
-	const AProjectCompCharacter* OwnerChar = GetOwningCharacter();
+	AProjectCompCharacter* OwnerChar = GetOwningCharacter();
 	if (!OwnerChar)
 	{
 		return;
@@ -99,7 +136,14 @@ void AProjectCompHitscanWeapon::FireOneShot()
 	// Aim direction: control rotation forward (replicates to server every move).
 	const FRotator AimRot = OwnerController->GetControlRotation();
 	const FVector TraceDir = AimRot.Vector();
-	const FVector TraceEnd = TraceStart + TraceDir * MaxRange;
+
+	// Apply spread: randomly deviate the bullet within a cone whose half-angle is
+	// determined by movement state, accumulated fire spread, and stance.
+	const float TotalSpread = CalcTotalSpread(OwnerChar);
+	const FVector ShotDir = TotalSpread > 0.0f
+		? FMath::VRandCone(TraceDir, FMath::DegreesToRadians(TotalSpread))
+		: TraceDir;
+	const FVector TraceEnd = TraceStart + ShotDir * MaxRange;
 
 	// Trace.
 	FHitResult Hit;
@@ -113,14 +157,56 @@ void AProjectCompHitscanWeapon::FireOneShot()
 		const bool bIsHeadshot = (Hit.BoneName == HeadBoneName);
 		const float Damage = bIsHeadshot ? BodyDamage * HeadDamageMultiplier : BodyDamage;
 
-		FPointDamageEvent DamageEvent(Damage, Hit, -TraceDir, /*DamageTypeClass*/ nullptr);
+		FPointDamageEvent DamageEvent(Damage, Hit, -ShotDir, /*DamageTypeClass*/ nullptr);
 		Hit.GetActor()->TakeDamage(Damage, DamageEvent, OwnerController, this);
+	}
+
+	// Accumulate spread for the next shot (decays in Tick when not firing).
+	CurrentSpread = FMath::Min(CurrentSpread + SpreadPerShot, MaxSpread);
+
+	// Recoil: kick the owning client's camera along the deterministic spray pattern.
+	if (RecoilPattern.Num() > 0)
+	{
+		const int32 Idx = FMath::Min(RecoilPatternIndex, RecoilPattern.Num() - 1);
+		const FVector2D& Kick = RecoilPattern[Idx];
+		RecoilPatternIndex = FMath::Min(RecoilPatternIndex + 1, RecoilPattern.Num() - 1);
+
+		OwnerChar->Client_ApplyRecoilKick(Kick.X, Kick.Y, RecoilRecoveryRate, RecoilRecoveryDelay);
 	}
 
 	// Cosmetic broadcast to all clients (including the firer for now — no
 	// client-side prediction in this MVP).
 	const FVector EndLoc = bDidHit ? Hit.ImpactPoint : TraceEnd;
 	Multicast_OnFired(TraceStart, EndLoc, bDidHit);
+}
+
+float AProjectCompHitscanWeapon::CalcTotalSpread(const AProjectCompCharacter* Char) const
+{
+	if (!Char)
+	{
+		return BaseSpreadDegrees;
+	}
+
+	float Spread = BaseSpreadDegrees + CurrentSpread;
+
+	const UCharacterMovementComponent* CharMov = Char->GetCharacterMovement();
+	if (CharMov && CharMov->IsFalling())
+	{
+		Spread += AirSpreadAdd;
+	}
+	else if (Char->GetVelocity().SizeSquared2D() > FMath::Square(MoveSpeedThreshold))
+	{
+		const float MaxSpeed = CharMov ? CharMov->MaxWalkSpeed : 560.0f;
+		const float SpeedFrac = FMath::Clamp(Char->GetVelocity().Size2D() / MaxSpeed, 0.0f, 1.0f);
+		Spread += MovingSpreadAdd * SpeedFrac;
+	}
+
+	if (Char->bIsCrouched)
+	{
+		Spread *= CrouchSpreadMult;
+	}
+
+	return FMath::Min(Spread, MaxSpread);
 }
 
 void AProjectCompHitscanWeapon::Multicast_OnFired_Implementation(FVector StartLoc, FVector EndLoc, bool bHit)

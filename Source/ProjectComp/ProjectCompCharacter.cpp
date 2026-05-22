@@ -323,6 +323,31 @@ void AProjectCompCharacter::DoFireEnd()
     Server_SetTriggerHeld(false);
 }
 
+void AProjectCompCharacter::Client_ApplyRecoilKick_Implementation(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay)
+{
+	APlayerController* PC = GetController<APlayerController>();
+	if (!PC)
+	{
+		return;
+	}
+
+	// Apply the kick directly to the control rotation.
+	// UE control pitch: positive = look down, negative = look up.
+	// So PitchKick > 0 should push the camera up → subtract from pitch.
+	FRotator Rot = PC->GetControlRotation();
+	Rot.Pitch -= PitchKick;
+	Rot.Yaw   += YawKick;
+	PC->SetControlRotation(Rot);
+
+	AccumulatedRecoilPitch += PitchKick;
+	AccumulatedRecoilYaw   += YawKick;
+	RecoilRecoveryRate      = RecoveryRate;
+	TimeUntilRecoilRecovery = RecoveryDelay;
+
+	// Wake tick to run the recovery loop.
+	SetActorTickEnabled(true);
+}
+
 void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
 {
     if (CurrentWeapon)
@@ -525,15 +550,15 @@ void AProjectCompCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalf
     UpdateAnimationState();
 }
 
-// Eases the camera between standing and crouched eye height. Active only
-// during the transition (~0.2s) — disables itself when CrouchVisualAlpha
-// reaches the target.
+// Drives two active transitions: crouch camera ease and recoil recovery.
+// Tick is only enabled when at least one is in progress; both disable tick
+// when they settle so idle characters pay zero per-frame cost.
 //
-// The "EngineOffset - VisualOffset" trick: the engine snaps the actor up/down
-// by CachedCrouchHalfHeightDiff the instant crouch toggles. We undo that snap
-// on the camera, then re-apply it gradually as CrouchVisualAlpha catches up.
-// When the two are equal the offsets cancel and the camera sits at its
-// natural StandingCameraZ relative to whatever capsule center the engine has.
+// Crouch: the engine snaps the capsule instantly for accurate hit-reg; we
+// undo that snap on the camera and re-apply it gradually so the view eases.
+//
+// Recoil: each shot applies a rotation kick to ControlRotation; this loop
+// slowly reverses it after a short delay, matching Valorant's auto-recovery.
 void AProjectCompCharacter::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
@@ -543,11 +568,18 @@ void AProjectCompCharacter::Tick(float DeltaTime)
         return;
     }
 
+    bool bTickStillNeeded = false;
+
+    // ---- Crouch camera transition -----------------------------------------
     CrouchVisualAlpha = FMath::FInterpTo(CrouchVisualAlpha, TargetCrouchAlpha, DeltaTime, CrouchInterpSpeed);
-    const bool bAtRest = FMath::IsNearlyEqual(CrouchVisualAlpha, TargetCrouchAlpha, 0.001f);
-    if (bAtRest)
+    const bool bCrouchAtRest = FMath::IsNearlyEqual(CrouchVisualAlpha, TargetCrouchAlpha, 0.001f);
+    if (bCrouchAtRest)
     {
         CrouchVisualAlpha = TargetCrouchAlpha;
+    }
+    else
+    {
+        bTickStillNeeded = true;
     }
 
     const float EngineOffset = bIsCrouched ? CachedCrouchHalfHeightDiff : 0.0f;
@@ -557,7 +589,43 @@ void AProjectCompCharacter::Tick(float DeltaTime)
     Loc.Z = StandingCameraZ + EngineOffset - VisualOffset;
     FirstPersonCameraComponent->SetRelativeLocation(Loc);
 
-    if (bAtRest)
+    // ---- Recoil recovery (owning client only) -----------------------------
+    const bool bHasRecoil = !FMath::IsNearlyZero(AccumulatedRecoilPitch, 0.01f)
+                          || !FMath::IsNearlyZero(AccumulatedRecoilYaw, 0.01f);
+    if (IsLocallyControlled() && bHasRecoil)
+    {
+        TimeUntilRecoilRecovery = FMath::Max(0.0f, TimeUntilRecoilRecovery - DeltaTime);
+        if (TimeUntilRecoilRecovery <= 0.0f)
+        {
+            if (APlayerController* PC = GetController<APlayerController>())
+            {
+                const float RecoverThisFrame = RecoilRecoveryRate * DeltaTime;
+                FRotator Rot = PC->GetControlRotation();
+
+                // Pitch: we subtracted PitchKick from Rot.Pitch on kick, so
+                // recover by adding back proportional amounts each frame.
+                const float PitchRecover = FMath::Min(RecoverThisFrame, FMath::Abs(AccumulatedRecoilPitch));
+                Rot.Pitch += FMath::Sign(AccumulatedRecoilPitch) * PitchRecover;
+                AccumulatedRecoilPitch -= FMath::Sign(AccumulatedRecoilPitch) * PitchRecover;
+
+                // Yaw: we added YawKick, so recover by subtracting.
+                const float YawRecover = FMath::Min(RecoverThisFrame, FMath::Abs(AccumulatedRecoilYaw));
+                Rot.Yaw -= FMath::Sign(AccumulatedRecoilYaw) * YawRecover;
+                AccumulatedRecoilYaw -= FMath::Sign(AccumulatedRecoilYaw) * YawRecover;
+
+                PC->SetControlRotation(Rot);
+            }
+        }
+        bTickStillNeeded = true;
+    }
+    else if (IsLocallyControlled())
+    {
+        // Snap sub-threshold residual to zero so the loop terminates cleanly.
+        AccumulatedRecoilPitch = 0.0f;
+        AccumulatedRecoilYaw   = 0.0f;
+    }
+
+    if (!bTickStillNeeded)
     {
         SetActorTickEnabled(false);
     }
