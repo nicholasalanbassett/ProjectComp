@@ -35,6 +35,13 @@ void AProjectCompGameMode::StartPlay()
 {
 	Super::StartPlay();
 
+	// Build the bomb-site cache once; level-placed sites don't change at runtime.
+	CachedBombSites.Reset();
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		CachedBombSites.Add(*It);
+	}
+
 	// Begin the match at round 1 with a PreRound phase.
 	if (AProjectCompGameState* GS = GetTypedGameState())
 	{
@@ -51,6 +58,21 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	if (!GS)
 	{
 		return;
+	}
+
+	// Lag-compensation: push a transform snapshot onto every character's ring buffer
+	// once per server tick. The ring depth (~500ms) covers worst-case competitive
+	// RTT plus interp delay. Cheap — one struct copy per character per tick.
+	if (UWorld* World = GetWorld())
+	{
+		const float Now = World->GetTimeSeconds();
+		for (TActorIterator<AProjectCompCharacter> It(World); It; ++It)
+		{
+			if (AProjectCompCharacter* Char = *It)
+			{
+				Char->Server_RecordTransformSnapshot(Now);
+			}
+		}
 	}
 
 	// Countdown active phase.
@@ -552,9 +574,10 @@ void AProjectCompGameMode::Server_SetAllBarriersActive(bool bActive)
 
 bool AProjectCompGameMode::IsAnyBombPlanted() const
 {
-	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
-		if (It->bIsPlanted && !It->IsTerminal())
+		const AProjectCompBombSite* Site = WeakSite.Get();
+		if (Site && Site->bIsPlanted && !Site->IsTerminal())
 		{
 			return true;
 		}
@@ -564,11 +587,12 @@ bool AProjectCompGameMode::IsAnyBombPlanted() const
 
 AProjectCompBombSite* AProjectCompGameMode::GetTerminalBombSite() const
 {
-	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
-		if (It->IsTerminal())
+		AProjectCompBombSite* Site = WeakSite.Get();
+		if (Site && Site->IsTerminal())
 		{
-			return *It;
+			return Site;
 		}
 	}
 	return nullptr;
@@ -602,9 +626,12 @@ void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
 
 void AProjectCompGameMode::Server_ResetAllBombSites()
 {
-	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
-		It->Server_ResetForNewRound();
+		if (AProjectCompBombSite* Site = WeakSite.Get())
+		{
+			Site->Server_ResetForNewRound();
+		}
 	}
 }
 
@@ -692,15 +719,16 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		if (bAllDefendersDead)
 		{
 			// Score as if the bomb detonated — find the planted site for PointValue.
-			for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+			for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 			{
-				if (It->bIsPlanted && !It->IsTerminal())
+				AProjectCompBombSite* Site = WeakSite.Get();
+				if (Site && Site->bIsPlanted && !Site->IsTerminal())
 				{
-					GS->Server_AddTeamScore(ETeamID::Attackers, It->PointValue);
+					GS->Server_AddTeamScore(ETeamID::Attackers, Site->PointValue);
 					UE_LOG(LogProjectComp, Log,
 						TEXT("Round %d: Defenders eliminated with bomb planted at %s. Attackers +%d (now %d)."),
-						GS->GetCurrentRound(), *It->Label.ToString(),
-						It->PointValue, GS->GetTeamLoadout(ETeamID::Attackers).Score);
+						GS->GetCurrentRound(), *Site->Label.ToString(),
+						Site->PointValue, GS->GetTeamLoadout(ETeamID::Attackers).Score);
 					StartPostRound();
 					return;
 				}
@@ -858,7 +886,7 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 	{
 		if (UCapsuleComponent* Capsule = DeadPawn->FindComponentByClass<UCapsuleComponent>())
 		{
-			Capsule->SetCollisionObjectType(ECC_GameTraceChannel2);  // DeadPawn channel
+			Capsule->SetCollisionObjectType(ECC_DeadPawn);
 			Capsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 			Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		}

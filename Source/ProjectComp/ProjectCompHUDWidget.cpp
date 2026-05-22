@@ -50,7 +50,24 @@ void UProjectCompHUDWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 	BuildLayout();
+	CacheBombSites();
 	RefreshDisplay();
+}
+
+void UProjectCompHUDWidget::CacheBombSites()
+{
+	CachedBombSites.Reset();
+	if (!GetWorld())
+	{
+		return;
+	}
+	// Bomb sites are level-placed and never spawn at runtime — one walk on init
+	// is enough. If level streaming ever spawns sites mid-match, this needs
+	// converting to a delegate or rebuild on phase change.
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		CachedBombSites.Add(*It);
+	}
 }
 
 void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
@@ -550,9 +567,9 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 
 	// Check for a freshly-defused site and start the 3s banner timer.
 	bool bAnyDefused = false;
-	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
-		AProjectCompBombSite* Site = *It;
+		AProjectCompBombSite* Site = WeakSite.Get();
 		if (Site && Site->bIsDefused)
 		{
 			bAnyDefused = true;
@@ -587,9 +604,9 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 	// active plant > active defuse > nothing. We only show one at a time.
 	AProjectCompBombSite* DisplaySite = nullptr;
 	bool bShowDefuse = false;
-	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
-		AProjectCompBombSite* Site = *It;
+		AProjectCompBombSite* Site = WeakSite.Get();
 		if (!Site || Site->IsTerminal())
 		{
 			continue;

@@ -36,16 +36,16 @@ public:
 	// ---- Accessors --------------------------------------------------------
 
 	UFUNCTION(BlueprintPure, Category = "Health")
-	float GetCurrentHealth() const { return CurrentHealth; }
+	float GetCurrentHealth() const { return static_cast<float>(CurrentHealth); }
 
 	UFUNCTION(BlueprintPure, Category = "Health")
 	float GetMaxHealth() const { return MaxHealth; }
 
 	UFUNCTION(BlueprintPure, Category = "Health")
-	float GetHealthFraction() const { return MaxHealth > 0.0f ? CurrentHealth / MaxHealth : 0.0f; }
+	float GetHealthFraction() const { return MaxHealth > 0.0f ? static_cast<float>(CurrentHealth) / MaxHealth : 0.0f; }
 
 	UFUNCTION(BlueprintPure, Category = "Health")
-	bool IsDead() const { return CurrentHealth <= 0.0f; }
+	bool IsDead() const { return CurrentHealth == 0; }
 
 	// ---- Server-only mutators --------------------------------------------
 
@@ -72,12 +72,14 @@ public:
 
 protected:
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "1.0"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Health", meta = (ClampMin = "1.0", ClampMax = "255.0"))
 	float MaxHealth = 100.0f;
 
+	/** Replicated as uint8 — health is 0..255 in this game. Saves 24 bits per
+	 *  update vs. float and removes sub-integer precision noise from damage rounding. */
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth, BlueprintReadOnly, Category = "Health")
-	float CurrentHealth = 100.0f;
+	uint8 CurrentHealth = 100;
 
 	UFUNCTION()
-	void OnRep_CurrentHealth(float OldHealth);
+	void OnRep_CurrentHealth(uint8 OldHealth);
 };

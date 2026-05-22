@@ -33,7 +33,13 @@ public:
 	int32 GetCurrentRound() const { return CurrentRound; }
 
 	UFUNCTION(BlueprintPure, Category = "Round State")
-	float GetPhaseTimeRemaining() const { return PhaseTimeRemaining; }
+	float GetPhaseTimeRemaining() const
+	{
+		// Server holds the authoritative float so per-tick decrements smaller than
+		// the 0.1s quantum still accumulate. Clients only have the uint16 wire value.
+		return HasAuthority() ? PhaseTimeRemainingServerFloat
+		                      : static_cast<float>(PhaseTimeRemainingDs) * 0.1f;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Round State")
 	FTeamLoadout GetTeamLoadout(ETeamID Team) const;
@@ -83,9 +89,18 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
 	int32 CurrentRound = 0;
 
-	/** Server-driven countdown; ticked by GameMode. Clients read the replicated snapshot. */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
-	float PhaseTimeRemaining = 0.0f;
+	/** Server-driven countdown in deciseconds (0.1s units). Replicated as uint16
+	 *  — 16 bits vs. 32 for a float, with plenty of range (up to ~109 minutes).
+	 *  Mutators take float seconds; the BlueprintPure getter converts back to float.
+	 *  Not BlueprintReadOnly because uint16 isn't a BP-exposable type — use
+	 *  GetPhaseTimeRemaining() instead. */
+	UPROPERTY(Replicated)
+	uint16 PhaseTimeRemainingDs = 0;
+
+	/** Server-only authoritative countdown in seconds. Holds the precise float so
+	 *  per-tick subtractions smaller than the 0.1s quantum still accumulate. Not
+	 *  replicated — clients read the quantized uint16 above. */
+	float PhaseTimeRemainingServerFloat = 0.0f;
 
 	/** Two-element array (size 2): index 0 = Attackers, index 1 = Defenders. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")

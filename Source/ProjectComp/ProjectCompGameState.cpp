@@ -19,7 +19,7 @@ void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 
 	DOREPLIFETIME(AProjectCompGameState, CurrentPhase);
 	DOREPLIFETIME(AProjectCompGameState, CurrentRound);
-	DOREPLIFETIME(AProjectCompGameState, PhaseTimeRemaining);
+	DOREPLIFETIME(AProjectCompGameState, PhaseTimeRemainingDs);
 	DOREPLIFETIME(AProjectCompGameState, Teams);
 }
 
@@ -62,7 +62,11 @@ void AProjectCompGameState::Server_SetRound(int32 NewRound)
 void AProjectCompGameState::Server_SetPhaseTimeRemaining(float NewTime)
 {
 	if (!ensure(HasAuthority())) return;
-	PhaseTimeRemaining = NewTime;
+	// Server keeps the precise float so countdown math doesn't snap to deciseconds
+	// each tick; clients only get the uint16 wire value.
+	const float Clamped = FMath::Clamp(NewTime, 0.0f, 6553.5f);
+	PhaseTimeRemainingServerFloat = Clamped;
+	PhaseTimeRemainingDs = static_cast<uint16>(FMath::RoundToInt(Clamped * 10.0f));
 }
 
 void AProjectCompGameState::Server_SetTeamLoadout(ETeamID Team, const FTeamLoadout& NewLoadout)

@@ -15,6 +15,8 @@
 #include "ProjectCompBombSite.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompPlayerState.h"
+#include "ProjectCompGameState.h"
+#include "ProjectCompGameMode.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
@@ -241,12 +243,69 @@ void AProjectCompCharacter::Landed(const FHitResult& Hit)
     UpdateAnimationState();
 }
 
+// Drop dead (looming) characters from opponents' relevancy entirely so a cheat
+// client cannot read their position by toggling SetVisibility. Teammates and the
+// looming player themselves still see the actor. Spectators and the owner are
+// always relevant. Alive characters and non-character viewers go through the
+// default relevancy path.
+bool AProjectCompCharacter::IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const
+{
+    const AProjectCompPlayerState* MyPS = GetPlayerState<AProjectCompPlayerState>();
+    if (MyPS && !MyPS->IsAlive())
+    {
+        const APlayerController* ViewerPC = Cast<APlayerController>(RealViewer);
+        const AProjectCompPlayerState* ViewerPS = ViewerPC ? ViewerPC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+
+        if (ViewerPC && ViewerPC->GetPawn() == this)
+        {
+            // Owner always relevant (we still need to drive the dead pawn for them).
+            return Super::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation);
+        }
+
+        if (ViewerPS
+            && ViewerPS->GetTeamID() != ETeamID::Spectator
+            && MyPS->GetTeamID() != ETeamID::Spectator
+            && ViewerPS->GetTeamID() != MyPS->GetTeamID())
+        {
+            return false;
+        }
+    }
+    return Super::IsNetRelevantFor(RealViewer, ViewTarget, SrcLocation);
+}
+
 // Standard UE damage entry point. Forward into the HealthComponent on the
 // server; clients drop. Compatible with any engine damage source (UDamageType,
 // UGameplayStatics::ApplyDamage, projectile hit events, etc.).
+//
+// Friendly-fire policy lives here: damage between teammates is scaled by the
+// GameMode's FriendlyFireScalar (default 0.0 = friendly fire off). Self-damage
+// (Instigator == GetController()) bypasses the scalar so falls/explosives
+// hurt the source player fully.
 float AProjectCompCharacter::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
-    const float Actual = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+    float Adjusted = DamageAmount;
+
+    if (HasAuthority() && EventInstigator && EventInstigator != GetController())
+    {
+        const AProjectCompPlayerState* InstPS = EventInstigator->GetPlayerState<AProjectCompPlayerState>();
+        const AProjectCompPlayerState* SelfPS = GetPlayerState<AProjectCompPlayerState>();
+        if (InstPS && SelfPS
+            && InstPS->GetTeamID() != ETeamID::Spectator
+            && InstPS->GetTeamID() == SelfPS->GetTeamID())
+        {
+            const AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr;
+            const float Scalar = GM ? GM->GetFriendlyFireScalar() : 0.0f;
+            Adjusted *= Scalar;
+        }
+    }
+
+    if (Adjusted <= 0.0f)
+    {
+        // Skip Super so engine doesn't run damage-type processing on a zeroed event.
+        return 0.0f;
+    }
+
+    const float Actual = Super::TakeDamage(Adjusted, DamageEvent, EventInstigator, DamageCauser);
     if (HasAuthority() && HealthComponent && Actual > 0.0f)
     {
         return HealthComponent->Server_TakeDamage(Actual, EventInstigator);
@@ -256,15 +315,20 @@ float AProjectCompCharacter::TakeDamage(float DamageAmount, const FDamageEvent& 
 
 // Console command for damage testing: type "SelfDamage 100" in the PIE
 // console. Runs through the standard damage chain so the GameMode death flow
-// fires exactly as it would from a real weapon.
+// fires exactly as it would from a real weapon. No-op in shipping so it
+// can't be invoked from retail consoles.
 void AProjectCompCharacter::SelfDamage(float Amount)
 {
+#if UE_BUILD_SHIPPING
+    (void)Amount;
+#else
     if (Amount <= 0.0f)
     {
         return;
     }
     FDamageEvent DamageEvent;
     TakeDamage(Amount, DamageEvent, GetController(), this);
+#endif
 }
 
 // Setting bWantsToWalk on the CMC routes through saved moves; both server
@@ -320,6 +384,11 @@ void AProjectCompCharacter::DoFireStart()
     // Reset accumulated recoil so each new spray starts clean.
     AccumulatedRecoilPitch = 0.0f;
     AccumulatedRecoilYaw   = 0.0f;
+    // Reset the local pattern mirror so the next multicast applies pattern[0].
+    if (CurrentWeapon)
+    {
+        CurrentWeapon->ResetLocalRecoilPattern();
+    }
     Server_SetTriggerHeld(true);
 }
 
@@ -329,10 +398,178 @@ void AProjectCompCharacter::DoFireEnd()
     Server_SetTriggerHeld(false);
 }
 
-void AProjectCompCharacter::Client_ApplyRecoilKick_Implementation(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay)
+// =====================================================================
+// Lag compensation — server-only transform history + rewind
+// =====================================================================
+
+void AProjectCompCharacter::Server_RecordTransformSnapshot(float ServerTime)
+{
+    if (!HasAuthority() || bIsRewound)
+    {
+        return;
+    }
+
+    FCharacterTransformSnapshot& Slot = HistoryBuf[HistoryHead];
+    Slot.ServerTime = ServerTime;
+    Slot.Location = GetActorLocation();
+    Slot.Rotation = GetActorRotation();
+    if (const UCapsuleComponent* Capsule = GetCapsuleComponent())
+    {
+        Slot.CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+    }
+
+    HistoryHead = (HistoryHead + 1) % kHistorySize;
+    HistoryCount = FMath::Min(HistoryCount + 1, kHistorySize);
+}
+
+bool AProjectCompCharacter::Server_GetHistoricalSnapshot(float TargetServerTime, FCharacterTransformSnapshot& Out) const
+{
+    if (HistoryCount == 0)
+    {
+        return false;
+    }
+
+    // Walk newest → oldest and find the bracketing pair around TargetServerTime.
+    // Indices: most recent sample is at (HistoryHead - 1 + N) % N.
+    auto IndexAtOffset = [this](int32 Offset) -> int32
+    {
+        return ((HistoryHead - 1 - Offset) % kHistorySize + kHistorySize) % kHistorySize;
+    };
+
+    const FCharacterTransformSnapshot& Newest = HistoryBuf[IndexAtOffset(0)];
+    if (TargetServerTime >= Newest.ServerTime)
+    {
+        Out = Newest;
+        return true;
+    }
+
+    for (int32 Off = 1; Off < HistoryCount; ++Off)
+    {
+        const FCharacterTransformSnapshot& Older = HistoryBuf[IndexAtOffset(Off)];
+        const FCharacterTransformSnapshot& Newer = HistoryBuf[IndexAtOffset(Off - 1)];
+
+        if (TargetServerTime >= Older.ServerTime && TargetServerTime <= Newer.ServerTime)
+        {
+            const float Span = Newer.ServerTime - Older.ServerTime;
+            const float Alpha = Span > KINDA_SMALL_NUMBER
+                              ? (TargetServerTime - Older.ServerTime) / Span
+                              : 0.0f;
+            Out.ServerTime = TargetServerTime;
+            Out.Location = FMath::Lerp(Older.Location, Newer.Location, Alpha);
+            Out.Rotation = FMath::Lerp(Older.Rotation, Newer.Rotation, Alpha);
+            Out.CapsuleHalfHeight = FMath::Lerp(Older.CapsuleHalfHeight, Newer.CapsuleHalfHeight, Alpha);
+            return true;
+        }
+    }
+
+    // Requested time is older than the oldest sample we have — use the oldest.
+    Out = HistoryBuf[IndexAtOffset(HistoryCount - 1)];
+    return true;
+}
+
+void AProjectCompCharacter::Server_RewindTo(float TargetServerTime)
+{
+    if (!HasAuthority() || bIsRewound)
+    {
+        return;
+    }
+
+    FCharacterTransformSnapshot Snap;
+    if (!Server_GetHistoricalSnapshot(TargetServerTime, Snap))
+    {
+        return;
+    }
+
+    PreRewindLocation = GetActorLocation();
+    PreRewindRotation = GetActorRotation();
+    bIsRewound = true;
+
+    // Position-only move; the mesh is attached to the capsule so it follows.
+    // ETeleportType::TeleportPhysics avoids sweep collisions during the rewind.
+    SetActorLocationAndRotation(Snap.Location, Snap.Rotation,
+        /*bSweep*/ false, /*OutSweepHitResult*/ nullptr, ETeleportType::TeleportPhysics);
+}
+
+void AProjectCompCharacter::Server_RestoreFromRewind()
+{
+    if (!bIsRewound)
+    {
+        return;
+    }
+    SetActorLocationAndRotation(PreRewindLocation, PreRewindRotation,
+        /*bSweep*/ false, /*OutSweepHitResult*/ nullptr, ETeleportType::TeleportPhysics);
+    bIsRewound = false;
+}
+
+FRotator AProjectCompCharacter::Server_GetValidatedAimRotation()
+{
+    AController* C = GetController();
+    if (!C || !HasAuthority())
+    {
+        return C ? C->GetControlRotation() : FRotator::ZeroRotator;
+    }
+
+    FRotator Raw = C->GetControlRotation();
+    // Normalize pitch into [-180, 180] so the clamp below is meaningful.
+    Raw.Pitch = FRotator::NormalizeAxis(Raw.Pitch);
+    Raw.Yaw   = FRotator::NormalizeAxis(Raw.Yaw);
+
+    // Absolute pitch limit always applies (looking past straight-up is impossible).
+    Raw.Pitch = FMath::Clamp(Raw.Pitch, -MaxAbsolutePitch, MaxAbsolutePitch);
+
+    const UWorld* World = GetWorld();
+    const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+    if (LastAimValidationTime < 0.0f)
+    {
+        // First call this life — seed without clamping (otherwise spawn rotation
+        // would always look like an instantaneous "delta" from 0).
+        LastAimValidationTime = Now;
+        LastValidatedYaw   = Raw.Yaw;
+        LastValidatedPitch = Raw.Pitch;
+        C->SetControlRotation(Raw);
+        return Raw;
+    }
+
+    const float DeltaSeconds = FMath::Max(Now - LastAimValidationTime, 0.0f);
+    // 0.001s floor: a single-tick repeat call would otherwise allow a near-zero
+    // budget and reject legitimate moves on the next frame.
+    const float MaxYawStep   = MaxYawRateDegPerSec   * FMath::Max(DeltaSeconds, 0.001f);
+    const float MaxPitchStep = MaxPitchRateDegPerSec * FMath::Max(DeltaSeconds, 0.001f);
+
+    const float YawDelta   = FRotator::NormalizeAxis(Raw.Yaw   - LastValidatedYaw);
+    const float PitchDelta = FRotator::NormalizeAxis(Raw.Pitch - LastValidatedPitch);
+
+    FRotator Clamped = Raw;
+    if (FMath::Abs(YawDelta) > MaxYawStep)
+    {
+        Clamped.Yaw = FRotator::NormalizeAxis(LastValidatedYaw + FMath::Sign(YawDelta) * MaxYawStep);
+    }
+    if (FMath::Abs(PitchDelta) > MaxPitchStep)
+    {
+        Clamped.Pitch = FMath::Clamp(LastValidatedPitch + FMath::Sign(PitchDelta) * MaxPitchStep,
+                                     -MaxAbsolutePitch, MaxAbsolutePitch);
+    }
+
+    // If we had to clamp, write the validated rotation back to the controller so
+    // subsequent reads (replication, other authoritative consumers) see the
+    // clamped value rather than the client's raw claim.
+    if (!FMath::IsNearlyEqual(Clamped.Yaw,   Raw.Yaw,   0.001f) ||
+        !FMath::IsNearlyEqual(Clamped.Pitch, Raw.Pitch, 0.001f))
+    {
+        C->SetControlRotation(Clamped);
+    }
+
+    LastAimValidationTime = Now;
+    LastValidatedYaw   = Clamped.Yaw;
+    LastValidatedPitch = Clamped.Pitch;
+    return Clamped;
+}
+
+void AProjectCompCharacter::ApplyRecoilKickLocal(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay)
 {
 	APlayerController* PC = GetController<APlayerController>();
-	if (!PC)
+	if (!PC || !IsLocallyControlled())
 	{
 		return;
 	}
@@ -352,12 +589,44 @@ void AProjectCompCharacter::Client_ApplyRecoilKick_Implementation(float PitchKic
 	SetActorTickEnabled(true);
 }
 
+bool AProjectCompCharacter::Server_SetTriggerHeld_Validate(bool /*bHeld*/)
+{
+    // bool is self-validating; per-context gates live in _Implementation.
+    return true;
+}
+
 void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
 {
-    if (CurrentWeapon)
+    if (!CurrentWeapon)
     {
-        CurrentWeapon->Server_SetTriggerHeld(bHeld);
+        return;
     }
+
+    // Aliveness gate — a looming or permanent-ghost player must not be able to
+    // arm the server-side fire loop. Weapon::FireOneShot also checks this, but
+    // rejecting at the RPC boundary stops the loop entirely (cheaper).
+    if (const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>())
+    {
+        if (!PS->IsAlive())
+        {
+            return;
+        }
+    }
+
+    // Phase gate — only RoundActive is gunplay. Drops fire spam in PreRound /
+    // PostRound / MatchEnded.
+    if (const UWorld* World = GetWorld())
+    {
+        if (const AProjectCompGameState* GS = World->GetGameState<AProjectCompGameState>())
+        {
+            if (GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+            {
+                return;
+            }
+        }
+    }
+
+    CurrentWeapon->Server_SetTriggerHeld(bHeld);
 }
 
 void AProjectCompCharacter::DoUseStart()
@@ -374,17 +643,50 @@ void AProjectCompCharacter::DoUseEnd()
     Server_SetUseHeld(false);
 }
 
+bool AProjectCompCharacter::Server_SetUseHeld_Validate(bool /*bHeld*/)
+{
+    return true;
+}
+
 void AProjectCompCharacter::Server_SetUseHeld_Implementation(bool bHeld)
 {
+    // Dead players don't interact (no plant/defuse from looming).
+    if (const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>())
+    {
+        if (!PS->IsAlive())
+        {
+            bUseHeld = false;
+            UpdateInteractLock();
+            return;
+        }
+    }
+
     bUseHeld = bHeld;
     UpdateInteractLock();
 }
 
-bool AProjectCompCharacter::IsOverlappingBombSite() const
+void AProjectCompCharacter::OnBombSiteOverlapChanged(bool bEntered)
 {
+    if (bEntered)
+    {
+        ++BombSiteOverlapCount;
+    }
+    else
+    {
+        // Clamp at 0 in case of begin/end imbalance during teleport/destroy races.
+        BombSiteOverlapCount = FMath::Max(0, BombSiteOverlapCount - 1);
+    }
+    UpdateInteractLock();
+}
+
+void AProjectCompCharacter::NotifyBombSiteOverlapChanged()
+{
+    // Legacy entry point — recount from the overlap query so external callers
+    // who don't know the enter/exit sense still produce a correct counter.
     TArray<AActor*> Overlapping;
     GetOverlappingActors(Overlapping, AProjectCompBombSite::StaticClass());
-    return Overlapping.Num() > 0;
+    BombSiteOverlapCount = Overlapping.Num();
+    UpdateInteractLock();
 }
 
 // Single source of truth for the plant/defuse movement lock.
@@ -428,10 +730,6 @@ void AProjectCompCharacter::UpdateInteractLock()
     }
 }
 
-void AProjectCompCharacter::NotifyBombSiteOverlapChanged()
-{
-    UpdateInteractLock();
-}
 
 // Spawn the default weapon for newly-possessed characters on the server.
 // Called from PossessedBy (also fires on respawn since RestartPlayer creates

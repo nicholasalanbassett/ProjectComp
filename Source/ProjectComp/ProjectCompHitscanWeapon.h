@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "ProjectCompGameTypes.h"
 #include "ProjectCompHitscanWeapon.generated.h"
 
 class AProjectCompCharacter;
@@ -38,21 +39,30 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.01"))
 	float FireInterval = 0.1f;
 
-	/** Base damage applied to non-head body bones. */
+	/** Base damage applied to a Body-zone hit. Head/stomach/limb scale this via zone multipliers. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.0"))
 	float BodyDamage = 30.0f;
 
-	/** Multiplier applied when the trace hits HeadBoneName. 4.0 = one-shot head at 100 HP with 30 body damage. */
+	/** Multiplier applied for Head-zone hits. 4.0 = one-shot head at 100 HP with 30 body damage. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "1.0"))
 	float HeadDamageMultiplier = 4.0f;
+
+	/** Multiplier applied for Stomach-zone hits. CS/Valorant-style mid-tier (1.0-1.25). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.0"))
+	float StomachDamageMultiplier = 1.1f;
+
+	/** Multiplier applied for Limb-zone hits (arms / legs). Tac-FPS norm is 0.75-0.85. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.0"))
+	float LimbDamageMultiplier = 0.75f;
 
 	/** Maximum trace range in cm. Map diagonal is ~6800 cm; 10000 gives full coverage plus buffer. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon", meta = (ClampMin = "0.0"))
 	float MaxRange = 10000.0f;
 
-	/** Skeletal bone name treated as a head hit for damage multiplier. */
+	/** Skeletal-bone → hit-zone map. Defaults populated in the constructor for the standard UE
+	 *  mannequin rig; override in BP to fit a custom skeleton. Unmapped bones fall back to Body. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
-	FName HeadBoneName = TEXT("head");
+	TMap<FName, EHitZone> BoneZoneMap;
 
 	/**
 	 * Maximum number of shots processed in a single tick. Caps burst-fire
@@ -120,6 +130,20 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
 	float RecoilPatternResetDelay = 0.15f;
 
+	// ---- Lag compensation -------------------------------------------------
+
+	/** Maximum rewind window the server will honor (seconds). Caps absurd RTT
+	 *  values that a tampered client could otherwise use to rewind targets too
+	 *  far. 250ms covers 200ms RTT + 50ms interp comfortably. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|LagComp", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+	float MaxRewindSeconds = 0.25f;
+
+	/** Client interpolation delay (seconds) — clients render opponents this far
+	 *  in the past. Subtracted from now alongside half-RTT to land on what the
+	 *  firer's screen actually showed when they clicked. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|LagComp", meta = (ClampMin = "0.0", ClampMax = "0.2"))
+	float ClientInterpolationDelay = 0.05f;
+
 	// ---- Skill modifier ----------------------------------------------------
 
 	/**
@@ -137,6 +161,14 @@ public:
 	/** Server: reset fire cooldown so the weapon is "ready" instantly on equip. */
 	void ResetFireCooldown() { TimeSinceLastShot = FireInterval; }
 
+	/** Owning client: zero out the local recoil pattern mirror at the start of
+	 *  a new spray. Called by the character's DoFireStart handler. */
+	void ResetLocalRecoilPattern()
+	{
+		LocalRecoilPatternIndex = 0;
+		LocalLastShotClientTime = 0.0f;
+	}
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
@@ -152,8 +184,16 @@ protected:
 	/** Seconds since any shot was fired; drives spread recovery and pattern reset. */
 	float ShotIdleTime = 0.0f;
 
-	/** Current index into RecoilPattern; advances each shot, resets after idle. */
+	/** Current index into RecoilPattern; advances each shot, resets after idle.
+	 *  Server-side only. */
 	int32 RecoilPatternIndex = 0;
+
+	/** Local mirror of the recoil pattern index for the owning client — advances
+	 *  inside Multicast_OnFired_Implementation so the camera kick happens at the
+	 *  same time as muzzle flash / tracer. Replaces the per-shot Client RPC.
+	 *  Reset on trigger press and after RecoilPatternResetDelay of idle. */
+	int32 LocalRecoilPatternIndex = 0;
+	float LocalLastShotClientTime = 0.0f;
 
 	/** Server-side running total of recoil applied this burst (degrees).
 	 *  Used to offset the bullet trace so it matches what the client camera shows. */
@@ -163,12 +203,30 @@ protected:
 	/** Server: fire a single shot. Trace + damage + multicast. */
 	void FireOneShot();
 
+	/** Look up a bone's hit zone via BoneZoneMap; returns EHitZone::Body when unmapped. */
+	EHitZone ClassifyHitZone(FName BoneName) const;
+
+	/** Convert a hit zone to the configured damage multiplier. */
+	float GetZoneMultiplier(EHitZone Zone) const;
+
 	/** Returns movement/air/crouch spread (degrees) to add on top of the deterministic pattern. 0 when standing still. */
 	float CalcMovementSpread(const AProjectCompCharacter* Char) const;
 
-	/** Cosmetic-only: muzzle flash, tracer, impact decal. Runs on all clients. */
+	/** Cosmetic-only: muzzle flash, tracer, impact decal. Runs on all clients.
+	 *
+	 *  Bandwidth/anti-ESP design:
+	 *   - StartLoc is FVector_NetQuantize (whole-cm precision, ~24 bits per axis vs. 96 for float).
+	 *   - Direction is FVector_NetQuantizeNormal (16 bits per axis, perfect for a unit vector).
+	 *   - DistanceCm is uint16; max range is 10000 cm so it fits with headroom.
+	 *  Hit endpoint is NEVER sent — clients reconstruct it via a local trace from
+	 *  StartLoc along Direction. A wallhacked client therefore cannot read enemy
+	 *  positions from server packets; they have to do their own (much louder) trace.
+	 *
+	 *  bNetUseOwnerRelevancy is set on the weapon so this multicast only reaches
+	 *  receivers who consider the firing character relevant.
+	 */
 	UFUNCTION(NetMulticast, Unreliable)
-	void Multicast_OnFired(FVector StartLoc, FVector EndLoc, bool bHit);
+	void Multicast_OnFired(FVector_NetQuantize StartLoc, FVector_NetQuantizeNormal Direction, uint16 DistanceCm, bool bHit);
 
 	/** Convenience accessor for the owning character. */
 	AProjectCompCharacter* GetOwningCharacter() const;

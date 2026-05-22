@@ -71,6 +71,11 @@ public:
 	/** Returns the first bomb site that has reached a terminal state (detonated/defused) this round, or null. */
 	class AProjectCompBombSite* GetTerminalBombSite() const;
 
+	/** Server-side cache of all level-placed bomb sites. Built in StartPlay; bomb sites
+	 *  do not spawn at runtime. Iterating this is O(sites) instead of O(actors). */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<class AProjectCompBombSite>> CachedBombSites;
+
 	/** Server: route score for a terminal bomb site and end the round. */
 	void HandleBombResolution(class AProjectCompBombSite* Site);
 
@@ -154,6 +159,17 @@ protected:
 	/** Score threshold that ends the match (first team to reach this many round wins). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "1"))
 	int32 RoundsToWinMatch = 13;
+
+	/** Multiplier applied to damage from teammates. 0.0 disables friendly fire entirely,
+	 *  1.0 means full damage. Tac-FPS default is off; tournaments may enable a fractional
+	 *  value to discourage teamflashing without enabling griefing. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float FriendlyFireScalar = 0.0f;
+
+public:
+	float GetFriendlyFireScalar() const { return FriendlyFireScalar; }
+
+protected:
 
 	/**
 	 * Y-axis ceiling for the attacker spawn room — a looming attacker whose

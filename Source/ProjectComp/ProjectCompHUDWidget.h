@@ -10,6 +10,7 @@
 class AProjectCompCharacter;
 class AProjectCompGameState;
 class AProjectCompPlayerState;
+class AProjectCompBombSite;
 class UCanvasPanel;
 class UHorizontalBox;
 class UImage;
@@ -174,4 +175,12 @@ protected:
 
 	/** Server time at which the "BOMB DEFUSED" banner should stop showing. 0 = inactive. */
 	float DefuseMessageEndTime = 0.0f;
+
+	/** Bomb sites discovered at HUD init. Bomb sites are level-placed and never spawned
+	 *  at runtime, so a one-shot scan in NativeOnInitialized avoids per-frame TActorIterator
+	 *  walks of the whole actor table on every NativeTick. */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AProjectCompBombSite>> CachedBombSites;
+
+	void CacheBombSites();
 };

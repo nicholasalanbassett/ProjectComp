@@ -100,6 +100,11 @@ void UProjectCompCharacterMovementComponent::CalcVelocity(float DeltaTime, float
 
 // Sample the launch speed on the ground->falling transition. This becomes the
 // air-speed cap until we land. Cleared back to 0 when we re-enter walking.
+//
+// Server-side we clamp the captured speed to GetMaxSpeed() (+5% headroom for
+// slope/ramp edges) so a tampered client can't report an inflated launch speed
+// and use it as a higher in-air cap. Honest clients always satisfy the clamp
+// because their CalcVelocity respects GetMaxSpeed itself.
 void UProjectCompCharacterMovementComponent::OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode)
 {
     Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
@@ -107,7 +112,17 @@ void UProjectCompCharacterMovementComponent::OnMovementModeChanged(EMovementMode
     if (MovementMode == MOVE_Falling && PreviousMovementMode != MOVE_Falling)
     {
         const FVector HorizVel(Velocity.X, Velocity.Y, 0.0f);
-        JumpedGroundSpeed = HorizVel.Size();
+        const float MeasuredSpeed = HorizVel.Size();
+
+        if (CharacterOwner && CharacterOwner->HasAuthority())
+        {
+            const float ServerCap = GetMaxSpeed() * 1.05f;
+            JumpedGroundSpeed = FMath::Min(MeasuredSpeed, ServerCap);
+        }
+        else
+        {
+            JumpedGroundSpeed = MeasuredSpeed;
+        }
     }
     else if (MovementMode == MOVE_Walking)
     {

@@ -55,6 +55,16 @@ struct FKillFeedData
 	ETeamID VictimTeam = ETeamID::Spectator;
 };
 
+/** Hit-zone classification used by hitscan weapons to scale damage per body region. */
+UENUM(BlueprintType)
+enum class EHitZone : uint8
+{
+	Body = 0,    // Default; chest/upper torso
+	Head,        // Maximum multiplier
+	Stomach,     // Mid-tier
+	Limb         // Reduced multiplier
+};
+
 /**
  * Per-team state, replicated as a TArray on the GameState (one entry per team).
  * All fields are server-authoritative; clients receive read-only copies.

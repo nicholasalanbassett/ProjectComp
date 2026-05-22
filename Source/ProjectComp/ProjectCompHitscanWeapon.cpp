@@ -7,8 +7,11 @@
 #include "Camera/CameraComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
@@ -42,8 +45,33 @@ AProjectCompHitscanWeapon::AProjectCompHitscanWeapon()
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
 	bReplicates = true;
+	// Multicasts (fire events) follow the owning character's relevancy. Dead
+	// opponents — already filtered by AProjectCompCharacter::IsNetRelevantFor —
+	// will not receive fire packets, which closes the wallhack channel.
+	bNetUseOwnerRelevancy = true;
 
 	// No mesh / visual on the MVP weapon. Added later when art exists.
+
+	// Bone → hit-zone mapping for the standard UE mannequin rig.
+	// Override BoneZoneMap in BP defaults for any custom skeleton.
+	BoneZoneMap.Add(TEXT("head"),         EHitZone::Head);
+	BoneZoneMap.Add(TEXT("neck_01"),      EHitZone::Head);
+	BoneZoneMap.Add(TEXT("spine_03"),     EHitZone::Body);
+	BoneZoneMap.Add(TEXT("spine_02"),     EHitZone::Body);
+	BoneZoneMap.Add(TEXT("spine_01"),     EHitZone::Stomach);
+	BoneZoneMap.Add(TEXT("pelvis"),       EHitZone::Stomach);
+	BoneZoneMap.Add(TEXT("thigh_l"),      EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("thigh_r"),      EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("calf_l"),       EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("calf_r"),       EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("foot_l"),       EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("foot_r"),       EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("upperarm_l"),   EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("upperarm_r"),   EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("lowerarm_l"),   EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("lowerarm_r"),   EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("hand_l"),       EHitZone::Limb);
+	BoneZoneMap.Add(TEXT("hand_r"),       EHitZone::Limb);
 
 	// 30-bullet spray pattern. X = pitch up (degrees), Y = yaw right (degrees).
 	// Each entry defines exactly where that bullet goes AND how the camera kicks.
@@ -181,10 +209,13 @@ void AProjectCompHitscanWeapon::FireOneShot()
 		}
 	}
 
-	// Aim origin: camera world position; aim direction: control rotation.
+	// Aim origin: camera world position; aim direction: SERVER-VALIDATED
+	// control rotation (rate-clamped + pitch-limited). Using the raw client
+	// rotation here would mean an aimbot could snap to a perfect headshot
+	// between RPCs; the validator denies that delta budget.
 	const UCameraComponent* Camera = OwnerChar->GetFirstPersonCameraComponent();
 	const FVector TraceStart = Camera ? Camera->GetComponentLocation() : OwnerChar->GetActorLocation();
-	const FRotator AimRot    = OwnerController->GetControlRotation();
+	const FRotator AimRot    = OwnerChar->Server_GetValidatedAimRotation();
 	const FVector  TraceDir  = AimRot.Vector();
 
 	// Apply accumulated server-side recoil so bullet direction matches where the
@@ -209,17 +240,59 @@ void AProjectCompHitscanWeapon::FireOneShot()
 
 	const FVector TraceEnd = TraceStart + BulletDir * MaxRange;
 
+	// ---- Lag compensation: rewind every other character to where they were
+	// when the firer's client took the shot. RewindTime = Now - half-RTT - InterpDelay.
+	// All rewound characters are restored at scope exit so the world state is
+	// unchanged outside this function.
+	UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	float HalfRttSeconds = 0.0f;
+	if (const APlayerController* PC = Cast<APlayerController>(OwnerController))
+	{
+		if (const APlayerState* PS = PC->PlayerState)
+		{
+			// ExactPing is in milliseconds, full RTT.
+			HalfRttSeconds = (PS->ExactPing * 0.001f) * 0.5f;
+		}
+	}
+	const float RewindSeconds = FMath::Clamp(HalfRttSeconds + ClientInterpolationDelay, 0.0f, MaxRewindSeconds);
+	const float RewindTime = Now - RewindSeconds;
+
+	TArray<AProjectCompCharacter*, TInlineAllocator<16>> Rewound;
+	if (RewindSeconds > KINDA_SMALL_NUMBER && World)
+	{
+		for (TActorIterator<AProjectCompCharacter> It(World); It; ++It)
+		{
+			AProjectCompCharacter* Target = *It;
+			if (!Target || Target == OwnerChar)
+			{
+				continue;
+			}
+			Target->Server_RewindTo(RewindTime);
+			Rewound.Add(Target);
+		}
+	}
+
 	// Trace.
 	FHitResult Hit;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(WeaponTrace), /*bTraceComplex*/ true, OwnerChar);
 	Params.bReturnPhysicalMaterial = false;
-	const bool bDidHit = GetWorld()->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, Params);
+	const bool bDidHit = World ? World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, Params) : false;
 
-	// Damage.
+	// Restore rewound characters BEFORE damage so OnDeath / death-flow sees current state.
+	for (AProjectCompCharacter* Target : Rewound)
+	{
+		if (Target)
+		{
+			Target->Server_RestoreFromRewind();
+		}
+	}
+
+	// Damage — per-zone tier from the bone-name map (Body / Head / Stomach / Limb).
 	if (bDidHit && Hit.GetActor())
 	{
-		const bool bIsHeadshot = (Hit.BoneName == HeadBoneName);
-		const float Damage = bIsHeadshot ? BodyDamage * HeadDamageMultiplier : BodyDamage;
+		const EHitZone Zone = ClassifyHitZone(Hit.BoneName);
+		const float Damage = BodyDamage * GetZoneMultiplier(Zone);
 		FPointDamageEvent DamageEvent(Damage, Hit, -BulletDir, nullptr);
 		Hit.GetActor()->TakeDamage(Damage, DamageEvent, OwnerController, this);
 	}
@@ -228,15 +301,21 @@ void AProjectCompHitscanWeapon::FireOneShot()
 	ServerRecoilPitch += Entry.X;
 	ServerRecoilYaw   += Entry.Y;
 
-	OwnerChar->Client_ApplyRecoilKick(Entry.X, Entry.Y, RecoilRecoveryRate, RecoilRecoveryDelay);
+	// Per-shot Client RPC removed — the Multicast_OnFired below already arrives
+	// on the firer's client, and the owning-client side advances its local
+	// RecoilPattern mirror there. Saves one Reliable RPC per shot.
 
 	// Advance pattern index, clamp at last entry.
 	RecoilPatternIndex = FMath::Min(RecoilPatternIndex + 1, RecoilPattern.Num() - 1);
 
-	// Cosmetic broadcast to all clients (including the firer for now — no
-	// client-side prediction in this MVP).
+	// Cosmetic broadcast to all (still-relevant) clients. We send origin +
+	// quantized direction + a short distance, never the literal hit endpoint —
+	// receivers reconstruct visuals locally so the multicast does not leak
+	// enemy positions to opponents who happen to receive a stray packet.
 	const FVector EndLoc = bDidHit ? Hit.ImpactPoint : TraceEnd;
-	Multicast_OnFired(TraceStart, EndLoc, bDidHit);
+	const float HitDistance = FMath::Min(FVector::Distance(TraceStart, EndLoc), static_cast<float>(MaxRange));
+	const uint16 DistanceCm = static_cast<uint16>(FMath::Clamp(FMath::RoundToInt(HitDistance), 0, 65535));
+	Multicast_OnFired(TraceStart, BulletDir, DistanceCm, bDidHit);
 }
 
 float AProjectCompHitscanWeapon::CalcMovementSpread(const AProjectCompCharacter* Char) const
@@ -272,24 +351,69 @@ float AProjectCompHitscanWeapon::CalcMovementSpread(const AProjectCompCharacter*
 	return Spread;
 }
 
-void AProjectCompHitscanWeapon::Multicast_OnFired_Implementation(FVector StartLoc, FVector EndLoc, bool bHit)
+void AProjectCompHitscanWeapon::Multicast_OnFired_Implementation(FVector_NetQuantize StartLoc, FVector_NetQuantizeNormal Direction, uint16 DistanceCm, bool bHit)
 {
-	// Cosmetic hook only — never mutate authoritative state here.
-	// For MVP: a debug line. Replace with muzzle flash particle, tracer
-	// niagara system, and impact decal once art is in.
-	if (GetWorld())
+	UWorld* World = GetWorld();
+	if (!World)
 	{
-		// Offset the tracer start ~100 cm along the shot direction so the debug
-		// capsule's end cap renders in front of the camera rather than filling
-		// the screen when firing straight ahead.
-		const FVector ShotDir = (EndLoc - StartLoc).GetSafeNormal();
-		const FVector MuzzleLoc = StartLoc + ShotDir * 100.0f;
-		const FColor LineColor = bHit ? FColor::Red : FColor::Yellow;
-		DrawDebugLine(GetWorld(), MuzzleLoc, EndLoc, LineColor, /*persistent*/ false, /*lifetime*/ 0.15f, /*depth*/ 0, /*thickness*/ 1.5f);
+		return;
+	}
+
+	// Cosmetic hook — endpoint reconstructed from StartLoc + Direction * Distance
+	// so opponents can't extract enemy positions from server packets.
+	const FVector Start = static_cast<FVector>(StartLoc);
+	const FVector Dir = static_cast<FVector>(Direction).GetSafeNormal();
+	const FVector End = Start + Dir * static_cast<float>(DistanceCm);
+	const FVector MuzzleLoc = Start + Dir * 100.0f;
+	const FColor LineColor = bHit ? FColor::Red : FColor::Yellow;
+	DrawDebugLine(World, MuzzleLoc, End, LineColor, /*persistent*/ false, /*lifetime*/ 0.15f, /*depth*/ 0, /*thickness*/ 1.5f);
+
+	// Local recoil prediction for the owning client. The pattern is
+	// deterministic and identical to the server's RecoilPatternIndex math, so
+	// no Client RPC is needed — this just drives the same kick on the local
+	// view at the same wall-clock as the muzzle flash.
+	AProjectCompCharacter* OwnerChar = GetOwningCharacter();
+	if (OwnerChar && OwnerChar->IsLocallyControlled())
+	{
+		const float Now = World->GetTimeSeconds();
+		if (LocalLastShotClientTime > 0.0f && (Now - LocalLastShotClientTime) >= RecoilPatternResetDelay)
+		{
+			LocalRecoilPatternIndex = 0;
+		}
+		LocalLastShotClientTime = Now;
+
+		if (RecoilPattern.Num() > 0)
+		{
+			const int32 Idx = FMath::Min(LocalRecoilPatternIndex, RecoilPattern.Num() - 1);
+			const FVector2D& Entry = RecoilPattern[Idx];
+			OwnerChar->ApplyRecoilKickLocal(Entry.X, Entry.Y, RecoilRecoveryRate, RecoilRecoveryDelay);
+			LocalRecoilPatternIndex = FMath::Min(LocalRecoilPatternIndex + 1, RecoilPattern.Num() - 1);
+		}
 	}
 }
 
 AProjectCompCharacter* AProjectCompHitscanWeapon::GetOwningCharacter() const
 {
 	return Cast<AProjectCompCharacter>(GetOwner());
+}
+
+EHitZone AProjectCompHitscanWeapon::ClassifyHitZone(FName BoneName) const
+{
+	if (const EHitZone* Zone = BoneZoneMap.Find(BoneName))
+	{
+		return *Zone;
+	}
+	return EHitZone::Body;
+}
+
+float AProjectCompHitscanWeapon::GetZoneMultiplier(EHitZone Zone) const
+{
+	switch (Zone)
+	{
+		case EHitZone::Head:    return HeadDamageMultiplier;
+		case EHitZone::Stomach: return StomachDamageMultiplier;
+		case EHitZone::Limb:    return LimbDamageMultiplier;
+		case EHitZone::Body:
+		default:                return 1.0f;
+	}
 }

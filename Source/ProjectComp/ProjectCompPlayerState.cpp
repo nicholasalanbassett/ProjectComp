@@ -14,12 +14,16 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 
 	DOREPLIFETIME(AProjectCompPlayerState, TeamID);
 	DOREPLIFETIME(AProjectCompPlayerState, bIsAlive);
-	DOREPLIFETIME(AProjectCompPlayerState, VotedAbility1);
-	DOREPLIFETIME(AProjectCompPlayerState, VotedAbility2);
+	// Draft votes are an information leak across teams during PreRound — owner-only.
+	// The locked-in TeamLoadout on GameState is the public picture once the draft tallies.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, VotedAbility1, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, VotedAbility2, COND_OwnerOnly);
 	DOREPLIFETIME(AProjectCompPlayerState, Kills);
 	DOREPLIFETIME(AProjectCompPlayerState, Deaths);
-	DOREPLIFETIME(AProjectCompPlayerState, LivesRemaining);
-	DOREPLIFETIME(AProjectCompPlayerState, RespawnEndTime);
+	// Lives remaining could give opponents an info edge ("they're on last life — push them") —
+	// keep owner-only. Public-scoreboard versions can be added later via a separate replicated summary.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, LivesRemaining, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, RespawnEndTime, COND_OwnerOnly);
 }
 
 void AProjectCompPlayerState::Server_SetTeamID(ETeamID NewTeam)
@@ -66,7 +70,10 @@ void AProjectCompPlayerState::Server_AddKill()
 	{
 		return;
 	}
-	++Kills;
+	if (Kills < 255)
+	{
+		++Kills;
+	}
 }
 
 void AProjectCompPlayerState::Server_AddDeath()
@@ -75,7 +82,10 @@ void AProjectCompPlayerState::Server_AddDeath()
 	{
 		return;
 	}
-	++Deaths;
+	if (Deaths < 255)
+	{
+		++Deaths;
+	}
 }
 
 void AProjectCompPlayerState::Server_DecrementLife()
@@ -84,7 +94,10 @@ void AProjectCompPlayerState::Server_DecrementLife()
 	{
 		return;
 	}
-	LivesRemaining = FMath::Max(0, LivesRemaining - 1);
+	if (LivesRemaining > 0)
+	{
+		--LivesRemaining;
+	}
 }
 
 void AProjectCompPlayerState::Server_ResetLives()

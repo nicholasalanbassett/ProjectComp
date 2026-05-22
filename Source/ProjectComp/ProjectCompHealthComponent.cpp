@@ -21,7 +21,10 @@ void UProjectCompHealthComponent::GetLifetimeReplicatedProps(TArray<FLifetimePro
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
-	DOREPLIFETIME(UProjectCompHealthComponent, CurrentHealth);
+	// Owner-only: opponents must not be able to memory-scan enemy HP through walls.
+	// The killfeed/death events are sufficient public signal. Teammate HP visibility
+	// (UI for low-HP teammates) is a separate channel and not implemented yet.
+	DOREPLIFETIME_CONDITION(UProjectCompHealthComponent, CurrentHealth, COND_OwnerOnly);
 }
 
 void UProjectCompHealthComponent::BeginPlay()
@@ -31,7 +34,7 @@ void UProjectCompHealthComponent::BeginPlay()
 	// Server initializes; clients receive via replication.
 	if (GetOwnerRole() == ROLE_Authority)
 	{
-		CurrentHealth = MaxHealth;
+		CurrentHealth = static_cast<uint8>(FMath::Clamp(MaxHealth, 0.0f, 255.0f));
 	}
 }
 
@@ -41,18 +44,21 @@ void UProjectCompHealthComponent::BeginPlay()
 
 float UProjectCompHealthComponent::Server_TakeDamage(float Amount, AController* DamageInstigator)
 {
-	if (GetOwnerRole() != ROLE_Authority || Amount <= 0.0f || CurrentHealth <= 0.0f)
+	if (GetOwnerRole() != ROLE_Authority || Amount <= 0.0f || CurrentHealth == 0)
 	{
 		return 0.0f;
 	}
 
-	const float OldHealth = CurrentHealth;
-	CurrentHealth = FMath::Max(CurrentHealth - Amount, 0.0f);
-	const float Applied = OldHealth - CurrentHealth;
+	// Math in float so fractional damage doesn't silently round to zero — rounded
+	// to nearest int at write-back so the wire format stays uint8.
+	const float OldHealthFloat = static_cast<float>(CurrentHealth);
+	const float NewHealthFloat = FMath::Max(OldHealthFloat - Amount, 0.0f);
+	CurrentHealth = static_cast<uint8>(FMath::RoundToInt(NewHealthFloat));
+	const float Applied = OldHealthFloat - static_cast<float>(CurrentHealth);
 
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
 
-	if (CurrentHealth <= 0.0f)
+	if (CurrentHealth == 0)
 	{
 		OnDeath.Broadcast(DamageInstigator);
 
@@ -77,28 +83,29 @@ void UProjectCompHealthComponent::Server_ResetHealth()
 	{
 		return;
 	}
-	CurrentHealth = MaxHealth;
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	CurrentHealth = static_cast<uint8>(FMath::Clamp(MaxHealth, 0.0f, 255.0f));
+	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
 }
 
 void UProjectCompHealthComponent::Server_Heal(float Amount)
 {
-	if (GetOwnerRole() != ROLE_Authority || Amount <= 0.0f || CurrentHealth <= 0.0f)
+	if (GetOwnerRole() != ROLE_Authority || Amount <= 0.0f || CurrentHealth == 0)
 	{
 		return;
 	}
-	CurrentHealth = FMath::Min(CurrentHealth + Amount, MaxHealth);
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
+	const float NewHealthFloat = FMath::Min(static_cast<float>(CurrentHealth) + Amount, MaxHealth);
+	CurrentHealth = static_cast<uint8>(FMath::RoundToInt(NewHealthFloat));
+	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
 }
 
 // =====================================================================
 // RepNotify
 // =====================================================================
 
-void UProjectCompHealthComponent::OnRep_CurrentHealth(float OldHealth)
+void UProjectCompHealthComponent::OnRep_CurrentHealth(uint8 OldHealth)
 {
-	OnHealthChanged.Broadcast(CurrentHealth, MaxHealth);
-	if (OldHealth > 0.0f && CurrentHealth <= 0.0f)
+	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
+	if (OldHealth > 0 && CurrentHealth == 0)
 	{
 		// Client-local visual death cue; authoritative death handling lives on the server.
 		OnDeath.Broadcast(nullptr);

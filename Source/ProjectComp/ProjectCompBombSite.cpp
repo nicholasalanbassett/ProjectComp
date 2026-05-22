@@ -23,7 +23,7 @@ AProjectCompBombSite::AProjectCompBombSite()
 	Trigger->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	// Don't block dead pawns either — the trigger overlaps live + dead pawns,
 	// but plant/defuse logic filters to alive only.
-	Trigger->SetCollisionResponseToChannel(ECC_GameTraceChannel2, ECR_Overlap);
+	Trigger->SetCollisionResponseToChannel(ECC_DeadPawn, ECR_Overlap);
 	SetRootComponent(Trigger);
 
 	MarkerMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MarkerMesh"));
@@ -95,7 +95,7 @@ void AProjectCompBombSite::OnTriggerBeginOverlap(UPrimitiveComponent* Overlapped
 		// This is what enables the case "press F outside, walk in while holding".
 		if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(Pawn))
 		{
-			Char->NotifyBombSiteOverlapChanged();
+			Char->OnBombSiteOverlapChanged(/*bEntered*/ true);
 		}
 	}
 }
@@ -111,7 +111,7 @@ void AProjectCompBombSite::OnTriggerEndOverlap(UPrimitiveComponent* OverlappedCo
 		}
 		if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(Pawn))
 		{
-			Char->NotifyBombSiteOverlapChanged();
+			Char->OnBombSiteOverlapChanged(/*bEntered*/ false);
 		}
 	}
 }

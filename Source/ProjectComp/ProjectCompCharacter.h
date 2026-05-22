@@ -26,6 +26,20 @@ enum class EMovementState : uint8
 };
 
 /**
+ * Server-side transform snapshot used by the lag-compensation rewind system.
+ * One entry per server tick, kept in a small ring buffer on each character so
+ * a fire trace can rewind the target's hitbox to where it was when the firer's
+ * client took the shot (ServerTime - RTT/2 - InterpDelay).
+ */
+struct FCharacterTransformSnapshot
+{
+	float ServerTime = 0.0f;
+	FVector Location = FVector::ZeroVector;
+	FRotator Rotation = FRotator::ZeroRotator;
+	float CapsuleHalfHeight = 96.0f;
+};
+
+/**
  * First-person tac-FPS character.
  *
  * Movement tuning (high accel, dead-stop braking, heavy gravity) lives in the
@@ -133,12 +147,30 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoUseEnd();
 
-	/** Server: forward trigger state from client RPC down to the equipped weapon. */
-	UFUNCTION(Server, Reliable)
+	/** Maximum yaw change per second the server will accept (degrees). 1440 deg/s
+	 *  = 4 full revolutions/second — fast enough for any legitimate flick,
+	 *  too slow for an aimbot's snap. */
+	UPROPERTY(EditDefaultsOnly, Category = "AntiCheat", meta = (ClampMin = "60.0"))
+	float MaxYawRateDegPerSec = 1440.0f;
+
+	/** Maximum pitch change per second the server will accept (degrees). */
+	UPROPERTY(EditDefaultsOnly, Category = "AntiCheat", meta = (ClampMin = "60.0"))
+	float MaxPitchRateDegPerSec = 720.0f;
+
+	/** Absolute pitch limit (degrees). UE default is 89 — clients can be tampered
+	 *  past that. Server enforces here. */
+	UPROPERTY(EditDefaultsOnly, Category = "AntiCheat", meta = (ClampMin = "0.0", ClampMax = "90.0"))
+	float MaxAbsolutePitch = 89.0f;
+
+	/** Server: forward trigger state from client RPC down to the equipped weapon.
+	 *  WithValidation so the engine drops connections sending nonsense, and the
+	 *  implementation gates on alive + RoundActive + weapon-present so an
+	 *  out-of-context trigger held is silently rejected on the server. */
+	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetTriggerHeld(bool bHeld);
 
 	/** Server: track Use-key held state for plant/defuse interactions. */
-	UFUNCTION(Server, Reliable)
+	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetUseHeld(bool bHeld);
 
 	/** Server: spawn + equip the DefaultWeaponClass for this character. Called on possession. */
@@ -148,6 +180,7 @@ protected:
 
 	virtual bool CanJumpInternal_Implementation() const override;
 	virtual void Landed(const FHitResult& Hit) override;
+	virtual bool IsNetRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation) const override;
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void Tick(float DeltaTime) override;
@@ -157,7 +190,8 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	/** Console command for testing damage flow without weapons. Type "SelfDamage 100" in PIE console. */
+	/** Console command for testing damage flow without weapons. Type "SelfDamage 100"
+	 *  in PIE console. Compiled to a no-op in shipping builds (see implementation). */
 	UFUNCTION(Exec)
 	void SelfDamage(float Amount);
 
@@ -195,18 +229,48 @@ public:
 	/** Server: true while the Use key is currently held. Polled by ABombSite for plant/defuse. */
 	bool IsUseHeld() const { return bUseHeld; }
 
-	/** Called by an overlapping bomb site when its trigger begin/end-overlaps this pawn.
-	 *  Both client and server invoke this from their respective overlap callbacks so the
-	 *  lock state can be re-evaluated when the player walks in/out while holding Use. */
+	/** Deprecated shim: prefer OnBombSiteOverlapChanged(bool). Kept for any external
+	 *  callers still using the old name — forwards to the counter-based path with
+	 *  a defensive recount. */
 	void NotifyBombSiteOverlapChanged();
 
 	/**
-	 * Server → owning client: apply one shot's recoil kick and configure recovery.
-	 * PitchKick > 0 = camera kicks up (degrees). YawKick > 0 = kicks right.
-	 * Camera auto-recovers at RecoveryRate deg/s after RecoveryDelay seconds.
+	 * Apply one shot's recoil kick to the local control rotation and seed the
+	 * recovery state. Called by the weapon's Multicast_OnFired handler on the
+	 * owning-client side — no per-shot Client RPC needed (the multicast is
+	 * already on the wire for tracers/muzzle flash). Server math runs against
+	 * the same deterministic pattern, so client prediction and server state stay
+	 * in sync without ack overhead.
 	 */
-	UFUNCTION(Client, Reliable)
-	void Client_ApplyRecoilKick(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay);
+	void ApplyRecoilKickLocal(float PitchKick, float YawKick, float RecoveryRate, float RecoveryDelay);
+
+	/**
+	 * Server-only: returns the player's control rotation clamped to the
+	 * configured pitch range and yaw/pitch rate budget. Use this — not the
+	 * raw GetControlRotation() — for any authoritative trace (hit reg,
+	 * line-of-sight, etc.) so a tampered client cannot snap to perfect
+	 * headshots between RPCs. Mutates state (writes the clamped rotation
+	 * back to the controller and updates last-validated bookkeeping).
+	 */
+	FRotator Server_GetValidatedAimRotation();
+
+	// ---- Lag compensation (server-only) -----------------------------------
+	/** Push the current pose into the history ring. Called once per server
+	 *  tick by the GameMode so the ring stays aligned to the server tick rate. */
+	void Server_RecordTransformSnapshot(float ServerTime);
+
+	/** Interpolate within the ring to the requested server time. Returns false
+	 *  if the requested time is older than what the ring holds. */
+	bool Server_GetHistoricalSnapshot(float TargetServerTime, FCharacterTransformSnapshot& Out) const;
+
+	/** Move the pawn back to a historical pose; pair with Server_RestoreFromRewind.
+	 *  Mesh follows via attachment, so a single capsule move covers the hitbox. */
+	void Server_RewindTo(float TargetServerTime);
+
+	/** Undo Server_RewindTo and put the pawn back where it was. */
+	void Server_RestoreFromRewind();
+
+	bool IsCurrentlyRewound() const { return bIsRewound; }
 
 protected:
 
@@ -250,8 +314,44 @@ protected:
 	 *  spuriously uncrouch a Ctrl-crouched player and reset MaxWalkSpeed. */
 	bool bInteractLockActive = false;
 
-	/** Returns true when the capsule currently overlaps any AProjectCompBombSite trigger. */
-	bool IsOverlappingBombSite() const;
+	/** Number of bomb-site triggers currently overlapping this capsule. Updated by
+	 *  AProjectCompBombSite begin/end overlap callbacks. Avoids per-call array
+	 *  allocation in GetOverlappingActors. */
+	int32 BombSiteOverlapCount = 0;
+
+	// ---- Aim-rate clamp bookkeeping (server-only) -------------------------
+	/** Last server-time Server_GetValidatedAimRotation ran. Used to compute the
+	 *  per-call max-delta budget. -1 = first call, seed without clamping. */
+	float LastAimValidationTime = -1.0f;
+
+	/** Last accepted yaw / pitch. Subsequent calls clamp the delta from this. */
+	float LastValidatedYaw = 0.0f;
+	float LastValidatedPitch = 0.0f;
+
+	// ---- Lag compensation ring (server-only) ------------------------------
+	/** Ring depth; 32 entries at 64Hz server = 500ms backlog. Covers worst-case
+	 *  competitive RTT (~150ms each way + 50ms interp delay). */
+	static constexpr int32 kHistorySize = 32;
+	FCharacterTransformSnapshot HistoryBuf[kHistorySize];
+	int32 HistoryHead = 0;
+	int32 HistoryCount = 0;
+
+	/** Saved pose during an active rewind. Restored by Server_RestoreFromRewind. */
+	FVector PreRewindLocation = FVector::ZeroVector;
+	FRotator PreRewindRotation = FRotator::ZeroRotator;
+	bool bIsRewound = false;
+
+public:
+	/** Returns true when the capsule currently overlaps any AProjectCompBombSite trigger.
+	 *  Backed by BombSiteOverlapCount which the bomb site updates on begin/end overlap;
+	 *  avoids the per-call GetOverlappingActors allocation. */
+	bool IsOverlappingBombSite() const { return BombSiteOverlapCount > 0; }
+
+	/** Called by AProjectCompBombSite when its trigger begin/end-overlaps this pawn.
+	 *  Maintains the overlap counter that backs IsOverlappingBombSite() and then
+	 *  re-evaluates the interact lock state. */
+	void OnBombSiteOverlapChanged(bool bEntered);
+protected:
 
 	/** Apply or release the interact movement lock based on bUseHeld + bomb site overlap.
 	 *  Called from input edges, RPC, and overlap-changed events. Idempotent — safe to

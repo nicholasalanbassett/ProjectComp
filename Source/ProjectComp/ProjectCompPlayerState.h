@@ -101,19 +101,21 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	EAbilityType VotedAbility2 = EAbilityType::None;
 
+	/** Replicated as uint8 — match-realistic kill counts never exceed 255. Saves
+	 *  24 bits per update vs. int32. Public getters keep int32 for BP compat. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
-	int32 Kills = 0;
+	uint8 Kills = 0;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
-	int32 Deaths = 0;
+	uint8 Deaths = 0;
 
 	/** Lives remaining in the current round. Reset to MaxLives at PreRound start. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
-	int32 LivesRemaining = 2;
+	uint8 LivesRemaining = 2;
 
 	/** Max lives per round. Edit in BP defaults to tune the death model (2 = current design). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Player", meta = (ClampMin = "1"))
-	int32 MaxLives = 2;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Player", meta = (ClampMin = "1", ClampMax = "255"))
+	uint8 MaxLives = 2;
 
 	/** Server-time (seconds) at which this player will respawn. 0 = none pending. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
