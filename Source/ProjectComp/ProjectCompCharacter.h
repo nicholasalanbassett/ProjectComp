@@ -192,5 +192,15 @@ protected:
 	/** Server-spawned weapon actor currently equipped. Replicated so clients can render it. */
 	UPROPERTY(Replicated)
 	TObjectPtr<AProjectCompHitscanWeapon> CurrentWeapon;
+
+	/**
+	 * Per-client mesh visibility refresh. Runs on every client (including listen
+	 * server) on a 0.1s timer. When this character is dead (looming), hide the
+	 * body mesh from opponent viewers but keep it visible to teammates and the
+	 * looming player themselves. When alive, ensure mesh is visible to everyone.
+	 */
+	void UpdateMeshVisibilityForLocalViewer();
+
+	FTimerHandle VisibilityRefreshTimer;
 };
 

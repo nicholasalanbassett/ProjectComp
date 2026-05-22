@@ -316,7 +316,7 @@ void UProjectCompHUDWidget::RefreshDisplay()
 			}
 			if (DeathStatusSubtitle)
 			{
-				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "Spectating", "SPECTATING — GHOST COMMANDER"));
+				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "Spectating", "SPECTATING — LOOMING"));
 			}
 		}
 		else
@@ -335,7 +335,7 @@ void UProjectCompHUDWidget::RefreshDisplay()
 			}
 			if (DeathStatusSubtitle)
 			{
-				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "GhostCommander", "GHOST COMMANDER ACTIVE"));
+				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "LoomActive", "LOOM ACTIVE"));
 			}
 		}
 	}

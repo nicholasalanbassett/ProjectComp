@@ -96,6 +96,13 @@ protected:
 	/** Raise (true) / drop (false) every barrier in the world. Called at phase transitions. */
 	void Server_SetAllBarriersActive(bool bActive);
 
+	/**
+	 * Server: snap any looming player whose pawn has wandered out of their
+	 * team's spawn room back to their assigned PlayerStart. Called every tick.
+	 * Uses AttackerSpawnRoomMaxY / DefenderSpawnRoomMinY as bounds.
+	 */
+	void EnforceLoomingPlayerBounds();
+
 	/** Filter team-tagged PlayerStarts so attackers/defenders spawn on the right side of the map. */
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 
@@ -134,6 +141,18 @@ protected:
 	/** Score threshold that ends the match (first team to reach this many round wins). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "1"))
 	int32 RoundsToWinMatch = 13;
+
+	/**
+	 * Y-axis ceiling for the attacker spawn room — a looming attacker whose
+	 * pawn drifts above this Y is snapped back to their assigned PlayerStart.
+	 * Map-specific; tune per level in BP defaults. Substrate: -2400.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Spawn Rooms")
+	float AttackerSpawnRoomMaxY = -2400.0f;
+
+	/** Y-axis floor for the defender spawn room (Substrate: 2400). */
+	UPROPERTY(EditDefaultsOnly, Category = "Spawn Rooms")
+	float DefenderSpawnRoomMinY = 2400.0f;
 
 	/**
 	 * After this round ends, every player's TeamID flips (Attackers ↔ Defenders).

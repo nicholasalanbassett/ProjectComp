@@ -2,6 +2,7 @@
 
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompPlayerState.h"
 #include "ProjectComp.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/DamageEvents.h"
@@ -80,6 +81,15 @@ void AProjectCompHitscanWeapon::FireOneShot()
 	if (!OwnerController)
 	{
 		return;
+	}
+
+	// Looming players can hold the trigger but nothing happens — they're dead.
+	if (const AProjectCompPlayerState* PS = OwnerController->GetPlayerState<AProjectCompPlayerState>())
+	{
+		if (!PS->IsAlive())
+		{
+			return;
+		}
 	}
 
 	// Aim origin: the camera's world position (matches what the player sees).

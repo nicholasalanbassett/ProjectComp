@@ -60,6 +60,7 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	if (GS->GetCurrentPhase() == ERoundPhase::RoundActive)
 	{
 		TickCooldownPools(DeltaSeconds);
+		EnforceLoomingPlayerBounds();
 	}
 
 	// Auto-transition when timer hits zero.
@@ -532,6 +533,49 @@ void AProjectCompGameMode::Server_SetAllBarriersActive(bool bActive)
 	}
 }
 
+void AProjectCompGameMode::EnforceLoomingPlayerBounds()
+{
+	// Snap any dead player who has wandered out of their team's spawn room
+	// back to their assigned PlayerStart. Map-specific Y-axis bounds — simple
+	// for the prototype; replace with a level-placed volume system later.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		if (!PC)
+		{
+			continue;
+		}
+
+		const AProjectCompPlayerState* PS = PC->GetPlayerState<AProjectCompPlayerState>();
+		if (!PS || PS->IsAlive())
+		{
+			continue;  // Alive players aren't bound to the spawn room.
+		}
+
+		APawn* Pawn = PC->GetPawn();
+		if (!Pawn)
+		{
+			continue;
+		}
+
+		const float Y = Pawn->GetActorLocation().Y;
+		bool bOutOfBounds = false;
+		if (PS->GetTeamID() == ETeamID::Attackers && Y > AttackerSpawnRoomMaxY)
+		{
+			bOutOfBounds = true;
+		}
+		else if (PS->GetTeamID() == ETeamID::Defenders && Y < DefenderSpawnRoomMinY)
+		{
+			bOutOfBounds = true;
+		}
+
+		if (bOutOfBounds)
+		{
+			RelocatePlayerToTeamStart(PC);
+		}
+	}
+}
+
 void AProjectCompGameMode::CheckRoundEndCondition()
 {
 	AProjectCompGameState* GS = GetTypedGameState();
@@ -700,20 +744,32 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 		KillerPS->Server_AddKill();
 	}
 
-	// Freeze the dead pawn until respawn destroys it: no input, no collision,
-	// no movement. The pawn remains visible so the killer can see the corpse.
+	// Looming-mobile: the dead player keeps input + movement so they can
+	// walk around their spawn room during their loom window. We change the
+	// pawn's collision so it doesn't block live players and bullets pass
+	// through it (no double-tap kills on a corpse). Weapon firing is gated
+	// separately in AProjectCompHitscanWeapon::FireOneShot. Setting the
+	// object type to DeadPawn lets the (otherwise-passable-to-live-players)
+	// spawn-room barrier block looming pawns so they can't leave the room.
 	if (APawn* DeadPawn = Victim->GetPawn())
 	{
-		DeadPawn->DisableInput(Victim);
 		if (UCapsuleComponent* Capsule = DeadPawn->FindComponentByClass<UCapsuleComponent>())
 		{
-			Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Capsule->SetCollisionObjectType(ECC_GameTraceChannel2);  // DeadPawn channel
+			Capsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+			Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
 		}
-		if (UCharacterMovementComponent* CMC = DeadPawn->FindComponentByClass<UCharacterMovementComponent>())
+		if (USkeletalMeshComponent* BodyMesh = DeadPawn->FindComponentByClass<USkeletalMeshComponent>())
 		{
-			CMC->DisableMovement();
+			// Mesh becomes a visual-only prop — rendering still happens (so teammates
+			// see the looming body), but it doesn't physically block live players
+			// walking through, and bullets pass without hit-registering.
+			BodyMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		}
 	}
+
+	// Teleport to the player's assigned spawn so they loom from their own room.
+	RelocatePlayerToTeamStart(Victim);
 
 	// Schedule respawn only if lives remain. On the final death, player stays
 	// in permanent ghost mode for the rest of the round.

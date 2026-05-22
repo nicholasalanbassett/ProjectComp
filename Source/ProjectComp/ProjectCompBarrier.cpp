@@ -77,13 +77,21 @@ void AProjectCompBarrier::RefreshAppearance()
 
 	if (!bIsActive)
 	{
+		// Inactive (RoundActive phase): invisible, walk-through for live players
+		// (ECC_Pawn → Ignore), but still BLOCKS looming dead players
+		// (ECC_GameTraceChannel2 = DeadPawn → Block) so they can't leave the
+		// spawn room. Bullets pass through (Visibility ignored).
 		Mesh->SetVisibility(false);
-		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Mesh->SetCollisionResponseToChannel(ECC_GameTraceChannel2, ECR_Block);
 		return;
 	}
 
+	// Active (PreRound phase): visible + blocks everything.
 	Mesh->SetVisibility(true);
 	Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	Mesh->SetCollisionResponseToAllChannels(ECR_Block);
 
 	const ETeamID Viewer = GetLocalViewerTeam();
 	UMaterialInterface* Picked = (Viewer == OwnerTeam) ? TransparentMaterial : OpaqueMaterial;

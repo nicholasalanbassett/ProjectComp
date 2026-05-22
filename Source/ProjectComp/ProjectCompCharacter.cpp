@@ -13,6 +13,10 @@
 #include "ProjectCompCharacterMovementComponent.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHitscanWeapon.h"
+#include "ProjectCompPlayerState.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "TimerManager.h"
 
 AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectInitializer)
     : Super(ObjectInitializer.SetDefaultSubobjectClass<UProjectCompCharacterMovementComponent>(ACharacter::CharacterMovementComponentName))
@@ -384,6 +388,54 @@ void AProjectCompCharacter::BeginPlay()
         BodyMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         BodyMesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
     }
+
+    // Refresh mesh visibility based on local viewer's team relationship to this
+    // character. 0.1s is responsive enough for death/respawn/halftime swap; this
+    // runs on every client (including the listen server's host).
+    GetWorldTimerManager().SetTimer(VisibilityRefreshTimer, this,
+        &AProjectCompCharacter::UpdateMeshVisibilityForLocalViewer,
+        0.1f, /*bLoop*/ true);
+}
+
+void AProjectCompCharacter::UpdateMeshVisibilityForLocalViewer()
+{
+    USkeletalMeshComponent* BodyMesh = GetMesh();
+    if (!BodyMesh)
+    {
+        return;
+    }
+
+    const AProjectCompPlayerState* MyPS = GetPlayerState<AProjectCompPlayerState>();
+    if (!MyPS)
+    {
+        return;
+    }
+
+    // Alive: always visible to everyone.
+    if (MyPS->IsAlive())
+    {
+        if (!BodyMesh->IsVisible())
+        {
+            BodyMesh->SetVisibility(true);
+        }
+        return;
+    }
+
+    // Dead (looming): hide body from opponents only. Self + teammates still see
+    // the looming body so they know where their teammate is and how they're moving.
+    const UWorld* World = GetWorld();
+    const APlayerController* LocalPC = World ? World->GetFirstPlayerController() : nullptr;
+    const AProjectCompPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+
+    bool bHideFromLocalViewer = false;
+    if (LocalPS && LocalPS != MyPS
+        && MyPS->GetTeamID() != ETeamID::Spectator
+        && LocalPS->GetTeamID() != MyPS->GetTeamID())
+    {
+        bHideFromLocalViewer = true;
+    }
+
+    BodyMesh->SetVisibility(!bHideFromLocalViewer);
 }
 
 // OnStartCrouch/OnEndCrouch: engine fires these after the capsule has snapped
