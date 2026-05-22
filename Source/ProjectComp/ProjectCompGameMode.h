@@ -166,6 +166,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float FriendlyFireScalar = 0.0f;
 
+	/** Class spawned for the CA (Control/Aggro) flash-dome ability. BP subclass
+	 *  hooks the visual mesh + material; the C++ base handles all gameplay. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompFlashDome> FlashDomeClass;
+
 public:
 	float GetFriendlyFireScalar() const { return FriendlyFireScalar; }
 

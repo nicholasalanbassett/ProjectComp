@@ -75,6 +75,7 @@ void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	RefreshDisplay();
 	UpdateKillFeed(InDeltaTime);
+	RefreshFlashOverlay();
 }
 
 // =====================================================================
@@ -311,6 +312,17 @@ void UProjectCompHUDWidget::BuildLayout()
 	NotifSlot->SetPosition(FVector2D(0.0f, -(CornerPadding + 90.0f)));
 	NotifSlot->SetAutoSize(true);
 	KillNotifText->SetVisibility(ESlateVisibility::Hidden);
+
+	// ---- Flash overlay (full-screen white) ---------------------------------
+	// Added LAST so it sits on top of every other HUD element in Z-order.
+	// HitTestInvisible so clicks/input pass through. Anchored to all four edges
+	// with zero offsets fills the viewport at any resolution.
+	FlashOverlay = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("FlashOverlay"));
+	FlashOverlay->SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.0f));
+	UCanvasPanelSlot* FlashSlot = RootCanvas->AddChildToCanvas(FlashOverlay);
+	FlashSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+	FlashSlot->SetOffsets(FMargin(0.0f, 0.0f, 0.0f, 0.0f));
+	FlashOverlay->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 // =====================================================================
@@ -449,6 +461,53 @@ void UProjectCompHUDWidget::AddKillFeedEntry(const FString& KillerName, const FS
 			KillNotifTimeRemaining = 2.5f;
 		}
 	}
+}
+
+// =====================================================================
+// Flash overlay
+// =====================================================================
+
+float UProjectCompHUDWidget::RefreshFlashOverlay()
+{
+	if (!FlashOverlay)
+	{
+		return 0.0f;
+	}
+
+	const AProjectCompPlayerState* PS = GetLocalPlayerState();
+	const UWorld* World = GetWorld();
+	if (!PS || !World)
+	{
+		FlashOverlay->SetVisibility(ESlateVisibility::Collapsed);
+		return 0.0f;
+	}
+
+	const float Now      = World->GetTimeSeconds();
+	const float EndTime  = PS->GetFlashEndTime();
+	const float FadeBeg  = PS->GetFlashFadeStartTime();
+
+	// Not flashed (or flash already ended) — collapse so SDecoratable doesn't
+	// pay for an invisible widget every frame.
+	if (EndTime <= Now)
+	{
+		FlashOverlay->SetVisibility(ESlateVisibility::Collapsed);
+		return 0.0f;
+	}
+
+	// Full-white phase (Now < FadeBeg): alpha = 1. Fade phase (Now >= FadeBeg):
+	// linear fade from 1 → 0 across the remaining fade window.
+	float Alpha = 1.0f;
+	if (Now >= FadeBeg)
+	{
+		const float FadeSpan = EndTime - FadeBeg;
+		Alpha = FadeSpan > KINDA_SMALL_NUMBER
+		      ? FMath::Clamp((EndTime - Now) / FadeSpan, 0.0f, 1.0f)
+		      : 0.0f;
+	}
+
+	FlashOverlay->SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, Alpha));
+	FlashOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+	return Alpha;
 }
 
 // =====================================================================

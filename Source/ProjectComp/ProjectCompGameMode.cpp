@@ -8,6 +8,7 @@
 #include "ProjectCompBarrier.h"
 #include "ProjectCompBombSite.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompFlashDome.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHUD.h"
 #include "ProjectComp.h"
@@ -267,8 +268,37 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		return false;
 	}
 
-	// All checks passed: deduct pool, fire effect multicast.
+	// All checks passed: deduct pool, dispatch per-ability gameplay effect, then
+	// fire the cosmetic multicast so clients can hook VFX/audio off it.
 	GS->Server_SetTeamCooldownPool(Team, 0.0f);
+
+	// Inline switch is intentional — we only have one implemented ability so
+	// far. Refactor to an IAbilityHandler dispatch table when the second one
+	// lands; abstracting now would over-fit to a single example.
+	switch (Type)
+	{
+	case EAbilityType::CA:
+	{
+		const TSubclassOf<AProjectCompFlashDome> SpawnClass =
+			FlashDomeClass ? FlashDomeClass : TSubclassOf<AProjectCompFlashDome>(AProjectCompFlashDome::StaticClass());
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = Caster;
+		SpawnParams.Instigator = Caster->GetPawn();
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		if (AProjectCompFlashDome* Dome = GetWorld()->SpawnActor<AProjectCompFlashDome>(
+				SpawnClass, TargetLocation, FRotator::ZeroRotator, SpawnParams))
+		{
+			Dome->Server_Initialize(Team);
+		}
+		break;
+	}
+	default:
+		// Other abilities are scaffolding only — cosmetic multicast fires below.
+		break;
+	}
+
 	GS->Multicast_OnAbilityCast(Type, TargetLocation, Team);
 	return true;
 }
@@ -495,6 +525,15 @@ void AProjectCompGameMode::RelocatePlayerToTeamStart(APlayerController* PC)
 	const FRotator YawOnly(0.0f, TeamStart->GetActorRotation().Yaw, 0.0f);
 	Pawn->SetActorRotation(YawOnly);
 	PC->SetControlRotation(YawOnly);
+
+	// Server-side SetControlRotation doesn't propagate to the owning client's
+	// autonomous proxy — the client owns its ControlRotation locally and only
+	// sends it up in saved moves. For the listen-server host this doesn't
+	// matter (the server IS the local player), but a remote client (P2+) would
+	// keep its stale yaw and spawn facing the wrong way. ClientSetRotation is
+	// a reliable Client RPC that explicitly pushes the new rotation down so
+	// the next saved move comes back with the corrected value.
+	PC->ClientSetRotation(YawOnly, /*bResetCamera*/ true);
 }
 
 void AProjectCompGameMode::RespawnPlayerAtAssignedStart(APlayerController* PC)

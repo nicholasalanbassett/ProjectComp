@@ -1,0 +1,91 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "ProjectCompGameTypes.h"
+#include "ProjectCompFlashDome.generated.h"
+
+class UStaticMeshComponent;
+class APawn;
+
+/**
+ * CA (Control/Aggro) ability: server-spawned dome that flashes enemy players
+ * inside its radius who have unobstructed line of sight to the dome's center.
+ *
+ * Latching: once a player has been flashed by THIS dome instance, the dome
+ * does not re-apply to them — their flash effect runs to completion driven
+ * by their PlayerState's FlashEndTime, regardless of whether the dome is
+ * still alive.
+ *
+ * Lifecycle: server-spawned in AProjectCompGameMode::Server_RequestAbilityCast.
+ * Ticks until DomeLifetime elapses, then Destroy()s. Cosmetic mesh (set in BP
+ * defaults) replicates so clients see where the dome was placed; per-player
+ * flash state lives on AProjectCompPlayerState (owner-only replicated).
+ */
+UCLASS()
+class PROJECTCOMP_API AProjectCompFlashDome : public AActor
+{
+	GENERATED_BODY()
+
+public:
+	AProjectCompFlashDome();
+
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	// ---- Tunables ---------------------------------------------------------
+
+	/** Sphere radius (cm) inside which an enemy with LOS to the center will be flashed. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "100.0"))
+	float DomeRadius = 800.0f;
+
+	/** Seconds the dome exists in the world before despawning. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.1"))
+	float DomeLifetime = 4.0f;
+
+	/** Seconds of full-white screen applied to each flashed player. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float FlashFullWhiteDuration = 1.0f;
+
+	/** Seconds of linear fade from full-white to clear after the full-white phase. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float FlashFadeDuration = 1.5f;
+
+	// ---- Server interface --------------------------------------------------
+
+	/** Server: configure the dome with the caster's team. Targets are the OPPOSING team. */
+	void Server_Initialize(ETeamID InCasterTeam);
+
+protected:
+	virtual void BeginPlay() override;
+
+	/** Cosmetic dome mesh — populate in BP defaults. C++ leaves it empty so the
+	 *  POC can run without an asset; level designers swap in the real visual. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UStaticMeshComponent* DomeMesh;
+
+	/** Caster's team — used to filter targets to the opposing team only. Replicated
+	 *  so clients can later condition local FX on whose dome this is. */
+	UPROPERTY(Replicated)
+	ETeamID CasterTeam = ETeamID::Spectator;
+
+	/** Server-time the dome despawns. Set in BeginPlay from DomeLifetime. */
+	float DespawnTime = 0.0f;
+
+	/** Server-only latch — pawns already flashed by this dome instance. Weak ptrs
+	 *  so a destroyed pawn (round end / level transition) doesn't keep entries alive. */
+	TSet<TWeakObjectPtr<APawn>> AlreadyFlashed;
+
+	/** Server: scan opposing-team living pawns inside the dome with clear LOS to
+	 *  the center and apply flash to each (latched — only once per dome). */
+	void Server_TickFlashApplication();
+
+	/** True iff a Visibility trace from PawnCameraLoc to DomeCenter is unobstructed.
+	 *  Walls block; character pawns (including the source) are added to the ignore
+	 *  list so a teammate's body standing between you and the dome doesn't shield. */
+	bool HasClearLineOfSight(const FVector& PawnCameraLoc,
+	                         const FVector& DomeCenter,
+	                         const TArray<AActor*>& IgnoreActors) const;
+};

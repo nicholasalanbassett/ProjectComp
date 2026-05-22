@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProjectCompPlayerState.h"
+#include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 
 AProjectCompPlayerState::AProjectCompPlayerState()
@@ -24,6 +25,11 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	// keep owner-only. Public-scoreboard versions can be added later via a separate replicated summary.
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, LivesRemaining, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, RespawnEndTime, COND_OwnerOnly);
+	// Flash effect is owner-only — only the flashed player needs to see their own
+	// overlay, and replicating to everyone would leak "who's flashed where" to
+	// opponents (info advantage). Owner-only keeps the wire compact + private.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, FlashEndTime, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, FlashFadeStartTime, COND_OwnerOnly);
 }
 
 void AProjectCompPlayerState::Server_SetTeamID(ETeamID NewTeam)
@@ -116,4 +122,16 @@ void AProjectCompPlayerState::Server_SetRespawnEndTime(float NewTime)
 		return;
 	}
 	RespawnEndTime = NewTime;
+}
+
+void AProjectCompPlayerState::Server_ApplyFlash(float FullWhiteDuration, float FadeDuration)
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	FlashFadeStartTime = Now + FMath::Max(0.0f, FullWhiteDuration);
+	FlashEndTime       = FlashFadeStartTime + FMath::Max(0.0f, FadeDuration);
 }

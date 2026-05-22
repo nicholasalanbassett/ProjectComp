@@ -14,6 +14,7 @@
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompBombSite.h"
 #include "ProjectCompHitscanWeapon.h"
+#include "ProjectCompPlayerController.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompGameState.h"
 #include "ProjectCompGameMode.h"
@@ -150,6 +151,18 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         {
             EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoUseStart);
             EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoUseEnd);
+        }
+
+        // Press 1 / 2: cast looming abilities. Bindings fire regardless of alive
+        // state — the server-side gate in Server_RequestAbilityCast rejects
+        // casts from living players (silent reject, no client-side surface).
+        if (AbilitySlot1Action)
+        {
+            EnhancedInputComponent->BindAction(AbilitySlot1Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot1);
+        }
+        if (AbilitySlot2Action)
+        {
+            EnhancedInputComponent->BindAction(AbilitySlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot2);
         }
     }
     else
@@ -360,8 +373,18 @@ void AProjectCompCharacter::DoWalkEnd()
 // requested mid-air persists and engages the moment we land. The CMC honors
 // the flag during UpdateCharacterStateBeforeMovement and runs its own ground
 // check on entry and ceiling check on exit.
+//
+// While the interact lock owns the crouch state (plant/defuse), don't touch
+// bWantsToCrouch — that would let the player stand up mid-plant. Record the
+// intent in bWasCrouchingBeforeInteract so the lock-release path applies the
+// player's last input as the post-interaction crouch state.
 void AProjectCompCharacter::DoCrouchStart()
 {
+    if (bInteractLockActive)
+    {
+        bWasCrouchingBeforeInteract = true;
+        return;
+    }
     if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
     {
         CharMov->bWantsToCrouch = true;
@@ -370,6 +393,11 @@ void AProjectCompCharacter::DoCrouchStart()
 
 void AProjectCompCharacter::DoCrouchEnd()
 {
+    if (bInteractLockActive)
+    {
+        bWasCrouchingBeforeInteract = false;
+        return;
+    }
     if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
     {
         CharMov->bWantsToCrouch = false;
@@ -641,6 +669,61 @@ void AProjectCompCharacter::DoUseEnd()
     bUseHeld = false;
     UpdateInteractLock();
     Server_SetUseHeld(false);
+}
+
+void AProjectCompCharacter::DoCastAbilitySlot1()
+{
+    RequestAbilityCastForSlot(1);
+}
+
+void AProjectCompCharacter::DoCastAbilitySlot2()
+{
+    RequestAbilityCastForSlot(2);
+}
+
+void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
+{
+    AProjectCompPlayerController* PC = GetController<AProjectCompPlayerController>();
+    if (!PC)
+    {
+        return;
+    }
+
+    // Resolve the slot → the team's locked-in ability from GameState. If the
+    // team hasn't drafted this slot (still PreRound, or zero voters), short-
+    // circuit before sending an RPC the server would just reject.
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    const UWorld* World = GetWorld();
+    const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
+    if (!PS || !GS)
+    {
+        return;
+    }
+    const FTeamLoadout Loadout = GS->GetTeamLoadout(PS->GetTeamID());
+    const EAbilityType Ability = (SlotIndex == 1) ? Loadout.AbilitySlot1 : Loadout.AbilitySlot2;
+    if (Ability == EAbilityType::None)
+    {
+        return;
+    }
+
+    // Aim-trace from the camera to derive a world TargetLocation. ECC_Visibility
+    // blocks on world geometry and body meshes (per BeginPlay's collision setup),
+    // so a cast aimed at a teammate lands on their body; one aimed at empty sky
+    // falls back to the end of the ray. Trace ignores self so the looming pawn's
+    // own collisions don't capture the hit.
+    FVector CameraLoc;
+    FRotator CameraRot;
+    PC->GetPlayerViewPoint(CameraLoc, CameraRot);
+    const FVector TraceEnd = CameraLoc + CameraRot.Vector() * AbilityAimDistance;
+    FHitResult Hit;
+    FCollisionQueryParams Params(NAME_None, /*bTraceComplex*/ false, this);
+    FVector TargetLocation = TraceEnd;
+    if (World && World->LineTraceSingleByChannel(Hit, CameraLoc, TraceEnd, ECC_Visibility, Params))
+    {
+        TargetLocation = Hit.ImpactPoint;
+    }
+
+    PC->RequestAbilityCast(Ability, TargetLocation);
 }
 
 bool AProjectCompCharacter::Server_SetUseHeld_Validate(bool /*bHeld*/)

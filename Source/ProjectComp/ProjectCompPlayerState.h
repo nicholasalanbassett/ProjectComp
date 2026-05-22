@@ -56,6 +56,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player")
 	float GetRespawnEndTime() const { return RespawnEndTime; }
 
+	/** Server-time the player's current flash effect fully ends. 0 = not flashed.
+	 *  HUD reads this each tick to drive the white overlay alpha. */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetFlashEndTime() const { return FlashEndTime; }
+
+	/** Server-time the fade phase begins (FlashEndTime - FadeDuration). Up to this
+	 *  point the overlay is full white; from here it linearly fades to zero. */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetFlashFadeStartTime() const { return FlashFadeStartTime; }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	/** Server: assign this player to a team. */
@@ -84,6 +94,10 @@ public:
 
 	/** Server: set the absolute server-time at which this player will respawn. 0 to clear. */
 	void Server_SetRespawnEndTime(float NewTime);
+
+	/** Server: apply a flash effect with the given full-white + fade durations.
+	 *  Stamps FlashFadeStartTime + FlashEndTime in absolute server-time and replicates. */
+	void Server_ApplyFlash(float FullWhiteDuration, float FadeDuration);
 
 protected:
 
@@ -120,4 +134,12 @@ protected:
 	/** Server-time (seconds) at which this player will respawn. 0 = none pending. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	float RespawnEndTime = 0.0f;
+
+	/** Server-time the current flash effect fully ends. 0 = not flashed. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	float FlashEndTime = 0.0f;
+
+	/** Server-time the fade phase begins. Equal to FlashEndTime - FadeDuration. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	float FlashFadeStartTime = 0.0f;
 };

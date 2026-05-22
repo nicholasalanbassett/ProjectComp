@@ -135,6 +135,15 @@ protected:
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusSubtitle;
 
+	/** Full-screen white image rendered when the local player is flashed. Alpha
+	 *  is driven each tick from PlayerState->GetFlashEndTime() so the fade looks
+	 *  smooth even though only end-time + fade-start-time replicate. */
+	UPROPERTY() TObjectPtr<UImage> FlashOverlay;
+
+	/** Update FlashOverlay alpha + visibility from local PlayerState's flash times.
+	 *  Returns the alpha that was applied (mainly useful for testing). */
+	float RefreshFlashOverlay();
+
 	// ---- Kill feed (top-right) + personal notification (bottom-center) ------
 
 	/** Vertical container holding kill feed rows. */

@@ -95,9 +95,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* UseAction;
 
+	/** Press 1: cast team ability slot 1 (looming only — server rejects when alive). */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* AbilitySlot1Action;
+
+	/** Press 2: cast team ability slot 2. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* AbilitySlot2Action;
+
 	/** Weapon class spawned for every freshly-possessed character. Set in BP defaults. */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
+
+	/** Max distance (cm) the ability aim-trace reaches from the camera before
+	 *  falling back to the end of the ray. Tuned per-design later. */
+	UPROPERTY(EditDefaultsOnly, Category = "Ability", meta = (ClampMin = "100.0"))
+	float AbilityAimDistance = 5000.0f;
 
 public:
 	AProjectCompCharacter(const FObjectInitializer& ObjectInitializer);
@@ -143,6 +156,19 @@ protected:
 
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoUseStart();
+
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoCastAbilitySlot1();
+
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoCastAbilitySlot2();
+
+	/** Common ability-cast plumbing: resolve the slot to the team's drafted
+	 *  ability via GameState, aim-trace from the camera to compute a world
+	 *  TargetLocation, then forward to the controller's RequestAbilityCast RPC.
+	 *  Server validates phase, looming state, pool, and team membership — the
+	 *  client side is intentionally naive. */
+	void RequestAbilityCastForSlot(int32 SlotIndex);
 
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoUseEnd();
@@ -304,8 +330,11 @@ protected:
 	bool bIsFiring = false;
 
 
-	/** True if the player was already crouching when they began interacting (plant/defuse).
-	 *  If so, DoUseEnd does not uncrouch — the crouch belongs to the player, not the interaction. */
+	/** Player's desired crouch state to apply when the interact lock releases.
+	 *  Seeded from bWantsToCrouch when the lock engages, then kept in sync with
+	 *  Ctrl press/release input during the lock (the lock itself owns the live
+	 *  crouch state — input only updates this snapshot). On lock release, this
+	 *  drives whether the player stands or stays crouched. */
 	bool bWasCrouchingBeforeInteract = false;
 
 	/** True while the interaction-imposed movement lock is active.
