@@ -125,6 +125,11 @@ protected:
 	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusSubtitle;
 
+	/** Center-screen bomb status: plant/defuse progress + planted-banner + detonation countdown. */
+	UPROPERTY() TObjectPtr<UVerticalBox> BombStatusBox;
+	UPROPERTY() TObjectPtr<UTextBlock> BombStatusTitle;
+	UPROPERTY() TObjectPtr<UTextBlock> BombStatusSubtitle;
+
 	// ---- State accessors (null-safe traversal) ---------------------------
 
 	AProjectCompCharacter* GetLocalCharacter() const;
@@ -136,4 +141,7 @@ protected:
 	FLinearColor GetTeamColor(ETeamID Team) const;
 	FText FormatPhaseText(ERoundPhase Phase) const;
 	FText FormatTimeText(float Seconds) const;
+
+	/** Update BombStatusBox text/visibility from any active bomb site in the world. */
+	void RefreshBombStatus();
 };

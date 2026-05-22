@@ -6,6 +6,7 @@
 #include "ProjectCompPlayerController.h"
 #include "ProjectCompPlayerStart.h"
 #include "ProjectCompBarrier.h"
+#include "ProjectCompBombSite.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHUD.h"
@@ -59,6 +60,14 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	// Recharge ability pools only while gunplay is live.
 	if (GS->GetCurrentPhase() == ERoundPhase::RoundActive)
 	{
+		// Bomb-resolution check runs every tick — if a bomb hit detonated/defused
+		// since last frame, route the score and end the round immediately.
+		if (AProjectCompBombSite* TerminalSite = GetTerminalBombSite())
+		{
+			HandleBombResolution(TerminalSite);
+			return;  // round just ended — skip the rest of the tick
+		}
+
 		TickCooldownPools(DeltaSeconds);
 		EnforceLoomingPlayerBounds();
 	}
@@ -70,8 +79,13 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 		{
 			case ERoundPhase::PreRound:    StartRoundActive(); break;
 			case ERoundPhase::RoundActive:
-				// Round timeout with no plant resolution = defenders win the round (1 pt).
-				// When the bomb mechanic lands, this branch will check bomb state first.
+				if (IsAnyBombPlanted())
+				{
+					// Bomb planted but not yet resolved — round continues past
+					// the regular timer until detonate/defuse fires.
+					break;
+				}
+				// Round timeout with no plant = defenders win (1 pt).
 				GS->Server_AddTeamScore(ETeamID::Defenders, 1);
 				UE_LOG(LogProjectComp, Log, TEXT("Round %d: Timer expired with no plant. Defenders +1 (now %d)."),
 					GS->GetCurrentRound(),
@@ -294,6 +308,9 @@ void AProjectCompGameMode::StartPreRound()
 
 	// Raise spawn-room barriers — players are locked in until the round goes active.
 	Server_SetAllBarriersActive(true);
+
+	// Reset bomb sites: clear plant/defuse/detonate state from last round.
+	Server_ResetAllBombSites();
 
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: PreRound started (%.1fs)."), GS->GetCurrentRound(), PreRoundDuration);
 }
@@ -533,6 +550,64 @@ void AProjectCompGameMode::Server_SetAllBarriersActive(bool bActive)
 	}
 }
 
+bool AProjectCompGameMode::IsAnyBombPlanted() const
+{
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		if (It->bIsPlanted && !It->IsTerminal())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+AProjectCompBombSite* AProjectCompGameMode::GetTerminalBombSite() const
+{
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		if (It->IsTerminal())
+		{
+			return *It;
+		}
+	}
+	return nullptr;
+}
+
+void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
+{
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || !Site)
+	{
+		return;
+	}
+
+	if (Site->bIsDetonated)
+	{
+		GS->Server_AddTeamScore(ETeamID::Attackers, Site->PointValue);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DETONATED at %s. Attackers +%d (now %d)."),
+			GS->GetCurrentRound(), *Site->Label.ToString(), Site->PointValue,
+			GS->GetTeamLoadout(ETeamID::Attackers).Score);
+	}
+	else if (Site->bIsDefused)
+	{
+		GS->Server_AddTeamScore(ETeamID::Defenders, Site->DefusePointValue);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DEFUSED at %s. Defenders +%d (now %d)."),
+			GS->GetCurrentRound(), *Site->Label.ToString(), Site->DefusePointValue,
+			GS->GetTeamLoadout(ETeamID::Defenders).Score);
+	}
+
+	StartPostRound();
+}
+
+void AProjectCompGameMode::Server_ResetAllBombSites()
+{
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		It->Server_ResetForNewRound();
+	}
+}
+
 void AProjectCompGameMode::EnforceLoomingPlayerBounds()
 {
 	// Snap any dead player who has wandered out of their team's spawn room
@@ -580,6 +655,14 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 {
 	AProjectCompGameState* GS = GetTypedGameState();
 	if (!GS || GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+	{
+		return;
+	}
+
+	// While a bomb is planted, elimination doesn't end the round — bomb
+	// detonation/defuse is the only resolution path. (Attackers can all die
+	// after planting and still win via detonation if no defender defuses.)
+	if (IsAnyBombPlanted())
 	{
 		return;
 	}

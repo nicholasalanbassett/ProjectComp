@@ -5,6 +5,8 @@
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompGameState.h"
 #include "ProjectCompPlayerState.h"
+#include "ProjectCompBombSite.h"
+#include "EngineUtils.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -240,6 +242,35 @@ void UProjectCompHUDWidget::BuildLayout()
 	UVerticalBoxSlot* SubtitleSlot = DeathStatusBox->AddChildToVerticalBox(DeathStatusSubtitle);
 	SubtitleSlot->SetHorizontalAlignment(HAlign_Center);
 	SubtitleSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 0.0f));
+
+	// ---- Bomb status: plant/defuse progress + planted banner + countdown ----
+	// Positioned just above the crosshair, below the top-center scores.
+	BombStatusBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("BombStatusBox"));
+	UCanvasPanelSlot* BombSlot = RootCanvas->AddChildToCanvas(BombStatusBox);
+	BombSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	BombSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+	BombSlot->SetPosition(FVector2D(0.0f, -200.0f));
+	BombSlot->SetAutoSize(true);
+	BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+
+	BombStatusTitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BombStatusTitle"));
+	BombStatusTitle->SetFont(MakeFont(28));
+	BombStatusTitle->SetText(FText::FromString(TEXT("")));
+	BombStatusTitle->SetColorAndOpacity(EliminatedTextColor);
+	BombStatusTitle->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(BombStatusTitle);
+	UVerticalBoxSlot* BombTitleSlot = BombStatusBox->AddChildToVerticalBox(BombStatusTitle);
+	BombTitleSlot->SetHorizontalAlignment(HAlign_Center);
+
+	BombStatusSubtitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BombStatusSubtitle"));
+	BombStatusSubtitle->SetFont(MakeFont(16));
+	BombStatusSubtitle->SetText(FText::FromString(TEXT("")));
+	BombStatusSubtitle->SetColorAndOpacity(LabelTextColor);
+	BombStatusSubtitle->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(BombStatusSubtitle);
+	UVerticalBoxSlot* BombSubSlot = BombStatusBox->AddChildToVerticalBox(BombStatusSubtitle);
+	BombSubSlot->SetHorizontalAlignment(HAlign_Center);
+	BombSubSlot->SetPadding(FMargin(0.0f, 4.0f, 0.0f, 0.0f));
 }
 
 // =====================================================================
@@ -337,6 +368,90 @@ void UProjectCompHUDWidget::RefreshDisplay()
 			{
 				DeathStatusSubtitle->SetText(NSLOCTEXT("HUD", "LoomActive", "LOOM ACTIVE"));
 			}
+		}
+	}
+
+	RefreshBombStatus();
+}
+
+// =====================================================================
+// Bomb status (plant/defuse progress, planted banner, detonation countdown)
+// =====================================================================
+
+void UProjectCompHUDWidget::RefreshBombStatus()
+{
+	if (!BombStatusBox)
+	{
+		return;
+	}
+
+	// Find the most-interesting bomb site to display. Priority: planted >
+	// active plant > active defuse > nothing. We only show one at a time.
+	AProjectCompBombSite* DisplaySite = nullptr;
+	bool bShowDefuse = false;
+	for (TActorIterator<AProjectCompBombSite> It(GetWorld()); It; ++It)
+	{
+		AProjectCompBombSite* Site = *It;
+		if (!Site || Site->IsTerminal())
+		{
+			continue;
+		}
+		if (Site->bIsPlanted)
+		{
+			DisplaySite = Site;
+			bShowDefuse = Site->DefuseProgress > 0.01f;
+			break;  // planted always wins
+		}
+		if (Site->PlantProgress > 0.01f && !DisplaySite)
+		{
+			DisplaySite = Site;
+		}
+	}
+
+	if (!DisplaySite)
+	{
+		BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+	if (DisplaySite->bIsPlanted)
+	{
+		const float ServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		const float Remaining = FMath::Max(0.0f, DisplaySite->DetonationEndTime - ServerTime);
+		const int32 RemainingInt = FMath::CeilToInt(Remaining);
+
+		if (BombStatusTitle)
+		{
+			BombStatusTitle->SetText(FText::FromString(FString::Printf(TEXT("BOMB PLANTED AT %s"), *DisplaySite->Label.ToString())));
+			BombStatusTitle->SetColorAndOpacity(EliminatedTextColor);
+		}
+		if (BombStatusSubtitle)
+		{
+			if (bShowDefuse)
+			{
+				const int32 Percent = FMath::FloorToInt(DisplaySite->DefuseProgress * 100.0f);
+				BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("DEFUSING %d%%  —  DETONATES IN %ds"), Percent, RemainingInt)));
+			}
+			else
+			{
+				BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("DETONATES IN %ds"), RemainingInt)));
+			}
+		}
+	}
+	else
+	{
+		// Plant in progress.
+		const int32 Percent = FMath::FloorToInt(DisplaySite->PlantProgress * 100.0f);
+		if (BombStatusTitle)
+		{
+			BombStatusTitle->SetText(FText::FromString(FString::Printf(TEXT("PLANTING AT %s"), *DisplaySite->Label.ToString())));
+			BombStatusTitle->SetColorAndOpacity(AttackersColor);
+		}
+		if (BombStatusSubtitle)
+		{
+			BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("%d%%"), Percent)));
 		}
 	}
 }

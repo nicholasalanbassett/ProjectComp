@@ -60,9 +60,22 @@ public:
 	/**
 	 * Scan both teams; if one is entirely permanent-ghost (all dead AND no lives
 	 * remaining), end the round with an elimination point for the other team.
-	 * Called after every death and respawn.
+	 * Called after every death and respawn. Becomes a no-op while any bomb is
+	 * planted — bomb resolution takes priority over elimination scoring.
 	 */
 	void CheckRoundEndCondition();
+
+	/** Returns true if any bomb site in the world is currently planted (and not yet terminal). */
+	bool IsAnyBombPlanted() const;
+
+	/** Returns the first bomb site that has reached a terminal state (detonated/defused) this round, or null. */
+	class AProjectCompBombSite* GetTerminalBombSite() const;
+
+	/** Server: route score for a terminal bomb site and end the round. */
+	void HandleBombResolution(class AProjectCompBombSite* Site);
+
+	/** Server: reset all bomb sites to NotPlanted at the start of a new round. */
+	void Server_ResetAllBombSites();
 
 protected:
 

@@ -141,6 +141,13 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoFireStart);
             EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoFireEnd);
         }
+
+        // Hold E (default): plant / defuse the bomb while inside a site.
+        if (UseAction)
+        {
+            EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoUseStart);
+            EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoUseEnd);
+        }
     }
     else
     {
@@ -322,6 +329,21 @@ void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
     {
         CurrentWeapon->Server_SetTriggerHeld(bHeld);
     }
+}
+
+void AProjectCompCharacter::DoUseStart()
+{
+    Server_SetUseHeld(true);
+}
+
+void AProjectCompCharacter::DoUseEnd()
+{
+    Server_SetUseHeld(false);
+}
+
+void AProjectCompCharacter::Server_SetUseHeld_Implementation(bool bHeld)
+{
+    bUseHeld = bHeld;
 }
 
 // Spawn the default weapon for newly-possessed characters on the server.

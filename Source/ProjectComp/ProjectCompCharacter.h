@@ -77,6 +77,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* FireAction;
 
+	/** Hold-E (default): plant/defuse the bomb while inside a bomb-site trigger. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* UseAction;
+
 	/** Weapon class spawned for every freshly-possessed character. Set in BP defaults. */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
@@ -123,9 +127,19 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoFireEnd();
 
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoUseStart();
+
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoUseEnd();
+
 	/** Server: forward trigger state from client RPC down to the equipped weapon. */
 	UFUNCTION(Server, Reliable)
 	void Server_SetTriggerHeld(bool bHeld);
+
+	/** Server: track Use-key held state for plant/defuse interactions. */
+	UFUNCTION(Server, Reliable)
+	void Server_SetUseHeld(bool bHeld);
 
 	/** Server: spawn + equip the DefaultWeaponClass for this character. Called on possession. */
 	virtual void Server_EquipDefaultWeapon();
@@ -178,6 +192,9 @@ public:
 	UProjectCompHealthComponent* GetHealthComponent() const { return HealthComponent; }
 	EMovementState GetMovementState() const { return MovementState; }
 
+	/** Server: true while the Use key is currently held. Polled by ABombSite for plant/defuse. */
+	bool IsUseHeld() const { return bUseHeld; }
+
 protected:
 
 	/** Local-only movement state — anim BP reads it via the getter; not replicated. */
@@ -192,6 +209,9 @@ protected:
 	/** Server-spawned weapon actor currently equipped. Replicated so clients can render it. */
 	UPROPERTY(Replicated)
 	TObjectPtr<AProjectCompHitscanWeapon> CurrentWeapon;
+
+	/** Server-only: tracked Use-key state for plant/defuse interactions. */
+	bool bUseHeld = false;
 
 	/**
 	 * Per-client mesh visibility refresh. Runs on every client (including listen
