@@ -305,8 +305,15 @@ void AProjectCompHitscanWeapon::FireOneShot()
 	}
 
 	// Accumulate so the next bullet's trace starts from where this kick landed.
-	ServerRecoilPitch += Entry.X;
-	ServerRecoilYaw   += Entry.Y;
+	// Pitch and yaw scale independently: VerticalRecoilMult + HorizontalRecoilMult
+	// are global knobs; CrouchStillVerticalRecoilMult is a slight pitch-only
+	// reduction that fires ONLY when crouched AND below CrouchMoveSpeedThreshold.
+	const bool bCrouchedStill = OwnerChar && OwnerChar->bIsCrouched
+		&& OwnerChar->GetVelocity().Size2D() < CrouchMoveSpeedThreshold;
+	const float PitchScale = VerticalRecoilMult * (bCrouchedStill ? CrouchStillVerticalRecoilMult : 1.0f);
+	const float YawScale   = HorizontalRecoilMult;
+	ServerRecoilPitch += Entry.X * PitchScale;
+	ServerRecoilYaw   += Entry.Y * YawScale;
 
 	// Per-shot Client RPC removed — the Multicast_OnFired below already arrives
 	// on the firer's client, and the owning-client side advances its local
@@ -341,16 +348,23 @@ float AProjectCompHitscanWeapon::CalcMovementSpread(const AProjectCompCharacter*
 	}
 	else
 	{
-		const float Speed    = Char->GetVelocity().Size2D();
-		const float MaxSpeed = CharMov ? CharMov->MaxWalkSpeed : 560.0f;
-		// Ramp from 0 at MoveSpeedThreshold to full MoveAdd at MaxSpeed.
-		// Below threshold: zero. Just above: eases in gradually instead of snapping.
-		const float SpeedFrac = FMath::Clamp((Speed - MoveSpeedThreshold) / FMath::Max(MaxSpeed - MoveSpeedThreshold, 1.0f), 0.0f, 1.0f);
+		// Valorant-style binary: above the relevant threshold = full movement
+		// penalty, below = zero. Standing and crouched have independent thresholds
+		// so you can tune "tac-walk accurate, crouch-walk slight cone, run full
+		// cone" simultaneously.
+		const float Speed     = Char->GetVelocity().Size2D();
+		const float Threshold = Char->bIsCrouched ? CrouchMoveSpeedThreshold : MoveSpeedThreshold;
 		const float MoveAdd   = Char->bIsCrouched ? CrouchMovingSpreadAdd : MovingSpreadAdd;
-		Spread += MoveAdd * SpeedFrac * TransitionSpreadMultiplier;
+		if (Speed > Threshold)
+		{
+			Spread += MoveAdd * TransitionSpreadMultiplier;
+		}
 	}
 
-	if (Char->bIsCrouched && Spread > 0.0f)
+	// Crouch tightening applies on the ground only. In mid-air, crouching gives
+	// no spread bonus — bunny-hop-crouch can't be used to peek with better accuracy.
+	const bool bFalling = CharMov && CharMov->IsFalling();
+	if (Char->bIsCrouched && !bFalling && Spread > 0.0f)
 	{
 		Spread *= CrouchSpreadMult;
 	}
@@ -393,7 +407,14 @@ void AProjectCompHitscanWeapon::Multicast_OnFired_Implementation(FVector_NetQuan
 		{
 			const int32 Idx = FMath::Min(LocalRecoilPatternIndex, RecoilPattern.Num() - 1);
 			const FVector2D& Entry = RecoilPattern[Idx];
-			OwnerChar->ApplyRecoilKickLocal(Entry.X, Entry.Y, RecoilRecoveryRate, RecoilRecoveryDelay);
+			// Scale the visual camera kick to match the server-side bullet-dir scaling
+			// or crouched players would see a big camera kick while their bullets still
+			// group tightly — feels desynced.
+			const bool bCrouchedStill = OwnerChar->bIsCrouched
+				&& OwnerChar->GetVelocity().Size2D() < CrouchMoveSpeedThreshold;
+			const float PitchScale = VerticalRecoilMult * (bCrouchedStill ? CrouchStillVerticalRecoilMult : 1.0f);
+			const float YawScale   = HorizontalRecoilMult;
+			OwnerChar->ApplyRecoilKickLocal(Entry.X * PitchScale, Entry.Y * YawScale, RecoilRecoveryRate, RecoilRecoveryDelay);
 			LocalRecoilPatternIndex = FMath::Min(LocalRecoilPatternIndex + 1, RecoilPattern.Num() - 1);
 		}
 	}

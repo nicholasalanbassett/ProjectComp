@@ -597,7 +597,12 @@ void UProjectCompHUDWidget::RefreshDisplay()
 			// Temporary ghost: respawn countdown.
 			DeathStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
 
-			const float ServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			// Compare against the replicated server clock — the timestamp was
+			// stamped on the server using server world time, so a remote client
+			// reading local-world time would drift. Reuses the outer GS for
+			// the server clock; falls back to local world time only if GS is null.
+			const UWorld* World = GetWorld();
+			const float ServerTime = GS ? GS->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
 			const float Remaining = FMath::Max(0.0f, PS->GetRespawnEndTime() - ServerTime);
 			const int32 RemainingInt = FMath::CeilToInt(Remaining);
 
@@ -697,7 +702,11 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 
 	if (DisplaySite->bIsPlanted)
 	{
-		const float ServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		// Use the replicated server clock — DetonationEndTime is stamped on the
+		// server, so reading local-world time on a remote client would drift.
+		const UWorld* World = GetWorld();
+		const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+		const float ServerTime = GS ? GS->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
 		const float Remaining = FMath::Max(0.0f, DisplaySite->DetonationEndTime - ServerTime);
 		const int32 RemainingInt = FMath::CeilToInt(Remaining);
 

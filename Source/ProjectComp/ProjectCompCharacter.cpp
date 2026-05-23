@@ -5,6 +5,8 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "EnhancedPlayerInput.h"
 #include "InputActionValue.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Engine/DamageEvents.h"
@@ -159,6 +161,14 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         if (AbilitySlot2Action)
         {
             EnhancedInputComponent->BindAction(AbilitySlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot2);
+        }
+
+        // Re-emit held input on possession (fixes the "held F/Mouse1 across
+        // respawn never re-engages" bug). Deferred one tick so Enhanced Input
+        // has processed the first frame and the equipped weapon exists.
+        if (UWorld* World = GetWorld())
+        {
+            World->GetTimerManager().SetTimerForNextTick(this, &AProjectCompCharacter::ReconcileHeldInputAfterPossession);
         }
     }
     else
@@ -781,6 +791,54 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     PC->RequestAbilityCast(Ability, TargetLocation);
 }
 
+// Held-input reconciliation on possession.
+//
+// Enhanced Input is edge-triggered: "Started" fires when an action transitions
+// from inactive to active, "Completed" on the reverse. If a player is holding
+// Mouse1/F when their pawn is destroyed, the held state lives on the *pawn*
+// (bIsFiring + weapon's bTriggerHeld, or bUseHeld on this character). The new
+// pawn starts those booleans at false, and Enhanced Input does NOT auto-emit
+// Started for keys that were already down before this pawn was possessed.
+//
+// Result without this fix: the player keeps Mouse1 held through death, sees
+// the new pawn spawn, and nothing fires until they release+re-press. Worst
+// case is a held F that fails to start planting after a mid-plant death.
+//
+// Fix: one tick after SetupPlayerInputComponent runs (so the input subsystem
+// has populated action values for the new pawn), query each held-style action
+// and synthesise the Started call.
+void AProjectCompCharacter::ReconcileHeldInputAfterPossession()
+{
+    const APlayerController* PC = GetController<APlayerController>();
+    if (!PC)
+    {
+        return;
+    }
+    const ULocalPlayer* LP = PC->GetLocalPlayer();
+    if (!LP)
+    {
+        return;
+    }
+    const UEnhancedInputLocalPlayerSubsystem* Subsystem =
+        LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+    const UEnhancedPlayerInput* PlayerInput = Subsystem ? Subsystem->GetPlayerInput() : nullptr;
+    if (!PlayerInput)
+    {
+        return;
+    }
+
+    if (FireAction && PlayerInput->GetActionValue(FireAction).Get<bool>())
+    {
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Input] Reconcile: Fire held across possession — synthesising Started."));
+        DoFireStart();
+    }
+    if (UseAction && PlayerInput->GetActionValue(UseAction).Get<bool>())
+    {
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Input] Reconcile: Use held across possession — synthesising Started."));
+        DoUseStart();
+    }
+}
+
 bool AProjectCompCharacter::Server_SetUseHeld_Validate(bool /*bHeld*/)
 {
     return true;
@@ -1050,12 +1108,14 @@ void AProjectCompCharacter::Tick(float DeltaTime)
     Loc.Z = StandingCameraZ + EngineOffset - VisualOffset;
     FirstPersonCameraComponent->SetRelativeLocation(Loc);
 
-    // ---- Intra-spray recoil recovery (owning client only) -----------------
-    // Smoothly ease the camera back down between shots while the trigger is
-    // held. When firing stops the camera stays at its current position.
+    // ---- Recoil recovery (owning client only) -----------------------------
+    // Smoothly ease the camera back toward pre-spray neutral. Runs both DURING
+    // a held spray (intra-spray recovery) and AFTER trigger release until the
+    // accumulator reaches zero. Valorant-style: tap-fire kicks up fast, then
+    // the camera drifts back down on its own at RecoilRecoveryRate.
     const bool bHasRecoil = !FMath::IsNearlyZero(AccumulatedRecoilPitch, 0.01f)
                           || !FMath::IsNearlyZero(AccumulatedRecoilYaw, 0.01f);
-    if (IsLocallyControlled() && bIsFiring && bHasRecoil)
+    if (IsLocallyControlled() && bHasRecoil)
     {
         TimeUntilRecoilRecovery = FMath::Max(0.0f, TimeUntilRecoilRecovery - DeltaTime);
         if (TimeUntilRecoilRecovery <= 0.0f)

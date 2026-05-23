@@ -78,9 +78,19 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
 	float MovingSpreadAdd = 4.0f;
 
-	/** Ground speed (cm/s) below which the character is considered stationary for spread purposes. */
+	/** Ground speed (cm/s) above which a STANDING character incurs the full
+	 *  movement spread penalty. Below = perfectly accurate. Set above your
+	 *  tactical-walk speed to allow shift-walk + still to stay accurate. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
 	float MoveSpeedThreshold = 100.0f;
+
+	/** Ground speed (cm/s) above which a CROUCHED character incurs the crouch-
+	 *  movement spread penalty. Kept independent of MoveSpeedThreshold so you
+	 *  can have "tac-walk accurate, crouch-walk slight cone, run full cone"
+	 *  simultaneously. Set below your crouch-walk speed to make any crouch
+	 *  motion incur a slight cone; set above to make crouch-walk also accurate. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float CrouchMoveSpeedThreshold = 100.0f;
 
 	/**
 	 * Horizontal spread as a fraction of vertical spread (0–1).
@@ -129,6 +139,22 @@ public:
 	/** Seconds of idle before RecoilPatternIndex resets to 0. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
 	float RecoilPatternResetDelay = 0.15f;
+
+	/** Global multiplier on the vertical (pitch) component of every pattern[N]
+	 *  entry. Drop to flatten climb; raise to make the gun harder to control. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0", ClampMax = "3.0"))
+	float VerticalRecoilMult = 1.0f;
+
+	/** Global multiplier on the horizontal (yaw) component of every pattern[N]
+	 *  entry. Drop to flatten the left/right sweep; raise to amplify it. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0", ClampMax = "3.0"))
+	float HorizontalRecoilMult = 1.0f;
+
+	/** Extra pitch-only multiplier applied ONLY when the firer is crouched AND
+	 *  below CrouchMoveSpeedThreshold (i.e. crouched + still). Slight reduction
+	 *  to vertical climb; horizontal sweep is untouched. Set to 1.0 to disable. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	float CrouchStillVerticalRecoilMult = 0.92f;
 
 	// ---- Lag compensation -------------------------------------------------
 

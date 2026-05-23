@@ -273,15 +273,19 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		return false;
 	}
 
-	// All checks passed: deduct pool, dispatch per-ability gameplay effect, then
-	// fire the cosmetic multicast so clients can hook VFX/audio off it.
-	GS->Server_SetTeamCooldownPool(Team, 0.0f);
-
+	// All checks passed: dispatch per-ability gameplay effect, then deduct the
+	// pool + fire the cosmetic multicast IF the effect actually spawned. The
+	// deduct used to happen before the switch, which let a misconfigured class
+	// (e.g. unset FlashDomeClass with a null CDO, or a spawn-collision reject)
+	// drain the pool without producing a dome.
+	//
 	// Inline switch is intentional — we only have one implemented ability so
 	// far. Refactor to an IAbilityHandler dispatch table when the second one
 	// lands; abstracting now would over-fit to a single example.
 	UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
 		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
+
+	bool bSpawnSucceeded = false;
 
 	switch (Type)
 	{
@@ -310,21 +314,28 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		if (Dome)
 		{
 			Dome->Server_Initialize(Team);
+			bSpawnSucceeded = true;
 			UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] FlashDome spawned at %s (target=%s + lift) for team %d."),
 				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
 		}
 		else
 		{
-			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] FlashDome SpawnActor returned null."));
+			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] FlashDome SpawnActor returned null — pool not deducted."));
 		}
 		break;
 	}
 	default:
-		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast type=%d has no gameplay handler yet (cosmetic multicast only)."),
+		UE_LOG(LogProjectComp, Warning, TEXT("[Loom] Cast type=%d has no gameplay handler yet — pool not deducted."),
 			static_cast<int32>(Type));
 		break;
 	}
 
+	if (!bSpawnSucceeded)
+	{
+		return false;
+	}
+
+	GS->Server_SetTeamCooldownPool(Team, 0.0f);
 	GS->Multicast_OnAbilityCast(Type, TargetLocation, Team);
 	return true;
 }

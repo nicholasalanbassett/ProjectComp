@@ -164,6 +164,15 @@ protected:
 	 *  client side is intentionally naive. */
 	void RequestAbilityCastForSlot(int32 SlotIndex);
 
+	/** On respawn, the new pawn's held-input booleans (bUseHeld on this character,
+	 *  bTriggerHeld on the freshly-equipped weapon) initialise to false. If the
+	 *  player never released Fire / Use across death, Enhanced Input's edge-
+	 *  triggered "Started" event won't re-fire on the new pawn — so the held
+	 *  intent silently drops until they release+re-press. This helper polls the
+	 *  current Enhanced Input action state one frame after possession and
+	 *  re-emits Started for any action that's still physically held. */
+	void ReconcileHeldInputAfterPossession();
+
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoUseEnd();
 
