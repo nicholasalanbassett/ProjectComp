@@ -60,6 +60,29 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
 	float FlashFadeDuration = 1.5f;
 
+	/** Cosine threshold for the facing check: dot(view, toCenter) >= this →
+	 *  FULL flash; below → brief HALF flash. 0.5 ≈ 60° cone, generous read of
+	 *  "looking at it". Raise toward 0.7 for stricter facing; lower toward 0.0
+	 *  for "anything not behind you = full flash". */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+	float FacingDotThreshold = 0.5f;
+
+	/** Full-white duration applied to a HALF-flashed (off-axis) target. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float HalfFlashFullWhiteDuration = 0.05f;
+
+	/** Fade duration applied to a HALF-flashed (off-axis) target. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float HalfFlashFadeDuration = 0.05f;
+
+	/** Z offset (cm) added to TargetLocation when the dome spawns. Lifts the
+	 *  center above floor level so LOS traces from eye-height don't graze the
+	 *  floor mesh. ~150 lands near standing eye level (capsule half-height 96
+	 *  + camera Z 64 ≈ 160). The GameMode reads this off the dome class's CDO
+	 *  before SpawnActor, so each BP variant can have its own value. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float SpawnZLift = 150.0f;
+
 	// ---- Server interface --------------------------------------------------
 
 	/** Server: configure the dome with the caster's team. Targets are the OPPOSING team. */

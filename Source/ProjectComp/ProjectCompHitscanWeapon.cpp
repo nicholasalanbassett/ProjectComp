@@ -146,6 +146,13 @@ void AProjectCompHitscanWeapon::Tick(float DeltaTime)
 		return;
 	}
 
+	// No phase gate here — the player decides when to fire. The original
+	// "bullets spray after round-end kill" bug was caused by the character
+	// RPC dropping release events, leaving bTriggerHeld stuck true. With
+	// releases now flowing through unconditionally (see Character::
+	// Server_SetTriggerHeld_Implementation), bTriggerHeld accurately reflects
+	// player intent across all phases — including intentional PostRound fire
+	// for economy damage / save shots.
 	if (!bTriggerHeld)
 	{
 		// Cap accumulation so we don't bank infinite shots.

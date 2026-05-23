@@ -700,19 +700,12 @@ void AProjectCompCharacter::Server_SetTriggerHeld_Implementation(bool bHeld)
         }
     }
 
-    // Phase gate — only RoundActive is gunplay. Drops fire spam in PreRound /
-    // PostRound / MatchEnded.
-    if (const UWorld* World = GetWorld())
-    {
-        if (const AProjectCompGameState* GS = World->GetGameState<AProjectCompGameState>())
-        {
-            if (GS->GetCurrentPhase() != ERoundPhase::RoundActive)
-            {
-                return;
-            }
-        }
-    }
-
+    // No phase gate here — the trigger-held state should always reflect the
+    // player's actual input. The weapon's Tick combines this with a phase gate
+    // to decide whether to actually fire. Keeping the state accurate means a
+    // held trigger across a PreRound -> RoundActive transition auto-fires the
+    // moment gunplay opens, and a release during PostRound is recorded
+    // correctly (fixes the "bullets keep spraying after round-end kill" bug).
     CurrentWeapon->Server_SetTriggerHeld(bHeld);
 }
 

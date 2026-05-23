@@ -297,14 +297,13 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 		// Lift the dome above the trace impact point. Floor-level dome centers
 		// fail LOS because the trace from camera (~Z=160) down to dome (Z=0)
-		// grazes or hits the floor mesh before reaching the endpoint. 150cm
-		// lands the center near standing eye-level (capsule half-height 96 +
-		// camera Z 64 = 160), so a standing enemy facing the dome's general
-		// area has the center naturally inside their crosshair.
-		// TODO(loom-tuning): promote to a UPROPERTY on the dome class in a
-		// future restart-pass so designers can tune per-ability.
-		constexpr float kDomeSpawnZLift = 150.0f;
-		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, kDomeSpawnZLift);
+		// grazes or hits the floor mesh before reaching the endpoint. Read the
+		// per-class lift off the CDO so each BP variant can tune independently.
+		const AProjectCompFlashDome* DomeCDO = SpawnClass
+			? SpawnClass->GetDefaultObject<AProjectCompFlashDome>()
+			: nullptr;
+		const float DomeZLift = DomeCDO ? DomeCDO->SpawnZLift : 150.0f;
+		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, DomeZLift);
 
 		AProjectCompFlashDome* Dome = GetWorld()->SpawnActor<AProjectCompFlashDome>(
 				SpawnClass, DomeSpawn, FRotator::ZeroRotator, SpawnParams);

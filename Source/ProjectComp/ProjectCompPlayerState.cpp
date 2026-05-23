@@ -2,6 +2,7 @@
 
 #include "ProjectCompPlayerState.h"
 #include "Engine/World.h"
+#include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
 
 AProjectCompPlayerState::AProjectCompPlayerState()
@@ -130,8 +131,14 @@ void AProjectCompPlayerState::Server_ApplyFlash(float FullWhiteDuration, float F
 	{
 		return;
 	}
+	// Use the GameState's replicated server clock (auto-synced to clients) so
+	// the HUD on a remote client compares apples-to-apples when computing the
+	// flash overlay alpha. Falls back to local world time if GameState isn't
+	// up yet (shouldn't happen during gameplay).
 	const UWorld* World = GetWorld();
-	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+	const float Now = GS ? GS->GetServerWorldTimeSeconds()
+	                     : (World ? World->GetTimeSeconds() : 0.0f);
 	FlashFadeStartTime = Now + FMath::Max(0.0f, FullWhiteDuration);
 	FlashEndTime       = FlashFadeStartTime + FMath::Max(0.0f, FadeDuration);
 }

@@ -17,6 +17,7 @@
 #include "Components/TextBlock.h"
 #include "Components/Image.h"
 #include "Fonts/SlateFontInfo.h"
+#include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
 #include "Styling/SlateColor.h"
 #include "Engine/World.h"
@@ -482,7 +483,11 @@ float UProjectCompHUDWidget::RefreshFlashOverlay()
 		return 0.0f;
 	}
 
-	const float Now      = World->GetTimeSeconds();
+	// Compare against the GameState's replicated server clock so this stays in
+	// sync with the timestamps stamped by Server_ApplyFlash. Using local-world
+	// time on a remote client would drift visibly (flash too short or too long).
+	const AGameStateBase* GS = World->GetGameState();
+	const float Now      = GS ? GS->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
 	const float EndTime  = PS->GetFlashEndTime();
 	const float FadeBeg  = PS->GetFlashFadeStartTime();
 

@@ -178,19 +178,14 @@ void AProjectCompFlashDome::Server_TickFlashApplication()
 		// the dome center. If they're looking roughly at it, full flash; otherwise
 		// they catch a brief "half-blind" peripheral flash. Both still latch this
 		// pawn so the dome can't repeatedly re-flash them within its lifetime.
-		// TODO(loom-tuning): promote thresholds + half-flash durations to UPROPERTYs
-		// in a future restart-pass so designers can tune per-dome.
-		constexpr float kFacingDotThreshold     = 0.5f;   // ~60deg cone, generous "looking at" read
-		constexpr float kHalfFlashFullWhite     = 0.05f;
-		constexpr float kHalfFlashFade          = 0.05f;  // total 0.1s peripheral blink
-
+		// Thresholds + half-flash durations are now BP-tunable per-variant.
 		const FVector ViewDir = PC->GetControlRotation().Vector();
 		const FVector ToCenter = (DomeCenter - CamLoc).GetSafeNormal();
 		const float FacingDot = FVector::DotProduct(ViewDir, ToCenter);
-		const bool bFacingCenter = FacingDot >= kFacingDotThreshold;
+		const bool bFacingCenter = FacingDot >= FacingDotThreshold;
 
-		const float FullWhite = bFacingCenter ? FlashFullWhiteDuration : kHalfFlashFullWhite;
-		const float Fade      = bFacingCenter ? FlashFadeDuration      : kHalfFlashFade;
+		const float FullWhite = bFacingCenter ? FlashFullWhiteDuration : HalfFlashFullWhiteDuration;
+		const float Fade      = bFacingCenter ? FlashFadeDuration      : HalfFlashFadeDuration;
 
 		PS->Server_ApplyFlash(FullWhite, Fade);
 		AlreadyFlashed.Add(Pawn);
