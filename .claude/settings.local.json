@@ -11,7 +11,9 @@
       "PowerShell(Get-Process | Where-Object { $_.Name -match \"Unreal|LiveCoding|UE\" } | Select-Object Name, Id)",
       "PowerShell(Get-ChildItem \"C:\\\\Users\\\\nickb\\\\Documents\\\\Unreal Projects\\\\ProjectComp\\\\Intermediate\\\\Build\\\\Win64\" -Recurse -ErrorAction SilentlyContinue | Select-Object Name | Where-Object { $_.Name -match \"LiveCoding|lock\" })",
       "Bash(\"c:/Program Files/Epic Games/UE_5.7/Engine/Build/BatchFiles/Build.bat\" ProjectCompEditor Win64 Development -Project=\"c:/Users/nickb/Documents/Unreal Projects/ProjectComp/ProjectComp.uproject\" -WaitMutex -FromMsBuild)",
-      "PowerShell(& \"C:\\\\Program Files\\\\Epic Games\\\\UE_5.7\\\\Engine\\\\Build\\\\BatchFiles\\\\Build.bat\" ProjectCompEditor Win64 Development -Project=\"C:\\\\Users\\\\nickb\\\\Documents\\\\Unreal Projects\\\\ProjectComp\\\\ProjectComp.uproject\" -WaitMutex -FromMsBuild 2>&1)"
+      "PowerShell(& \"C:\\\\Program Files\\\\Epic Games\\\\UE_5.7\\\\Engine\\\\Build\\\\BatchFiles\\\\Build.bat\" ProjectCompEditor Win64 Development -Project=\"C:\\\\Users\\\\nickb\\\\Documents\\\\Unreal Projects\\\\ProjectComp\\\\ProjectComp.uproject\" -WaitMutex -FromMsBuild 2>&1)",
+      "Bash(\"/c/Program Files/Epic Games/UE_5.7/Engine/Build/BatchFiles/Build.bat\" ProjectCompEditor Win64 Development -Project=\"C:\\\\Users\\\\nickb\\\\Documents\\\\Unreal Projects\\\\ProjectComp\\\\ProjectComp.uproject\" -WaitMutex -FromMsBuild)",
+      "PowerShell(Get-Process UnrealEditor -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime, @{N='Memory\\(MB\\)';E={[math]::Round\\($_.WorkingSet / 1MB\\)}})"
     ]
   }
 }
