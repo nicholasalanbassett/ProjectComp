@@ -637,6 +637,25 @@ void AProjectCompGameMode::Server_SwapAllPlayerTeams()
 		It->Server_SwapOwnerTeam();
 	}
 
+	// Swap team loadouts so per-team state (Score in particular) follows the
+	// players to their new side. Without this, the "Attackers" Score remains
+	// owned by the role label after the swap — meaning the team that earned
+	// those points is now Defenders, and any subsequent attacker-side wins
+	// land in the opponent's totals. AbilitySlot1/2 and SharedCooldownPool
+	// get reset in StartPreRound right after, so only Score truly needs to
+	// move, but we swap the whole struct so future per-team fields are
+	// handled the same way without needing to revisit this function.
+	if (AProjectCompGameState* GS = GetTypedGameState())
+	{
+		const FTeamLoadout AttackerLoadout = GS->GetTeamLoadout(ETeamID::Attackers);
+		const FTeamLoadout DefenderLoadout = GS->GetTeamLoadout(ETeamID::Defenders);
+		GS->Server_SetTeamLoadout(ETeamID::Attackers, DefenderLoadout);
+		GS->Server_SetTeamLoadout(ETeamID::Defenders, AttackerLoadout);
+		UE_LOG(LogProjectComp, Log, TEXT("Half-time swap: scores follow players — Attackers now %d, Defenders now %d."),
+			GS->GetTeamLoadout(ETeamID::Attackers).Score,
+			GS->GetTeamLoadout(ETeamID::Defenders).Score);
+	}
+
 	UE_LOG(LogProjectComp, Log, TEXT("Half-time swap: %d players changed sides."), SwappedCount);
 }
 
