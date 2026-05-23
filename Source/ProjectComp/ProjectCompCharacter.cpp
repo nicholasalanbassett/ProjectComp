@@ -153,13 +153,9 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoUseEnd);
         }
 
-        // Press 1 / 2: cast looming abilities. Bindings fire regardless of alive
-        // state — the server-side gate in Server_RequestAbilityCast rejects
-        // casts from living players (silent reject, no client-side surface).
-        if (AbilitySlot1Action)
-        {
-            EnhancedInputComponent->BindAction(AbilitySlot1Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot1);
-        }
+        // Slot 1 (Loom) is cast via the minimap UI, not a character input —
+        // see UProjectCompMinimapWidget. Slot 2 (mid-round) is still pending
+        // a design direction; the Q binding stays as scaffolding until then.
         if (AbilitySlot2Action)
         {
             EnhancedInputComponent->BindAction(AbilitySlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot2);
@@ -734,15 +730,9 @@ void AProjectCompCharacter::DoUseEnd()
     Server_SetUseHeld(false);
 }
 
-void AProjectCompCharacter::DoCastAbilitySlot1()
-{
-    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot 1 input pressed."));
-    RequestAbilityCastForSlot(1);
-}
-
 void AProjectCompCharacter::DoCastAbilitySlot2()
 {
-    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot 2 input pressed."));
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Slot 2 input pressed."));
     RequestAbilityCastForSlot(2);
 }
 
@@ -751,7 +741,7 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     AProjectCompPlayerController* PC = GetController<AProjectCompPlayerController>();
     if (!PC)
     {
-        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: no PlayerController (not locally controlled?)."), SlotIndex);
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Slot %d: no PlayerController (not locally controlled?)."), SlotIndex);
         return;
     }
 
@@ -763,7 +753,7 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
     if (!PS || !GS)
     {
-        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: missing PlayerState (%d) or GameState (%d)."),
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Slot %d: missing PlayerState (%d) or GameState (%d)."),
             SlotIndex, PS != nullptr, GS != nullptr);
         return;
     }
@@ -771,7 +761,7 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     const EAbilityType Ability = (SlotIndex == 1) ? Loadout.AbilitySlot1 : Loadout.AbilitySlot2;
     if (Ability == EAbilityType::None)
     {
-        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: team %d has no drafted ability for this slot (vote in PreRound first)."),
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Slot %d: team %d has no drafted ability for this slot (vote in PreRound first)."),
             SlotIndex, static_cast<int32>(PS->GetTeamID()));
         return;
     }
@@ -793,7 +783,7 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
         TargetLocation = Hit.ImpactPoint;
     }
 
-    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: forwarding cast type=%d to server, target=%s."),
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Slot %d: forwarding cast type=%d to server, target=%s."),
         SlotIndex, static_cast<int32>(Ability), *TargetLocation.ToCompactString());
     PC->RequestAbilityCast(Ability, TargetLocation);
 }

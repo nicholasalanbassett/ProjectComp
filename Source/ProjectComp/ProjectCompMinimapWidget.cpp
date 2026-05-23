@@ -129,14 +129,6 @@ void UProjectCompMinimapWidget::NativeTick(const FGeometry& MyGeometry, float In
 	UpdateTeammateMarkers();
 }
 
-FReply UProjectCompMinimapWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
-{
-	// Slot 2 is a mid-round ability (alive player aim-cast), not Loom — so the
-	// minimap doesn't switch slots. Override kept declared so the next restart-
-	// pass can remove it cleanly without a Live-Coding-incompatible header churn.
-	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
-}
-
 FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
 	if (InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
@@ -181,13 +173,13 @@ FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeo
 	const EAbilityType LoomAbility = Loadout.AbilitySlot1;
 	if (LoomAbility == EAbilityType::None)
 	{
-		UE_LOG(LogProjectComp, Log,
+		UE_LOG(LogProjectComp, Verbose,
 			TEXT("[Loom] Minimap click @ %s → team has no Loom ability drafted (slot 1 = None)."),
 			*TargetLocation.ToCompactString());
 		return FReply::Handled();
 	}
 
-	UE_LOG(LogProjectComp, Log,
+	UE_LOG(LogProjectComp, Verbose,
 		TEXT("[Loom] Minimap click @ widget(%.0f, %.0f)/(%.0f, %.0f) → world %s → Loom ability %d."),
 		LocalPixel.X, LocalPixel.Y, AreaSize.X, AreaSize.Y,
 		*TargetLocation.ToCompactString(), static_cast<int32>(LoomAbility));

@@ -103,7 +103,7 @@ void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
 		InputMode.SetWidgetToFocus(Widget->TakeWidget());
 		SetInputMode(InputMode);
 		bMinimapOpen = true;
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Minimap opened."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Minimap opened."));
 	}
 	else if (!bOpen && bMinimapOpen)
 	{
@@ -111,7 +111,7 @@ void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
 		bShowMouseCursor = false;
 		SetInputMode(FInputModeGameOnly());
 		bMinimapOpen = false;
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Minimap closed."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Minimap closed."));
 	}
 }
 

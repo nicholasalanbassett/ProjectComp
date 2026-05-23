@@ -95,11 +95,8 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* UseAction;
 
-	/** Press 1: cast team ability slot 1 (looming only — server rejects when alive). */
-	UPROPERTY(EditAnywhere, Category ="Input")
-	UInputAction* AbilitySlot1Action;
-
-	/** Press 2: cast team ability slot 2. */
+	/** Press 2: cast team ability slot 2 (mid-round ability). Slot 1 is cast via
+	 *  the minimap UI, not a character input — see UProjectCompMinimapWidget. */
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* AbilitySlot2Action;
 
@@ -156,9 +153,6 @@ protected:
 
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoUseStart();
-
-	UFUNCTION(BlueprintCallable, Category="Input")
-	virtual void DoCastAbilitySlot1();
 
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoCastAbilitySlot2();

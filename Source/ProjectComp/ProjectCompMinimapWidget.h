@@ -83,7 +83,6 @@ protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
-	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
 	/** Build the widget tree programmatically. */
 	void BuildLayout();
@@ -121,8 +120,4 @@ protected:
 	 *  thrash the widget tree on each tick. */
 	UPROPERTY()
 	TArray<TObjectPtr<UImage>> TeammateMarkers;
-
-	/** Active ability slot the next click will place (1 or 2). Persists across
-	 *  re-opens; not replicated — purely local UI state. */
-	int32 SelectedSlot = 1;
 };

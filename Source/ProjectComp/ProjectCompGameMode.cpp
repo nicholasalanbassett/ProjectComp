@@ -233,7 +233,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 	if (GS->GetCurrentPhase() != ERoundPhase::RoundActive)
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: round not active (phase=%d)."),
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: round not active (phase=%d)."),
 			static_cast<int32>(GS->GetCurrentPhase()));
 		return false;
 	}
@@ -241,27 +241,27 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 	AProjectCompPlayerState* PS = Caster ? Caster->GetPlayerState<AProjectCompPlayerState>() : nullptr;
 	if (!PS)
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: no PlayerState."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: no PlayerState."));
 		return false;
 	}
 
 	if (PS->IsAlive())
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: caster is alive (Loom requires looming/dead)."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: caster is alive (Loom requires looming/dead)."));
 		return false;
 	}
 
 	const ETeamID Team = PS->GetTeamID();
 	if (Team == ETeamID::Spectator)
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: caster on Spectator team."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: caster on Spectator team."));
 		return false;
 	}
 
 	const FTeamLoadout Loadout = GS->GetTeamLoadout(Team);
 	if (Type != Loadout.AbilitySlot1 && Type != Loadout.AbilitySlot2)
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: ability %d not drafted by team %d (slots: %d, %d)."),
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: ability %d not drafted by team %d (slots: %d, %d)."),
 			static_cast<int32>(Type), static_cast<int32>(Team),
 			static_cast<int32>(Loadout.AbilitySlot1), static_cast<int32>(Loadout.AbilitySlot2));
 		return false;
@@ -269,7 +269,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 	if (Loadout.SharedCooldownPool < 1.0f)
 	{
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: pool not full (%.2f)."), Loadout.SharedCooldownPool);
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: pool not full (%.2f)."), Loadout.SharedCooldownPool);
 		return false;
 	}
 
@@ -280,7 +280,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 	// Inline switch is intentional — we only have one implemented ability so
 	// far. Refactor to an IAbilityHandler dispatch table when the second one
 	// lands; abstracting now would over-fit to a single example.
-	UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
 		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
 
 	switch (Type)
@@ -311,7 +311,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		if (Dome)
 		{
 			Dome->Server_Initialize(Team);
-			UE_LOG(LogProjectComp, Log, TEXT("[Loom] FlashDome spawned at %s (target=%s + lift) for team %d."),
+			UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] FlashDome spawned at %s (target=%s + lift) for team %d."),
 				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
 		}
 		else
@@ -321,7 +321,7 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		break;
 	}
 	default:
-		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast type=%d has no gameplay handler yet (cosmetic multicast only)."),
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast type=%d has no gameplay handler yet (cosmetic multicast only)."),
 			static_cast<int32>(Type));
 		break;
 	}

@@ -195,7 +195,7 @@ void AProjectCompFlashDome::Server_TickFlashApplication()
 		PS->Server_ApplyFlash(FullWhite, Fade);
 		AlreadyFlashed.Add(Pawn);
 
-		UE_LOG(LogProjectComp, Log,
+		UE_LOG(LogProjectComp, Verbose,
 			TEXT("[Loom] FlashDome %s-flashed pawn=%s (team=%d) for %.2fs."),
 			bFacingCenter ? TEXT("FULL") : TEXT("HALF"),
 			*GetNameSafe(Pawn), static_cast<int32>(PawnTeam),
