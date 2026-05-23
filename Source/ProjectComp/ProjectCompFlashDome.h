@@ -45,6 +45,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.1"))
 	float DomeLifetime = 4.0f;
 
+	/** Seconds between dome spawn and the flash mechanism becoming active. The
+	 *  dome exists during this window but does not apply flash — analogous to
+	 *  a flashbang's fuse. Counts inside DomeLifetime, so total dome existence
+	 *  is unchanged; bump DomeLifetime if you want a longer active phase. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
+	float WindupDuration = 0.5f;
+
 	/** Seconds of full-white screen applied to each flashed player. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Flash Dome", meta = (ClampMin = "0.0"))
 	float FlashFullWhiteDuration = 1.0f;
@@ -66,6 +73,13 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	UStaticMeshComponent* DomeMesh;
 
+	/** Cosmetic center marker — small sphere visualizing where the flash will pop.
+	 *  Override mesh / material / scale on BP_FlashDome to recolor or restyle per
+	 *  ability variant. C++ default is the engine sphere at 0.3 world-scale (~15cm
+	 *  radius) with the engine's default checker material. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UStaticMeshComponent* CenterBallMesh;
+
 	/** Caster's team — used to filter targets to the opposing team only. Replicated
 	 *  so clients can later condition local FX on whose dome this is. */
 	UPROPERTY(Replicated)
@@ -73,6 +87,9 @@ protected:
 
 	/** Server-time the dome despawns. Set in BeginPlay from DomeLifetime. */
 	float DespawnTime = 0.0f;
+
+	/** Server-time the windup ends and flash application begins. Set in BeginPlay. */
+	float WindupEndTime = 0.0f;
 
 	/** Server-only latch — pawns already flashed by this dome instance. Weak ptrs
 	 *  so a destroyed pawn (round end / level transition) doesn't keep entries alive. */

@@ -344,6 +344,69 @@ void AProjectCompCharacter::SelfDamage(float Amount)
 #endif
 }
 
+// PIE cheat for testing the Loom dispatch without a vote UI: writes both teams'
+// AbilitySlot1/2 directly and refills pools so a cast is immediately ready.
+// Runs on the listen-server host only (PIE Player 1). Remote PIE clients
+// silently no-op since their character isn't authoritative.
+void AProjectCompCharacter::ForceDraft(const FString& Slot1, const FString& Slot2)
+{
+#if UE_BUILD_SHIPPING
+    (void)Slot1; (void)Slot2;
+#else
+    if (!HasAuthority())
+    {
+        UE_LOG(LogProjectComp, Log,
+            TEXT("[Loom] ForceDraft: no authority on this client. Run from the listen-server host (PIE Player 1)."));
+        return;
+    }
+
+    auto Parse = [](const FString& Code) -> EAbilityType
+    {
+        const FString U = Code.ToUpper();
+        if (U == TEXT("AA")) return EAbilityType::AA;
+        if (U == TEXT("AC")) return EAbilityType::AC;
+        if (U == TEXT("AM")) return EAbilityType::AM;
+        if (U == TEXT("CC")) return EAbilityType::CC;
+        if (U == TEXT("CA")) return EAbilityType::CA;
+        if (U == TEXT("CM")) return EAbilityType::CM;
+        if (U == TEXT("MM")) return EAbilityType::MM;
+        if (U == TEXT("MA")) return EAbilityType::MA;
+        if (U == TEXT("MC")) return EAbilityType::MC;
+        return EAbilityType::None;
+    };
+
+    const EAbilityType A1 = Parse(Slot1);
+    const EAbilityType A2 = Parse(Slot2);
+    if (A1 == EAbilityType::None || A2 == EAbilityType::None)
+    {
+        UE_LOG(LogProjectComp, Log,
+            TEXT("[Loom] ForceDraft: invalid codes '%s' '%s'. Use AA AC AM CC CA CM MM MA MC."),
+            *Slot1, *Slot2);
+        return;
+    }
+
+    AProjectCompGameState* GS = GetWorld() ? GetWorld()->GetGameState<AProjectCompGameState>() : nullptr;
+    if (!GS)
+    {
+        return;
+    }
+
+    for (uint8 i = 0; i < 2; ++i)
+    {
+        const ETeamID Team = static_cast<ETeamID>(i);
+        FTeamLoadout Loadout = GS->GetTeamLoadout(Team);
+        Loadout.AbilitySlot1 = A1;
+        Loadout.AbilitySlot2 = A2;
+        Loadout.SharedCooldownPool = 1.0f;
+        GS->Server_SetTeamLoadout(Team, Loadout);
+    }
+
+    UE_LOG(LogProjectComp, Log,
+        TEXT("[Loom] ForceDraft applied: both teams slot1=%s slot2=%s, pools full."),
+        *Slot1, *Slot2);
+#endif
+}
+
 // Setting bWantsToWalk on the CMC routes through saved moves; both server
 // and owning client predict the same MaxWalkSpeed. ensure()s in non-shipping
 // builds — silent failure of a movement input would be a hard-to-trace
@@ -673,11 +736,13 @@ void AProjectCompCharacter::DoUseEnd()
 
 void AProjectCompCharacter::DoCastAbilitySlot1()
 {
+    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot 1 input pressed."));
     RequestAbilityCastForSlot(1);
 }
 
 void AProjectCompCharacter::DoCastAbilitySlot2()
 {
+    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot 2 input pressed."));
     RequestAbilityCastForSlot(2);
 }
 
@@ -686,6 +751,7 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     AProjectCompPlayerController* PC = GetController<AProjectCompPlayerController>();
     if (!PC)
     {
+        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: no PlayerController (not locally controlled?)."), SlotIndex);
         return;
     }
 
@@ -697,12 +763,16 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
     const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
     if (!PS || !GS)
     {
+        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: missing PlayerState (%d) or GameState (%d)."),
+            SlotIndex, PS != nullptr, GS != nullptr);
         return;
     }
     const FTeamLoadout Loadout = GS->GetTeamLoadout(PS->GetTeamID());
     const EAbilityType Ability = (SlotIndex == 1) ? Loadout.AbilitySlot1 : Loadout.AbilitySlot2;
     if (Ability == EAbilityType::None)
     {
+        UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: team %d has no drafted ability for this slot (vote in PreRound first)."),
+            SlotIndex, static_cast<int32>(PS->GetTeamID()));
         return;
     }
 
@@ -723,6 +793,8 @@ void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
         TargetLocation = Hit.ImpactPoint;
     }
 
+    UE_LOG(LogProjectComp, Log, TEXT("[Loom] Slot %d: forwarding cast type=%d to server, target=%s."),
+        SlotIndex, static_cast<int32>(Ability), *TargetLocation.ToCompactString());
     PC->RequestAbilityCast(Ability, TargetLocation);
 }
 

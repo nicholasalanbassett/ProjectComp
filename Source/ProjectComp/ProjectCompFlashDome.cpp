@@ -8,6 +8,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -24,6 +25,23 @@ AProjectCompFlashDome::AProjectCompFlashDome()
 	DomeMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DomeMesh"));
 	DomeMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SetRootComponent(DomeMesh);
+
+	// Center-pop marker. Attached to DomeMesh so it moves with the dome root,
+	// but absolute-scaled so BP_FlashDome scaling up DomeMesh (e.g. 16x to
+	// match DomeRadius=800) doesn't blow up this marker too.
+	CenterBallMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("CenterBallMesh"));
+	CenterBallMesh->SetupAttachment(DomeMesh);
+	CenterBallMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	CenterBallMesh->SetUsingAbsoluteScale(true);
+	CenterBallMesh->SetRelativeScale3D(FVector(0.3f, 0.3f, 0.3f));
+
+	// Default to engine sphere so the marker is visible out of the box. BP can
+	// override the mesh + material to recolor without touching C++.
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere"));
+	if (SphereFinder.Succeeded())
+	{
+		CenterBallMesh->SetStaticMesh(SphereFinder.Object);
+	}
 }
 
 void AProjectCompFlashDome::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -37,7 +55,9 @@ void AProjectCompFlashDome::BeginPlay()
 	Super::BeginPlay();
 	if (HasAuthority())
 	{
-		DespawnTime = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + DomeLifetime;
+		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		WindupEndTime = Now + WindupDuration;
+		DespawnTime   = Now + DomeLifetime;
 	}
 }
 
@@ -71,6 +91,12 @@ void AProjectCompFlashDome::Tick(float DeltaSeconds)
 	if (Now >= DespawnTime)
 	{
 		Destroy();
+		return;
+	}
+
+	// Windup gate — dome exists but flash is inert until the fuse expires.
+	if (Now < WindupEndTime)
+	{
 		return;
 	}
 
@@ -148,8 +174,32 @@ void AProjectCompFlashDome::Server_TickFlashApplication()
 			continue;
 		}
 
-		PS->Server_ApplyFlash(FlashFullWhiteDuration, FlashFadeDuration);
+		// Facing check: dot the target's view direction against the direction to
+		// the dome center. If they're looking roughly at it, full flash; otherwise
+		// they catch a brief "half-blind" peripheral flash. Both still latch this
+		// pawn so the dome can't repeatedly re-flash them within its lifetime.
+		// TODO(loom-tuning): promote thresholds + half-flash durations to UPROPERTYs
+		// in a future restart-pass so designers can tune per-dome.
+		constexpr float kFacingDotThreshold     = 0.5f;   // ~60deg cone, generous "looking at" read
+		constexpr float kHalfFlashFullWhite     = 0.05f;
+		constexpr float kHalfFlashFade          = 0.05f;  // total 0.1s peripheral blink
+
+		const FVector ViewDir = PC->GetControlRotation().Vector();
+		const FVector ToCenter = (DomeCenter - CamLoc).GetSafeNormal();
+		const float FacingDot = FVector::DotProduct(ViewDir, ToCenter);
+		const bool bFacingCenter = FacingDot >= kFacingDotThreshold;
+
+		const float FullWhite = bFacingCenter ? FlashFullWhiteDuration : kHalfFlashFullWhite;
+		const float Fade      = bFacingCenter ? FlashFadeDuration      : kHalfFlashFade;
+
+		PS->Server_ApplyFlash(FullWhite, Fade);
 		AlreadyFlashed.Add(Pawn);
+
+		UE_LOG(LogProjectComp, Log,
+			TEXT("[Loom] FlashDome %s-flashed pawn=%s (team=%d) for %.2fs."),
+			bFacingCenter ? TEXT("FULL") : TEXT("HALF"),
+			*GetNameSafe(Pawn), static_cast<int32>(PawnTeam),
+			FullWhite + Fade);
 	}
 }
 

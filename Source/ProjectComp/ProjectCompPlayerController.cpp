@@ -1,12 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProjectCompPlayerController.h"
+#include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
+#include "InputAction.h"
 #include "InputMappingContext.h"
+#include "ProjectComp.h"
 #include "ProjectCompCameraManager.h"
 #include "ProjectCompGameMode.h"
+#include "ProjectCompMinimapWidget.h"
+#include "ProjectCompPlayerState.h"
+#include "Blueprint/UserWidget.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerInput.h"
 
 AProjectCompPlayerController::AProjectCompPlayerController()
 {
@@ -29,6 +36,99 @@ void AProjectCompPlayerController::SetupInputComponent()
 			Subsystem->AddMappingContext(Context, 0);
 		}
 	}
+
+	// Bind the minimap toggle. Looming-only gate lives inside ToggleMinimap
+	// so a living player pressing M is a silent no-op (logged at Verbose).
+	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(InputComponent))
+	{
+		if (MinimapAction)
+		{
+			EIC->BindAction(MinimapAction, ETriggerEvent::Started, this, &AProjectCompPlayerController::ToggleMinimap);
+		}
+	}
+}
+
+void AProjectCompPlayerController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+	// If the player respawned alive while the minimap was open (e.g. from
+	// looming → respawn), force-close it. Loom UI is for the dead only.
+	if (const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>())
+	{
+		if (PS->IsAlive() && bMinimapOpen)
+		{
+			SetMinimapOpen(false);
+		}
+	}
+}
+
+void AProjectCompPlayerController::ToggleMinimap()
+{
+	// Looming-only — alive players silently ignored.
+	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+	if (!PS)
+	{
+		return;
+	}
+	if (PS->IsAlive() && !bMinimapOpen)
+	{
+		// Pressing M while alive: no-op. Verbose so we don't spam Output Log.
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Minimap toggle ignored: caller is alive."));
+		return;
+	}
+
+	SetMinimapOpen(!bMinimapOpen);
+}
+
+void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
+{
+	UProjectCompMinimapWidget* Widget = EnsureMinimapWidget();
+	if (!Widget)
+	{
+		return;
+	}
+
+	if (bOpen && !bMinimapOpen)
+	{
+		// AddToViewport with a high Z so it sits above the regular HUD widget.
+		Widget->AddToViewport(/*ZOrder*/ 100);
+		bShowMouseCursor = true;
+		// GameAndUI keeps gameplay input alive (movement, look) while letting
+		// the widget capture mouse clicks. Looming players still need to
+		// move around the spawn room while the map is open. SetWidgetToFocus
+		// is critical for slot-selection keys (1/2) to reach NativeOnKeyDown.
+		FInputModeGameAndUI InputMode;
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		InputMode.SetHideCursorDuringCapture(false);
+		InputMode.SetWidgetToFocus(Widget->TakeWidget());
+		SetInputMode(InputMode);
+		bMinimapOpen = true;
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Minimap opened."));
+	}
+	else if (!bOpen && bMinimapOpen)
+	{
+		Widget->RemoveFromParent();
+		bShowMouseCursor = false;
+		SetInputMode(FInputModeGameOnly());
+		bMinimapOpen = false;
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Minimap closed."));
+	}
+}
+
+UProjectCompMinimapWidget* AProjectCompPlayerController::EnsureMinimapWidget()
+{
+	if (MinimapInstance)
+	{
+		return MinimapInstance;
+	}
+	if (!MinimapWidgetClass)
+	{
+		UE_LOG(LogProjectComp, Warning,
+			TEXT("[Loom] MinimapWidgetClass unset on PlayerController — assign BP_MinimapWidget in defaults."));
+		return nullptr;
+	}
+	MinimapInstance = CreateWidget<UProjectCompMinimapWidget>(this, MinimapWidgetClass);
+	return MinimapInstance;
 }
 
 // =====================================================================

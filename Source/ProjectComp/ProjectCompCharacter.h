@@ -221,6 +221,13 @@ protected:
 	UFUNCTION(Exec)
 	void SelfDamage(float Amount);
 
+	/** PIE cheat: directly set BOTH teams' drafted abilities + refill pools, bypassing
+	 *  the vote/tally path. Runs only on the listen-server host (HasAuthority gate).
+	 *  Usage in PIE console: `ForceDraft CA AA`. Two-letter short codes for each
+	 *  EAbilityType slot. No-op in shipping. */
+	UFUNCTION(Exec)
+	void ForceDraft(const FString& Slot1, const FString& Slot2);
+
 	// ---- Camera tuning (exposed to BP) ------------------------------------
 
 	/** Eye Z relative to the capsule center while standing (cm). */

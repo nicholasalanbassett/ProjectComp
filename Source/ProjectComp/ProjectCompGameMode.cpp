@@ -233,38 +233,43 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 	if (GS->GetCurrentPhase() != ERoundPhase::RoundActive)
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: round not active."));
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: round not active (phase=%d)."),
+			static_cast<int32>(GS->GetCurrentPhase()));
 		return false;
 	}
 
 	AProjectCompPlayerState* PS = Caster ? Caster->GetPlayerState<AProjectCompPlayerState>() : nullptr;
 	if (!PS)
 	{
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: no PlayerState."));
 		return false;
 	}
 
 	if (PS->IsAlive())
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: caster is alive (Loom mechanic requires death)."));
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: caster is alive (Loom requires looming/dead)."));
 		return false;
 	}
 
 	const ETeamID Team = PS->GetTeamID();
 	if (Team == ETeamID::Spectator)
 	{
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: caster on Spectator team."));
 		return false;
 	}
 
 	const FTeamLoadout Loadout = GS->GetTeamLoadout(Team);
 	if (Type != Loadout.AbilitySlot1 && Type != Loadout.AbilitySlot2)
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: ability not drafted by team."));
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: ability %d not drafted by team %d (slots: %d, %d)."),
+			static_cast<int32>(Type), static_cast<int32>(Team),
+			static_cast<int32>(Loadout.AbilitySlot1), static_cast<int32>(Loadout.AbilitySlot2));
 		return false;
 	}
 
 	if (Loadout.SharedCooldownPool < 1.0f)
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("Cast rejected: pool not full (%.2f)."), Loadout.SharedCooldownPool);
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast rejected: pool not full (%.2f)."), Loadout.SharedCooldownPool);
 		return false;
 	}
 
@@ -275,6 +280,9 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 	// Inline switch is intentional — we only have one implemented ability so
 	// far. Refactor to an IAbilityHandler dispatch table when the second one
 	// lands; abstracting now would over-fit to a single example.
+	UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
+		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
+
 	switch (Type)
 	{
 	case EAbilityType::CA:
@@ -287,15 +295,34 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		SpawnParams.Instigator = Caster->GetPawn();
 		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-		if (AProjectCompFlashDome* Dome = GetWorld()->SpawnActor<AProjectCompFlashDome>(
-				SpawnClass, TargetLocation, FRotator::ZeroRotator, SpawnParams))
+		// Lift the dome above the trace impact point. Floor-level dome centers
+		// fail LOS because the trace from camera (~Z=160) down to dome (Z=0)
+		// grazes or hits the floor mesh before reaching the endpoint. 150cm
+		// lands the center near standing eye-level (capsule half-height 96 +
+		// camera Z 64 = 160), so a standing enemy facing the dome's general
+		// area has the center naturally inside their crosshair.
+		// TODO(loom-tuning): promote to a UPROPERTY on the dome class in a
+		// future restart-pass so designers can tune per-ability.
+		constexpr float kDomeSpawnZLift = 150.0f;
+		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, kDomeSpawnZLift);
+
+		AProjectCompFlashDome* Dome = GetWorld()->SpawnActor<AProjectCompFlashDome>(
+				SpawnClass, DomeSpawn, FRotator::ZeroRotator, SpawnParams);
+		if (Dome)
 		{
 			Dome->Server_Initialize(Team);
+			UE_LOG(LogProjectComp, Log, TEXT("[Loom] FlashDome spawned at %s (target=%s + lift) for team %d."),
+				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
+		}
+		else
+		{
+			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] FlashDome SpawnActor returned null."));
 		}
 		break;
 	}
 	default:
-		// Other abilities are scaffolding only — cosmetic multicast fires below.
+		UE_LOG(LogProjectComp, Log, TEXT("[Loom] Cast type=%d has no gameplay handler yet (cosmetic multicast only)."),
+			static_cast<int32>(Type));
 		break;
 	}
 
@@ -844,11 +871,14 @@ void AProjectCompGameMode::TallyAndLockTeamDraft(ETeamID Team)
 	});
 
 	// Pick the top two distinct entries. If voting was empty (e.g. nobody on
-	// the team), AbilitySlot1/2 remain None and the team has no abilities
-	// this round.
+	// the team voted), fall back to CA/AA so the Loom system has something to
+	// test against until the draft UI lands.
+	// TODO(loom-ui): change these fallbacks back to EAbilityType::None once the
+	// PreRound draft widget is in place — the production behavior should be
+	// "no votes = no abilities," not "no votes = free CA/AA."
 	FTeamLoadout Loadout = GS->GetTeamLoadout(Team);
-	Loadout.AbilitySlot1 = Sorted.Num() > 0 ? Sorted[0].Key : EAbilityType::None;
-	Loadout.AbilitySlot2 = Sorted.Num() > 1 ? Sorted[1].Key : EAbilityType::None;
+	Loadout.AbilitySlot1 = Sorted.Num() > 0 ? Sorted[0].Key : EAbilityType::CA;
+	Loadout.AbilitySlot2 = Sorted.Num() > 1 ? Sorted[1].Key : EAbilityType::AA;
 	GS->Server_SetTeamLoadout(Team, Loadout);
 
 	UE_LOG(LogProjectComp, Log, TEXT("Team %d draft locked: %d, %d (from %d voters)."),
