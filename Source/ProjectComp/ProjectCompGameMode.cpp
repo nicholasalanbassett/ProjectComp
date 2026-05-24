@@ -10,6 +10,7 @@
 #include "ProjectCompCharacter.h"
 #include "ProjectCompFlashDome.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompHUD.h"
 #include "ProjectComp.h"
 #include "Components/CapsuleComponent.h"
@@ -392,6 +393,19 @@ void AProjectCompGameMode::StartPreRound()
 		if (APlayerController* PC = It->Get())
 		{
 			RespawnPlayerAtAssignedStart(PC);
+
+			// Refill ammo to full on the freshly-spawned weapon. The respawn
+			// already creates a new weapon (which BeginPlay-inits to full),
+			// so this is belt-and-braces — keeps the intent visible and
+			// survives any future change that swaps "destroy+respawn" for
+			// "teleport existing pawn".
+			if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(PC->GetPawn()))
+			{
+				if (AProjectCompHitscanWeapon* Weapon = Char->GetCurrentWeapon())
+				{
+					Weapon->Server_RefillAllAmmo();
+				}
+			}
 		}
 	}
 

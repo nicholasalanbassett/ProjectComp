@@ -134,6 +134,12 @@ void AProjectCompBombSite::TickPlanting(float DeltaTime)
 
 		if (PlantProgress >= 1.0f)
 		{
+			// Release the planter's interact lock so they can move + fire
+			// immediately on completion without having to release F first.
+			if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(ActivePlanter))
+			{
+				Char->Server_NotifyInteractionComplete();
+			}
 			CompletePlant();
 		}
 	}
@@ -155,6 +161,12 @@ void AProjectCompBombSite::TickDefusing(float DeltaTime)
 
 		if (DefuseProgress >= 1.0f)
 		{
+			// Release the defuser's interact lock so they can move + fire
+			// immediately on completion without having to release F first.
+			if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(ActiveDefuser))
+			{
+				Char->Server_NotifyInteractionComplete();
+			}
 			CompleteDefuse();
 		}
 	}

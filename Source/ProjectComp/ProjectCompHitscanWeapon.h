@@ -74,9 +74,22 @@ public:
 
 	// ---- Spread -----------------------------------------------------------
 
-	/** Extra spread (degrees) added when moving at full run speed. Scales linearly with speed. */
+	/** Extra spread (degrees) added when STANDING and running (above MoveSpeedThreshold). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
 	float MovingSpreadAdd = 4.0f;
+
+	/** Intermediate spread (degrees) added when STANDING and walking — speed is
+	 *  above WalkSpeedThreshold but below MoveSpeedThreshold. Lets tac-walk
+	 *  (Shift) incur a small cone without being punished like a full sprint. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float WalkingSpreadAdd = 1.5f;
+
+	/** Ground speed (cm/s) above which a STANDING character enters the "walking"
+	 *  spread tier. Below this = no cone (still or creeping). Above this AND
+	 *  below MoveSpeedThreshold = WalkingSpreadAdd. Above MoveSpeedThreshold =
+	 *  MovingSpreadAdd (full running penalty). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float WalkSpeedThreshold = 100.0f;
 
 	/** Ground speed (cm/s) above which a STANDING character incurs the full
 	 *  movement spread penalty. Below = perfectly accurate. Set above your
@@ -111,6 +124,32 @@ public:
 	/** Extra spread (degrees) added unconditionally when airborne. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
 	float AirSpreadAdd = 4.0f;
+
+	/** Max additional spread (degrees) layered on top of the movement cone after
+	 *  SpreadRampShotsToMax consecutive shots. First shot of a burst is unaffected
+	 *  (ramp = 0). Held spray ramps linearly to this value and clamps. Set to 0
+	 *  to disable the burst-accuracy ramp entirely. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float SpreadRampMaxAdd = 2.0f;
+
+	/** How many consecutive shots it takes for the spread ramp to reach max.
+	 *  Lower = ramps up faster (less forgiving for held spray). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "1"))
+	int32 SpreadRampShotsToMax = 8;
+
+	/** Idle seconds before the spread ramp resets to bullet 1 (first-shot accuracy).
+	 *  Keep close to RecoilPatternResetDelay so both spray-decay systems agree. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
+	float SpreadRampResetDelay = 0.15f;
+
+	/** Curve exponent applied to the ramp progress (Frac = BurstShotsFired / Max).
+	 *  ramp = SpreadRampMaxAdd × pow(Frac, this).
+	 *  1.0 = linear (every shot adds the same amount).
+	 *  < 1.0 = ease-out (fast start, slow end — late shots add less).
+	 *  > 1.0 = ease-in  (slow start, fast end — late shots add more).
+	 *  0.5 = strong ease-out (sqrt); 0.75 = mild ease-out (default). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.1", ClampMax = "3.0"))
+	float SpreadRampCurve = 0.75f;
 
 
 	// ---- Recoil -----------------------------------------------------------
@@ -156,6 +195,21 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.01", ClampMax = "1.0"))
 	float CrouchStillVerticalRecoilMult = 0.92f;
 
+	// ---- Magazine + reload -----------------------------------------------
+
+	/** Bullets per magazine. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine", meta = (ClampMin = "1"))
+	int32 MagazineSize = 30;
+
+	/** Reserve magazines available beyond the one currently chambered.
+	 *  Total mag count = MaxReserveMags + 1. Default 4 → 5 total mags. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine", meta = (ClampMin = "0"))
+	int32 MaxReserveMags = 4;
+
+	/** Seconds to complete a reload from press to mag-refilled. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Magazine", meta = (ClampMin = "0.0"))
+	float ReloadDuration = 2.2f;
+
 	// ---- Lag compensation -------------------------------------------------
 
 	/** Maximum rewind window the server will honor (seconds). Caps absurd RTT
@@ -187,6 +241,30 @@ public:
 	/** Server: reset fire cooldown so the weapon is "ready" instantly on equip. */
 	void ResetFireCooldown() { TimeSinceLastShot = FireInterval; }
 
+	/** Server: begin a reload if eligible (alive, not already reloading,
+	 *  mag not already full, reserve > 0). Idempotent — silently ignored if
+	 *  any precondition fails. Completion fires in Tick when server time
+	 *  reaches ReloadEndTime. */
+	void Server_StartReload();
+
+	/** Server: refill the current mag + reserve to max and cancel any in-progress
+	 *  reload. Called by the GameMode at PreRound start. */
+	void Server_RefillAllAmmo();
+
+	/** Server: abort any in-progress reload without refilling the mag. Called when
+	 *  the player engages a plant/defuse interaction so the lock blocks the full
+	 *  reload, not just the start of one. Mag stays at whatever was chambered. */
+	void Server_CancelReload();
+
+	// ---- Owner-replicated ammo accessors (HUD reads these) ---------------
+
+	int32 GetCurrentMagAmmo() const { return CurrentMagAmmo; }
+	int32 GetReserveAmmo()    const { return ReserveAmmo; }
+	int32 GetMagazineSize()   const { return MagazineSize; }
+	bool  IsReloading()       const { return bIsReloading; }
+	float GetReloadEndTime()  const { return ReloadEndTime; }
+	float GetReloadDuration() const { return ReloadDuration; }
+
 	/** Owning client: zero out the local recoil pattern mirror at the start of
 	 *  a new spray. Called by the character's DoFireStart handler. */
 	void ResetLocalRecoilPattern()
@@ -214,6 +292,34 @@ protected:
 	 *  Server-side only. */
 	int32 RecoilPatternIndex = 0;
 
+	/** Consecutive shots fired in the current burst — drives the spread ramp.
+	 *  Resets after SpreadRampResetDelay seconds of idle. Server-side only. */
+	int32 BurstShotsFired = 0;
+
+	// ---- Replicated to owner only — drives the HUD ammo readout ----------
+
+	/** Bullets currently chambered. Decrements each shot. Refilled by reload
+	 *  or PreRound. COND_OwnerOnly — opponents don't need to see your ammo. */
+	UPROPERTY(Replicated)
+	int32 CurrentMagAmmo = 30;
+
+	/** Loose-bullet reserve pool. Reload pulls (MagazineSize - currentMag) from
+	 *  this pool — i.e. only what's needed to top off — and partial mags returned
+	 *  on reload land back here. Seeded from MaxReserveMags × MagazineSize on
+	 *  BeginPlay and on PreRound refill. */
+	UPROPERTY(Replicated)
+	int32 ReserveAmmo = 120;
+
+	/** True while a reload is in progress. Replicated so the HUD can show
+	 *  "RELOADING" without an extra RPC. */
+	UPROPERTY(Replicated)
+	bool bIsReloading = false;
+
+	/** Server-world-time at which the in-progress reload will complete.
+	 *  Replicated so the HUD can show a smooth countdown / progress bar. */
+	UPROPERTY(Replicated)
+	float ReloadEndTime = 0.0f;
+
 	/** Local mirror of the recoil pattern index for the owning client — advances
 	 *  inside Multicast_OnFired_Implementation so the camera kick happens at the
 	 *  same time as muzzle flash / tracer. Replaces the per-shot Client RPC.
@@ -237,6 +343,11 @@ protected:
 
 	/** Returns movement/air/crouch spread (degrees) to add on top of the deterministic pattern. 0 when standing still. */
 	float CalcMovementSpread(const AProjectCompCharacter* Char) const;
+
+	/** Spread (degrees) contributed by the burst ramp. Reads BurstShotsFired and
+	 *  ramps linearly from 0 at the first shot to SpreadRampMaxAdd once the
+	 *  counter passes SpreadRampShotsToMax. Returns 0 if the ramp is disabled. */
+	float CalcSpreadRampAdd() const;
 
 	/** Cosmetic-only: muzzle flash, tracer, impact decal. Runs on all clients.
 	 *

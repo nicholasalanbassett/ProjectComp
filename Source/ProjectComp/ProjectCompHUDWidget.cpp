@@ -3,6 +3,7 @@
 #include "ProjectCompHUDWidget.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompGameState.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompBombSite.h"
@@ -190,6 +191,32 @@ void UProjectCompHUDWidget::BuildLayout()
 	AbilityIndicatorImage->SetDesiredSizeOverride(FVector2D(20.0f, 20.0f));
 	UHorizontalBoxSlot* AbilityIndicatorSlot = AbilityBox->AddChildToHorizontalBox(AbilityIndicatorImage);
 	AbilityIndicatorSlot->SetVerticalAlignment(VAlign_Center);
+
+	// ---- Bottom-right (stacked above Ability): AMMO value + label ---------
+	// Anchored bottom-right with extra Y offset so the column sits cleanly
+	// above the Ability row regardless of viewport size.
+	AmmoBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("AmmoBox"));
+	UCanvasPanelSlot* AmmoBoxSlot = RootCanvas->AddChildToCanvas(AmmoBox);
+	AmmoBoxSlot->SetAnchors(FAnchors(1.0f, 1.0f));
+	AmmoBoxSlot->SetAlignment(FVector2D(1.0f, 1.0f));
+	AmmoBoxSlot->SetPosition(FVector2D(-CornerPadding, -CornerPadding - 80.0f));
+	AmmoBoxSlot->SetAutoSize(true);
+
+	AmmoValueText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("AmmoValueText"));
+	AmmoValueText->SetFont(MakeFont(26));
+	AmmoValueText->SetText(FText::FromString(TEXT("30 / 120")));
+	AmmoValueText->SetColorAndOpacity(PrimaryTextColor);
+	AmmoValueText->SetJustification(ETextJustify::Right);
+	ApplyTextShadow(AmmoValueText);
+	AmmoBox->AddChildToVerticalBox(AmmoValueText);
+
+	AmmoLabelText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("AmmoLabelText"));
+	AmmoLabelText->SetFont(MakeFont(14));
+	AmmoLabelText->SetText(FText::FromString(TEXT("AMMO")));
+	AmmoLabelText->SetColorAndOpacity(LabelTextColor);
+	AmmoLabelText->SetJustification(ETextJustify::Right);
+	ApplyTextShadow(AmmoLabelText);
+	AmmoBox->AddChildToVerticalBox(AmmoLabelText);
 
 	// ---- Center crosshair (4 ticks + optional center dot) -----------------
 	// Each tick is positioned relative to the viewport center via anchor
@@ -554,6 +581,45 @@ void UProjectCompHUDWidget::RefreshDisplay()
 		{
 			HealthValueText->SetText(FText::AsNumber(FMath::CeilToInt(CurrentHP)));
 			HealthValueText->SetColorAndOpacity(GetHealthColorForFraction(HC->GetHealthFraction()));
+		}
+	}
+
+	// Ammo readout — read from the local pawn's equipped weapon.
+	// Hidden when no weapon (spectator / between possessions).
+	if (AmmoBox)
+	{
+		const AProjectCompCharacter* LocalChar = GetLocalCharacter();
+		const AProjectCompHitscanWeapon* Weapon = LocalChar ? LocalChar->GetCurrentWeapon() : nullptr;
+		if (!Weapon)
+		{
+			AmmoBox->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		else
+		{
+			AmmoBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+			if (AmmoValueText)
+			{
+				if (Weapon->IsReloading())
+				{
+					// Show a countdown using the replicated server-stamped end time
+					// against server-world-time so remote clients don't drift.
+					const UWorld* W = GetWorld();
+					const AGameStateBase* GSBase = W ? W->GetGameState() : nullptr;
+					const float ServerTime = GSBase ? GSBase->GetServerWorldTimeSeconds()
+					                                : (W ? W->GetTimeSeconds() : 0.0f);
+					const float Remaining = FMath::Max(0.0f, Weapon->GetReloadEndTime() - ServerTime);
+					AmmoValueText->SetText(FText::FromString(FString::Printf(TEXT("RELOADING %.1fs"), Remaining)));
+					AmmoValueText->SetColorAndOpacity(LabelTextColor);
+				}
+				else
+				{
+					// Format: "<currentMag> / <reserveBullets>" — total ammo pool
+					// in the reserve, not clip count. Player sees the full economy.
+					AmmoValueText->SetText(FText::FromString(FString::Printf(TEXT("%d / %d"),
+						Weapon->GetCurrentMagAmmo(), Weapon->GetReserveAmmo())));
+					AmmoValueText->SetColorAndOpacity(PrimaryTextColor);
+				}
+			}
 		}
 	}
 

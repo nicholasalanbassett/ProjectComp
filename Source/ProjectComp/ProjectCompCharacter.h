@@ -100,6 +100,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* AbilitySlot2Action;
 
+	/** Press R: reload the equipped weapon if the mag isn't full and reserves > 0. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* ReloadAction;
+
 	/** Weapon class spawned for every freshly-possessed character. Set in BP defaults. */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
@@ -157,6 +161,9 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoCastAbilitySlot2();
 
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoReload();
+
 	/** Common ability-cast plumbing: resolve the slot to the team's drafted
 	 *  ability via GameState, aim-trace from the camera to compute a world
 	 *  TargetLocation, then forward to the controller's RequestAbilityCast RPC.
@@ -201,6 +208,28 @@ protected:
 	/** Server: track Use-key held state for plant/defuse interactions. */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetUseHeld(bool bHeld);
+
+	/** Server: forward an R-key press down to the equipped weapon's
+	 *  Server_StartReload. Server validates eligibility (alive, mag not
+	 *  full, reserves > 0) and silently rejects otherwise. */
+	UFUNCTION(Server, Reliable)
+	void Server_RequestReload();
+
+public:
+	/** Server-callable (NOT an RPC — bomb site is server-authoritative): clear
+	 *  the held interact state on both server and owning client when a plant
+	 *  or defuse completes. Without this, the player has to release F after
+	 *  a successful plant/defuse before they can move / fire again, because
+	 *  bUseHeld stays true and the lock holds. Public so AProjectCompBombSite
+	 *  can invoke it directly on the active interactor. */
+	void Server_NotifyInteractionComplete();
+
+protected:
+	/** Mirrors Server_NotifyInteractionComplete on the owning client so its
+	 *  local bUseHeld + interact lock match the server. Otherwise the client
+	 *  would still predict MaxWalkSpeed=0 until F is released. */
+	UFUNCTION(Client, Reliable)
+	void Client_ForceReleaseInteractLock();
 
 	/** Server: spawn + equip the DefaultWeaponClass for this character. Called on possession. */
 	virtual void Server_EquipDefaultWeapon();
@@ -260,6 +289,10 @@ public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
 	UProjectCompHealthComponent* GetHealthComponent() const { return HealthComponent; }
+	AProjectCompHitscanWeapon* GetCurrentWeapon() const { return CurrentWeapon; }
+	/** True while the player is locked into a plant/defuse interaction. Read by
+	 *  the weapon to block fire + reload during the interaction. */
+	bool IsInteractLocked() const { return bInteractLockActive; }
 	EMovementState GetMovementState() const { return MovementState; }
 
 	/** Server: true while the Use key is currently held. Polled by ABombSite for plant/defuse. */

@@ -59,16 +59,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Site", meta = (ClampMin = "1"))
 	int32 DefusePointValue = 1;
 
-	/** Seconds an attacker must hold Use inside the trigger to complete a plant. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
+	/** Seconds an attacker must hold Use inside the trigger to complete a plant.
+	 *  EditAnywhere so a level designer can tune per-instance (A site easier than
+	 *  B, etc.) without needing a BP subclass. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
 	float PlantDuration = 4.0f;
 
 	/** Seconds a defender must hold Use inside the trigger to complete a defuse. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
 	float DefuseDuration = 6.0f;
 
 	/** Seconds between a successful plant and detonation. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tuning", meta = (ClampMin = "0.1"))
 	float DetonationDuration = 35.0f;
 
 	// ---- Replicated state (read-only on clients) ----------------------

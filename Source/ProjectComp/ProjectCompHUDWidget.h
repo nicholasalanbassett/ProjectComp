@@ -126,6 +126,14 @@ protected:
 	UPROPERTY() TObjectPtr<UTextBlock> HealthLabelText;
 	UPROPERTY() TObjectPtr<UTextBlock> AbilityLabelText;
 	UPROPERTY() TObjectPtr<UImage> AbilityIndicatorImage;
+
+	/** Bottom-right ammo readout: "30 / 120" (current mag / total reserve bullets).
+	 *  Replaced by AmmoReloadingText while a reload is in progress. */
+	UPROPERTY() TObjectPtr<UTextBlock> AmmoValueText;
+	/** "AMMO" label below the value, matches the HP label visual treatment. */
+	UPROPERTY() TObjectPtr<UTextBlock> AmmoLabelText;
+	/** Container for the ammo column so reload-state visibility can toggle cleanly. */
+	UPROPERTY() TObjectPtr<UVerticalBox> AmmoBox;
 	UPROPERTY() TObjectPtr<UVerticalBox> DeathStatusBox;
 	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> DeathStatusSubtitle;

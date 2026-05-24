@@ -163,6 +163,13 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(AbilitySlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoCastAbilitySlot2);
         }
 
+        // Press R: reload the equipped weapon. Edge-triggered; holding the
+        // key doesn't re-fire the reload.
+        if (ReloadAction)
+        {
+            EnhancedInputComponent->BindAction(ReloadAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoReload);
+        }
+
         // Re-emit held input on possession (fixes the "held F/Mouse1 across
         // respawn never re-engages" bug). Deferred one tick so Enhanced Input
         // has processed the first frame and the equipped weapon exists.
@@ -739,6 +746,44 @@ void AProjectCompCharacter::DoCastAbilitySlot2()
     RequestAbilityCastForSlot(2);
 }
 
+void AProjectCompCharacter::DoReload()
+{
+    // No precondition checks here — server is authoritative and silently
+    // rejects ineligible reloads. Keeps the client side dumb-fire.
+    Server_RequestReload();
+}
+
+void AProjectCompCharacter::Server_RequestReload_Implementation()
+{
+    if (CurrentWeapon)
+    {
+        CurrentWeapon->Server_StartReload();
+    }
+}
+
+void AProjectCompCharacter::Server_NotifyInteractionComplete()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+    // Server-side state release — the FireOneShot / Server_StartReload gates
+    // both read bInteractLockActive from this character, so flipping it here
+    // lets the player fire and reload immediately on the next tick.
+    bUseHeld = false;
+    UpdateInteractLock();
+    // Mirror to the owning client so its predicted movement (MaxWalkSpeed) and
+    // local lock state match — otherwise the client would still feel "stuck"
+    // until the player physically releases F.
+    Client_ForceReleaseInteractLock();
+}
+
+void AProjectCompCharacter::Client_ForceReleaseInteractLock_Implementation()
+{
+    bUseHeld = false;
+    UpdateInteractLock();
+}
+
 void AProjectCompCharacter::RequestAbilityCastForSlot(int32 SlotIndex)
 {
     AProjectCompPlayerController* PC = GetController<AProjectCompPlayerController>();
@@ -913,6 +958,15 @@ void AProjectCompCharacter::UpdateInteractLock()
         CharMov->MaxWalkSpeedCrouched = 0.0f;
         CharMov->bWantsToCrouch = true;
         bInteractLockActive = true;
+
+        // Abort any in-progress reload — Server_StartReload's gate blocks
+        // NEW reloads but doesn't touch one already running. Without this, a
+        // player could press R, then plant, and the reload would finish
+        // mid-plant. Server-authoritative; clients no-op.
+        if (HasAuthority() && CurrentWeapon)
+        {
+            CurrentWeapon->Server_CancelReload();
+        }
     }
     else if (!bShouldLock && bInteractLockActive)
     {
@@ -923,6 +977,17 @@ void AProjectCompCharacter::UpdateInteractLock()
             CharMov->bWantsToCrouch = false;
         }
         bInteractLockActive = false;
+
+        // If the mag was emptied while the lock was active, the in-fire-loop
+        // auto-reload was rejected by Server_StartReload's interact-lock gate.
+        // Retry now that the lock is clear so the player isn't left holding an
+        // empty gun after a plant/defuse. Server-authoritative — clients no-op.
+        if (HasAuthority() && CurrentWeapon
+            && CurrentWeapon->GetCurrentMagAmmo() <= 0
+            && CurrentWeapon->GetReserveAmmo() > 0)
+        {
+            CurrentWeapon->Server_StartReload();
+        }
     }
 }
 
