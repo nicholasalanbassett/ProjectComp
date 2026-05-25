@@ -1,0 +1,6 @@
+# Force LF line endings for shell scripts and hooks so they execute correctly
+# on Unix-like shells (including git-bash on Windows). Without this, a Windows
+# clone with core.autocrlf=true would check the file out with CRLF and the
+# shebang line would fail with "/bin/sh^M: bad interpreter".
+.githooks/* text eol=lf
+*.sh        text eol=lf
