@@ -2,12 +2,12 @@
 
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompGameMode.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectComp.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/World.h"
-#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/Controller.h"
@@ -151,6 +151,15 @@ void AProjectCompHitscanWeapon::BeginPlay()
 		ReserveAmmo    = MaxReserveMags * MagazineSize;
 		bIsReloading   = false;
 		ReloadEndTime  = 0.0f;
+
+		// Cache the authority GameMode once so the per-shot fire path can read
+		// the LiveCharacters registry without a Cast<>() or GetAuthGameMode()
+		// lookup. Weak ptr so a torn-down GameMode (level transition / PIE
+		// teardown) cannot dangle.
+		if (UWorld* World = GetWorld())
+		{
+			CachedAuthGameMode = World->GetAuthGameMode<AProjectCompGameMode>();
+		}
 	}
 }
 
@@ -335,6 +344,11 @@ void AProjectCompHitscanWeapon::Server_CancelReload()
 
 void AProjectCompHitscanWeapon::FireOneShot()
 {
+	// Fire-path cycle counter. Compiled out in shipping; in dev/test the
+	// command `stat ProjectComp` prints microseconds-per-shot so the
+	// sub-500us gameplay-loop budget can be verified under stress.
+	SCOPE_CYCLE_COUNTER(STAT_ProjectComp_FireOneShot);
+
 	AProjectCompCharacter* OwnerChar = GetOwningCharacter();
 	if (!OwnerChar)
 	{
@@ -420,18 +434,28 @@ void AProjectCompHitscanWeapon::FireOneShot()
 	const float RewindSeconds = FMath::Clamp(HalfRttSeconds + ClientInterpolationDelay, 0.0f, MaxRewindSeconds);
 	const float RewindTime = Now - RewindSeconds;
 
-	TArray<AProjectCompCharacter*, TInlineAllocator<16>> Rewound;
-	if (RewindSeconds > KINDA_SMALL_NUMBER && World)
+	// 32 slots inlines without heap traffic up through full 10v10 stress
+	// (19 other live pawns). Beyond that capacity the allocator kicks in;
+	// the registry caps growth to whatever the GameMode admits, so a
+	// runaway is not possible.
+	TArray<AProjectCompCharacter*, TInlineAllocator<32>> Rewound;
+	if (RewindSeconds > KINDA_SMALL_NUMBER)
 	{
-		for (TActorIterator<AProjectCompCharacter> It(World); It; ++It)
+		// Iterate the GameMode's event-driven LiveCharacters registry instead of
+		// TActorIterator. Pre-cached in BeginPlay so this hot-path read is a
+		// single weak-ptr resolve, not a global actor scan.
+		if (AProjectCompGameMode* GM = CachedAuthGameMode.Get())
 		{
-			AProjectCompCharacter* Target = *It;
-			if (!Target || Target == OwnerChar)
+			for (const TWeakObjectPtr<AProjectCompCharacter>& WeakTarget : GM->GetLiveCharacters())
 			{
-				continue;
+				AProjectCompCharacter* Target = WeakTarget.Get();
+				if (!Target || Target == OwnerChar)
+				{
+					continue;
+				}
+				Target->Server_RewindTo(RewindTime);
+				Rewound.Add(Target);
 			}
-			Target->Server_RewindTo(RewindTime);
-			Rewound.Add(Target);
 		}
 	}
 

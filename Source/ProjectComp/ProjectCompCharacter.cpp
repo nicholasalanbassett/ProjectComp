@@ -1037,11 +1037,38 @@ void AProjectCompCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
     DOREPLIFETIME(AProjectCompCharacter, CurrentWeapon);
 }
 
+void AProjectCompCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    // Mirror BeginPlay's server-side registration so respawn (destroy + spawn),
+    // disconnect, and seamless-travel teardown all keep the LiveCharacters
+    // registry in sync. Done before Super so the GameMode is still resolvable.
+    if (HasAuthority())
+    {
+        if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+        {
+            GM->Server_UnregisterLiveCharacter(this);
+        }
+    }
+
+    Super::EndPlay(EndPlayReason);
+}
+
 // Force collision responses for hitscan even if the BP has its own collision
 // preset saved. Runs after CDO + BP defaults are applied, so this wins.
 void AProjectCompCharacter::BeginPlay()
 {
     Super::BeginPlay();
+
+    // Server-only: self-register with the GameMode's LiveCharacters registry so the
+    // lag-comp snapshot loop and the per-shot rewind loop can iterate a cached list
+    // instead of running TActorIterator each tick / each shot.
+    if (HasAuthority())
+    {
+        if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+        {
+            GM->Server_RegisterLiveCharacter(this);
+        }
+    }
 
     if (UCharacterMovementComponent* CharMov = GetCharacterMovement())
     {

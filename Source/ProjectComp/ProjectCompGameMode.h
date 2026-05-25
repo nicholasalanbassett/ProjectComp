@@ -9,6 +9,7 @@
 
 class AProjectCompGameState;
 class AProjectCompPlayerState;
+class AProjectCompCharacter;
 class AController;
 class APlayerController;
 
@@ -76,6 +77,32 @@ public:
 	UPROPERTY()
 	TArray<TWeakObjectPtr<class AProjectCompBombSite>> CachedBombSites;
 
+	/**
+	 * Server-side event-driven registry of every AProjectCompCharacter currently
+	 * in the world. Maintained by AProjectCompCharacter::BeginPlay (register) and
+	 * EndPlay (unregister) on the authority. Replaces per-frame TActorIterator
+	 * scans in (a) the lag-comp snapshot loop in this class's Tick, (b) the
+	 * hitscan weapon's rewind loop in FireOneShot, and (c) the flash dome's
+	 * LOS-ignore list rebuild — each previously O(WorldActors), now O(LivePawns).
+	 * Weak ptrs guard against torn-down pawns whose dereference would race a
+	 * pending unregister. Reserve()d in StartPlay to cap one-time allocation.
+	 */
+	UPROPERTY()
+	TArray<TWeakObjectPtr<AProjectCompCharacter>> LiveCharacters;
+
+	/** Server only: O(1) amortized registry insert. Idempotent — duplicate adds no-op
+	 *  so a defensive double-register (e.g. EndPlay/BeginPlay race) cannot bloat the list. */
+	void Server_RegisterLiveCharacter(AProjectCompCharacter* Char);
+
+	/** Server only: O(LivePawns) registry remove (RemoveSingleSwap — order doesn't matter).
+	 *  Silent no-op if Char was never registered. */
+	void Server_UnregisterLiveCharacter(AProjectCompCharacter* Char);
+
+	/** Read-only registry view for hot-path consumers (weapon, flash, snapshot loop).
+	 *  Callers must skip stale TWeakObjectPtr entries; the registry purges on EndPlay
+	 *  but a holder iterating during teardown could still observe a null Resolve(). */
+	const TArray<TWeakObjectPtr<AProjectCompCharacter>>& GetLiveCharacters() const { return LiveCharacters; }
+
 	/** Server: route score for a terminal bomb site and end the round. */
 	void HandleBombResolution(class AProjectCompBombSite* Site);
 
@@ -111,8 +138,10 @@ protected:
 	/** Flip every player's TeamID (Attackers ↔ Defenders). Triggered at halftime. */
 	void Server_SwapAllPlayerTeams();
 
-	/** Raise (true) / drop (false) every barrier in the world. Called at phase transitions. */
-	void Server_SetAllBarriersActive(bool bActive);
+	/** Routes the right `bIsActive` to every barrier in the world based on the
+	 *  new phase and each barrier's Kind. Called at every phase transition.
+	 *  See EBarrierKind for the per-Kind activation table. */
+	void Server_SetAllBarriersForPhase(ERoundPhase NewPhase);
 
 	/**
 	 * Server: snap any looming player whose pawn has wandered out of their

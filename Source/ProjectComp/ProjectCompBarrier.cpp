@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProjectCompBarrier.h"
+#include "ProjectComp.h"
 #include "ProjectCompPlayerState.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
@@ -49,14 +50,6 @@ void AProjectCompBarrier::Server_SetActive(bool bNewActive)
 	OnRep_IsActive();
 }
 
-void AProjectCompBarrier::Server_SwapOwnerTeam()
-{
-	if (!HasAuthority()) return;
-	if (OwnerTeam == ETeamID::Attackers)      OwnerTeam = ETeamID::Defenders;
-	else if (OwnerTeam == ETeamID::Defenders) OwnerTeam = ETeamID::Attackers;
-	OnRep_OwnerTeam();
-}
-
 void AProjectCompBarrier::OnRep_OwnerTeam()
 {
 	RefreshAppearance();
@@ -75,24 +68,76 @@ void AProjectCompBarrier::RefreshAppearance()
 		return;
 	}
 
-	if (!bIsActive)
+	// Per-Kind behavior. bIsActive is driven by the GameMode per phase — it's
+	// true during the phases this barrier is "engaged" in, false otherwise.
+	// The exact engagement semantics differ per Kind (see EBarrierKind doc).
+	switch (Kind)
 	{
-		// Inactive (RoundActive phase): invisible, walk-through for live players
-		// (ECC_Pawn → Ignore), but still BLOCKS looming dead players
-		// (ECC_GameTraceChannel2 = DeadPawn → Block) so they can't leave the
-		// spawn room. Bullets pass through (Visibility ignored).
-		Mesh->SetVisibility(false);
-		Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-		Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
-		Mesh->SetCollisionResponseToChannel(ECC_GameTraceChannel2, ECR_Block);
-		return;
+		case EBarrierKind::AttackerSpawnLock:
+			// Always visible while the round is in progress — mirrors DefenderSpawnLock.
+			// PreRound = full block (strat phase lock); RoundActive + PostRound =
+			// DeadPawn-only block (looming attackers stay in spawn for the safe
+			// downtime; live players from either team cross freely).
+			Mesh->SetVisibility(true, /*bPropagateToChildren=*/true);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			if (bIsActive)
+			{
+				Mesh->SetCollisionResponseToAllChannels(ECR_Block);
+			}
+			else
+			{
+				Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+				Mesh->SetCollisionResponseToChannel(ECC_DeadPawn, ECR_Block);
+			}
+			ApplyOwnerTeamMaterial();
+			return;
+
+		case EBarrierKind::DefenderSpawnLock:
+			if (bIsActive)
+			{
+				// RoundActive + PostRound: VISIBLE (defenders want to see where
+				// their loom-safe zone ends) + blocks only ECC_DeadPawn. Live
+				// players cross freely; looming defenders are held in spawn.
+				Mesh->SetVisibility(true, /*bPropagateToChildren=*/true);
+				Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+				Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+				Mesh->SetCollisionResponseToChannel(ECC_DeadPawn, ECR_Block);
+				ApplyOwnerTeamMaterial();
+			}
+			else
+			{
+				// PreRound: fully off. Defenders walk out unobstructed so they
+				// can pre-position freely up to the DefenderPreRoundLock line.
+				Mesh->SetVisibility(false, /*bPropagateToChildren=*/true);
+				Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+			return;
+
+		case EBarrierKind::DefenderPreRoundLock:
+			if (bIsActive)
+			{
+				// PreRound only: visible + blocks every channel. Caps how far
+				// south defenders can pre-position during the strat phase.
+				Mesh->SetVisibility(true, /*bPropagateToChildren=*/true);
+				Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+				Mesh->SetCollisionResponseToAllChannels(ECR_Block);
+				ApplyOwnerTeamMaterial();
+			}
+			else
+			{
+				// RoundActive + PostRound: fully off. Gunplay flows past where
+				// the wall stood. No DeadPawn block here — looming pawns are
+				// already held back by their team's SpawnLock barrier.
+				Mesh->SetVisibility(false, /*bPropagateToChildren=*/true);
+				Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			}
+			return;
 	}
+}
 
-	// Active (PreRound phase): visible + blocks everything.
-	Mesh->SetVisibility(true);
-	Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	Mesh->SetCollisionResponseToAllChannels(ECR_Block);
-
+void AProjectCompBarrier::ApplyOwnerTeamMaterial()
+{
+	if (!Mesh) { return; }
 	const ETeamID Viewer = GetLocalViewerTeam();
 	UMaterialInterface* Picked = (Viewer == OwnerTeam) ? TransparentMaterial : OpaqueMaterial;
 	if (Picked)

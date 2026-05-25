@@ -66,6 +66,42 @@ enum class EHitZone : uint8
 };
 
 /**
+ * Spatial / functional role of an AProjectCompBarrier instance. Set per-instance
+ * in the level editor (typically via a BP subclass with the Kind baked into
+ * defaults). Drives both visibility and collision in RefreshAppearance, and
+ * tells the GameMode which phases the barrier should be "engaged" in.
+ *
+ *  - AttackerSpawnLock: At attacker spawn-room boundary. PreRound = visible,
+ *    blocks every channel (locks attackers in for strat phase). RoundActive
+ *    and PostRound = invisible, blocks only ECC_DeadPawn so looming attackers
+ *    can't leave spawn (safe zone for grenade lineups, etc.) while live
+ *    players from either team cross freely.
+ *
+ *  - DefenderSpawnLock: At defender spawn-room boundary. PreRound = INACTIVE
+ *    (invisible, no collision) so live defenders walk out to pre-position
+ *    however they want. RoundActive and PostRound = VISIBLE, blocks only
+ *    ECC_DeadPawn so looming defenders are held in spawn (same safe-zone
+ *    purpose as the attacker side). Visible because defenders want to see
+ *    where their safe zone ends.
+ *
+ *  - DefenderPreRoundLock: A PreRound-only midfield wall. PreRound = visible,
+ *    blocks every channel (defenders can pre-position up to but not past this
+ *    line). RoundActive and PostRound = INACTIVE (invisible, no collision)
+ *    so gunplay flows normally.
+ *
+ * Halftime: barriers are ROLE-PERMANENT — OwnerTeam does NOT flip at halftime.
+ * The team that currently has TeamID matching a barrier's OwnerTeam sees the
+ * translucent material; the other side sees opaque. No swap call needed.
+ */
+UENUM(BlueprintType)
+enum class EBarrierKind : uint8
+{
+	AttackerSpawnLock = 0,
+	DefenderSpawnLock = 1,
+	DefenderPreRoundLock = 2
+};
+
+/**
  * Per-team state, replicated as a TArray on the GameState (one entry per team).
  * All fields are server-authoritative; clients receive read-only copies.
  */

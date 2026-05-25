@@ -8,6 +8,7 @@
 #include "ProjectCompHitscanWeapon.generated.h"
 
 class AProjectCompCharacter;
+class AProjectCompGameMode;
 
 /**
  * Hitscan weapon. Server-authoritative.
@@ -331,6 +332,12 @@ protected:
 	 *  Used to offset the bullet trace so it matches what the client camera shows. */
 	float ServerRecoilPitch = 0.0f;
 	float ServerRecoilYaw   = 0.0f;
+
+	/** Cached authority GameMode resolved once in BeginPlay so the per-shot fire
+	 *  path can reach the LiveCharacters registry without a Cast<>() or a
+	 *  GetAuthGameMode() call inside the hot loop. Weak ptr to survive late
+	 *  teardown without dereferencing freed memory. Null on client builds. */
+	TWeakObjectPtr<AProjectCompGameMode> CachedAuthGameMode;
 
 	/** Server: fire a single shot. Trace + damage + multicast. */
 	void FireOneShot();

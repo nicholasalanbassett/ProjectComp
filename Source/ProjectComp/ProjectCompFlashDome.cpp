@@ -2,12 +2,12 @@
 
 #include "ProjectCompFlashDome.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompGameMode.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectComp.h"
 #include "Camera/CameraComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
-#include "EngineUtils.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -58,6 +58,21 @@ void AProjectCompFlashDome::BeginPlay()
 		const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
 		WindupEndTime = Now + WindupDuration;
 		DespawnTime   = Now + DomeLifetime;
+
+		// Cache the authority GameMode for per-tick registry reads. Weak ptr
+		// because a level teardown could destroy the GameMode before the dome
+		// finishes its lifetime.
+		if (UWorld* World = GetWorld())
+		{
+			CachedAuthGameMode = World->GetAuthGameMode<AProjectCompGameMode>();
+		}
+
+		// Reserve the per-tick scratch buffers once. After this, Server_TickFlashApplication
+		// uses Reset() (not Empty()) to clear them — the underlying allocations are
+		// retained across ticks so the hot loop performs zero allocator activity.
+		// 16 = 5v5 cap + caster's self + comfortable headroom for 10v10.
+		IgnoreActorsScratch.Reserve(16);
+		AlreadyFlashed.Reserve(16);
 	}
 }
 
@@ -105,22 +120,34 @@ void AProjectCompFlashDome::Tick(float DeltaSeconds)
 
 void AProjectCompFlashDome::Server_TickFlashApplication()
 {
+	SCOPE_CYCLE_COUNTER(STAT_ProjectComp_FlashDomeTickApply);
+
 	UWorld* World = GetWorld();
 	if (!World || CasterTeam == ETeamID::Spectator)
 	{
 		return;
 	}
 
-	// Build the LOS-ignore list once per tick. Pawn body meshes block ECC_Visibility
-	// per BeginPlay's collision setup; without ignoring them, a teammate standing
-	// between an enemy and the dome would shield that enemy — unintended for a flash.
-	TArray<AActor*> IgnoreActors;
-	IgnoreActors.Reserve(16);
-	IgnoreActors.Add(this);
-	for (TActorIterator<AProjectCompCharacter> CharIt(World); CharIt; ++CharIt)
+	// Rebuild the LOS-ignore list against the cached LiveCharacters registry.
+	// Reset() preserves the underlying allocation (Reserve()d to 16 in BeginPlay),
+	// so this loop performs ZERO allocator activity once steady-state is reached —
+	// only pointer writes into a hot, sequential TArray. Pawn body meshes block
+	// ECC_Visibility per AProjectCompCharacter::BeginPlay's collision setup;
+	// without ignoring them, a teammate standing between an enemy and the dome
+	// would shield that enemy.
+	IgnoreActorsScratch.Reset();
+	IgnoreActorsScratch.Add(this);
+	if (AProjectCompGameMode* GM = CachedAuthGameMode.Get())
 	{
-		IgnoreActors.Add(*CharIt);
+		for (const TWeakObjectPtr<AProjectCompCharacter>& WeakChar : GM->GetLiveCharacters())
+		{
+			if (AProjectCompCharacter* Char = WeakChar.Get())
+			{
+				IgnoreActorsScratch.Add(Char);
+			}
+		}
 	}
+	const TArray<AActor*>& IgnoreActors = IgnoreActorsScratch;
 
 	const FVector DomeCenter = GetActorLocation();
 	const float RadiusSq = DomeRadius * DomeRadius;

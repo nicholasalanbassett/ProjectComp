@@ -9,6 +9,7 @@
 
 class UStaticMeshComponent;
 class APawn;
+class AProjectCompGameMode;
 
 /**
  * CA (Control/Aggro) ability: server-spawned dome that flashes enemy players
@@ -117,6 +118,17 @@ protected:
 	/** Server-only latch — pawns already flashed by this dome instance. Weak ptrs
 	 *  so a destroyed pawn (round end / level transition) doesn't keep entries alive. */
 	TSet<TWeakObjectPtr<APawn>> AlreadyFlashed;
+
+	/** Cached authority GameMode resolved once in BeginPlay so the per-tick flash
+	 *  application can reach the LiveCharacters registry without a per-tick
+	 *  GetAuthGameMode() lookup. Null on clients. */
+	TWeakObjectPtr<AProjectCompGameMode> CachedAuthGameMode;
+
+	/** Scratch buffer for the per-tick LOS-ignore list. Reserve()d once in BeginPlay
+	 *  and Reset() (not Empty()) at the top of each Server_TickFlashApplication
+	 *  pass — Reset() preserves the underlying allocation, so the per-tick fill
+	 *  costs only a fixed number of pointer writes with zero allocator traffic. */
+	TArray<AActor*> IgnoreActorsScratch;
 
 	/** Server: scan opposing-team living pawns inside the dome with clear LOS to
 	 *  the center and apply flash to each (latched — only once per dome). */

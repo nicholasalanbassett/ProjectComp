@@ -20,8 +20,8 @@ class UStaticMeshComponent;
  * During RoundActive the barrier is hidden and collision is off so the round
  * can proceed normally.
  *
- * OwnerTeam can be swapped at halftime via Server_SwapOwnerTeam so the
- * see-through rule continues to work for whichever team currently spawns here.
+ * Barriers are ROLE-PERMANENT — OwnerTeam does NOT flip at halftime. The
+ * team currently with TeamID matching OwnerTeam sees the translucent material.
  */
 UCLASS()
 class PROJECTCOMP_API AProjectCompBarrier : public AActor
@@ -34,15 +34,20 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void Tick(float DeltaSeconds) override;
 
-	/** Server: raise (true) or drop (false) the barrier. Replicates to clients. */
+	/** Server: raise (true) or drop (false) the barrier. Replicates to clients.
+	 *  The interpretation of "active" varies by Kind — see EBarrierKind. The
+	 *  GameMode computes the correct value per Kind on each phase transition. */
 	void Server_SetActive(bool bNewActive);
-
-	/** Server: flip OwnerTeam (Attackers ↔ Defenders). Called by the GameMode at halftime. */
-	void Server_SwapOwnerTeam();
 
 	/** Which team this barrier belongs to — see-through for them. Set per-instance in editor. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing = OnRep_OwnerTeam, Category = "Team")
 	ETeamID OwnerTeam = ETeamID::Spectator;
+
+	/** Spatial role of this barrier — see EBarrierKind for the collision contracts.
+	 *  Set per-instance in the level editor: SpawnRoomLock for attacker-side spawn
+	 *  walls; SitePerimeter for defender-side pre-position rings around bomb sites. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Behavior")
+	EBarrierKind Kind = EBarrierKind::AttackerSpawnLock;
 
 	/** Material shown to non-owning team (and to spectators). Solid wall. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Materials")
@@ -70,6 +75,11 @@ protected:
 
 	/** Recompute material + visibility + collision for the local viewer. */
 	void RefreshAppearance();
+
+	/** Picks Transparent vs Opaque material based on whether the local viewer's
+	 *  TeamID matches this barrier's OwnerTeam. Pulled out so each Kind branch
+	 *  in RefreshAppearance can share the picker. */
+	void ApplyOwnerTeamMaterial();
 
 	/** Which team is the local player on? Returns Spectator if no local PC / PS. */
 	ETeamID GetLocalViewerTeam() const;

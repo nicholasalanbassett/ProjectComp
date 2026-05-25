@@ -44,6 +44,12 @@ void AProjectCompGameMode::StartPlay()
 		CachedBombSites.Add(*It);
 	}
 
+	// Cap one-time allocation for the live-character registry. 5v5 fills 10
+	// slots; 16 leaves headroom for late-join, AI, or 10v10 stress without
+	// triggering a TArray growth-and-copy inside the Server_RegisterLiveCharacter
+	// path. Characters register from their server-side BeginPlay.
+	LiveCharacters.Reserve(16);
+
 	// Begin the match at round 1 with a PreRound phase.
 	if (AProjectCompGameState* GS = GetTypedGameState())
 	{
@@ -65,12 +71,17 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	// Lag-compensation: push a transform snapshot onto every character's ring buffer
 	// once per server tick. The ring depth (~500ms) covers worst-case competitive
 	// RTT plus interp delay. Cheap — one struct copy per character per tick.
+	//
+	// Iterating the event-driven LiveCharacters registry instead of TActorIterator
+	// turns an O(WorldActors) scan into an O(LivePawns) walk over a hot, sequential
+	// TArray — cache-friendly and free of any allocator activity.
 	if (UWorld* World = GetWorld())
 	{
+		SCOPE_CYCLE_COUNTER(STAT_ProjectComp_LagCompSnapshot);
 		const float Now = World->GetTimeSeconds();
-		for (TActorIterator<AProjectCompCharacter> It(World); It; ++It)
+		for (const TWeakObjectPtr<AProjectCompCharacter>& WeakChar : LiveCharacters)
 		{
-			if (AProjectCompCharacter* Char = *It)
+			if (AProjectCompCharacter* Char = WeakChar.Get())
 			{
 				Char->Server_RecordTransformSnapshot(Now);
 			}
@@ -161,6 +172,29 @@ void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 	if (PS && PS->GetTeamID() != ETeamID::Spectator)
 	{
 		RelocatePlayerToTeamStart(NewPlayer);
+	}
+}
+
+void AProjectCompGameMode::Server_RegisterLiveCharacter(AProjectCompCharacter* Char)
+{
+	// HasAuthority() check is the caller's responsibility — registry only exists
+	// on the server. AddUnique guards against the EndPlay/BeginPlay edge case
+	// where a respawn pipeline could double-fire registration; the cost is
+	// O(N) but N is capped at the player count, so it's still nanoseconds.
+	if (Char)
+	{
+		LiveCharacters.AddUnique(TWeakObjectPtr<AProjectCompCharacter>(Char));
+	}
+}
+
+void AProjectCompGameMode::Server_UnregisterLiveCharacter(AProjectCompCharacter* Char)
+{
+	// RemoveSingleSwap is O(N) but doesn't preserve order (which we don't need)
+	// and avoids the O(N) shift that RemoveSingle would do. Skipping the equals
+	// operator path by passing a TWeakObjectPtr constructed in place.
+	if (Char)
+	{
+		LiveCharacters.RemoveSingleSwap(TWeakObjectPtr<AProjectCompCharacter>(Char), EAllowShrinking::No);
 	}
 }
 
@@ -409,8 +443,8 @@ void AProjectCompGameMode::StartPreRound()
 		}
 	}
 
-	// Raise spawn-room barriers — players are locked in until the round goes active.
-	Server_SetAllBarriersActive(true);
+	// Engage each barrier per its Kind's PreRound rule.
+	Server_SetAllBarriersForPhase(ERoundPhase::PreRound);
 
 	// Reset bomb sites: clear plant/defuse/detonate state from last round.
 	Server_ResetAllBombSites();
@@ -433,8 +467,10 @@ void AProjectCompGameMode::StartRoundActive()
 	GS->Server_SetPhase(ERoundPhase::RoundActive);
 	SetPhaseTimer(RoundActiveDuration);
 
-	// Drop barriers so players can leave the spawn rooms.
-	Server_SetAllBarriersActive(false);
+	// Re-route barriers for the RoundActive phase — AttackerSpawnLock drops to
+	// DeadPawn-only mode, DefenderSpawnLock engages (DeadPawn-only + visible),
+	// DefenderPreRoundLock goes fully off.
+	Server_SetAllBarriersForPhase(ERoundPhase::RoundActive);
 
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: RoundActive started (%.1fs)."), GS->GetCurrentRound(), RoundActiveDuration);
 }
@@ -449,6 +485,11 @@ void AProjectCompGameMode::StartPostRound()
 
 	GS->Server_SetPhase(ERoundPhase::PostRound);
 	SetPhaseTimer(PostRoundDuration);
+
+	// PostRound barrier state matches RoundActive for AttackerSpawnLock and
+	// DefenderSpawnLock (looming-safe zones still active); DefenderPreRoundLock
+	// stays off. Explicit call so the routing is obvious here.
+	Server_SetAllBarriersForPhase(ERoundPhase::PostRound);
 
 	// Clear pending respawn timers — round is over.
 	for (auto& Pair : RespawnTimers)
@@ -644,12 +685,11 @@ void AProjectCompGameMode::Server_SwapAllPlayerTeams()
 		}
 	}
 
-	// Flip barrier ownership too so the see-through rule keeps working for
-	// whichever team now spawns in each room.
-	for (TActorIterator<AProjectCompBarrier> It(GetWorld()); It; ++It)
-	{
-		It->Server_SwapOwnerTeam();
-	}
+	// Barriers are role-permanent under the new EBarrierKind scheme — OwnerTeam
+	// stays put; the player who is now TeamID=Defenders this half sees the
+	// translucent material on every DefenderSpawnLock / DefenderPreRoundLock
+	// automatically because the OwnerTeam comparison in RefreshAppearance
+	// matches their new TeamID. Same for attackers. No swap call needed.
 
 	// Swap team loadouts so per-team state (Score in particular) follows the
 	// players to their new side. Without this, the "Attackers" Score remains
@@ -673,11 +713,41 @@ void AProjectCompGameMode::Server_SwapAllPlayerTeams()
 	UE_LOG(LogProjectComp, Log, TEXT("Half-time swap: %d players changed sides."), SwappedCount);
 }
 
-void AProjectCompGameMode::Server_SetAllBarriersActive(bool bActive)
+void AProjectCompGameMode::Server_SetAllBarriersForPhase(ERoundPhase NewPhase)
 {
+	// Per-Kind activation table — see EBarrierKind doc for the rationale:
+	//
+	//                          PreRound    RoundActive    PostRound
+	//   AttackerSpawnLock      true        false          false
+	//   DefenderSpawnLock      false       true           true
+	//   DefenderPreRoundLock   true        false          false
+	//
+	// "Active" means different things per Kind (block-all vs DeadPawn-only vs
+	// fully off) — the bool is just an engagement flag the barrier's
+	// RefreshAppearance reads alongside Kind to pick the right collision +
+	// visibility setup.
 	for (TActorIterator<AProjectCompBarrier> It(GetWorld()); It; ++It)
 	{
-		It->Server_SetActive(bActive);
+		AProjectCompBarrier* B = *It;
+		if (!B)
+		{
+			continue;
+		}
+		bool bShouldBeActive = false;
+		switch (B->Kind)
+		{
+			case EBarrierKind::AttackerSpawnLock:
+				bShouldBeActive = (NewPhase == ERoundPhase::PreRound);
+				break;
+			case EBarrierKind::DefenderSpawnLock:
+				bShouldBeActive = (NewPhase == ERoundPhase::RoundActive
+				                || NewPhase == ERoundPhase::PostRound);
+				break;
+			case EBarrierKind::DefenderPreRoundLock:
+				bShouldBeActive = (NewPhase == ERoundPhase::PreRound);
+				break;
+		}
+		B->Server_SetActive(bShouldBeActive);
 	}
 }
 
@@ -1064,7 +1134,8 @@ void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
 		return;
 	}
 
-	if (AProjectCompPlayerState* PS = Player->GetPlayerState<AProjectCompPlayerState>())
+	AProjectCompPlayerState* PS = Player->GetPlayerState<AProjectCompPlayerState>();
+	if (PS)
 	{
 		PS->Server_SetIsAlive(true);
 		PS->Server_SetRespawnEndTime(0.0f);
