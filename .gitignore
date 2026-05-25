@@ -8,3 +8,6 @@ Build/
 *.sln
 *.code-workspace
 *.slnx
+
+# Claude Code per-user state — local permission allowlist, not for sharing
+.claude/settings.local.json
