@@ -21,6 +21,7 @@ void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AProjectCompGameState, CurrentRound);
 	DOREPLIFETIME(AProjectCompGameState, PhaseTimeRemainingDs);
 	DOREPLIFETIME(AProjectCompGameState, Teams);
+	DOREPLIFETIME(AProjectCompGameState, bSelectionWindowOpen);
 }
 
 // =====================================================================
@@ -96,6 +97,12 @@ void AProjectCompGameState::Server_AddTeamScore(ETeamID Team, int32 Delta)
 	}
 }
 
+void AProjectCompGameState::Server_SetSelectionWindowOpen(bool bOpen)
+{
+	if (!ensure(HasAuthority())) return;
+	bSelectionWindowOpen = bOpen;
+}
+
 // =====================================================================
 // Multicast — runs on server + all clients to play VFX/SFX uniformly
 // =====================================================================
@@ -114,6 +121,19 @@ void AProjectCompGameState::Multicast_OnAbilityCast_Implementation(EAbilityType 
 	// Hook for UI/VFX/audio. Effects are local-only; never alter authoritative state here.
 	UE_LOG(LogProjectComp, Log, TEXT("Ability cast: Type=%d Team=%d Loc=%s"),
 		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
+}
+
+void AProjectCompGameState::Multicast_OnInfoScan_Implementation(int32 EnemyCount, ETeamID PlacerTeam, FVector ScanLocation, float ScanRadius)
+{
+	// Hook for the HUD widget. Two consumer paths:
+	//  - Local player on PlacerTeam: render the count briefly.
+	//  - Local player whose pawn is within ScanRadius of ScanLocation AND on
+	//    the opposing team: render the "scanned" tell.
+	// Both are HUD responsibilities — this multicast just delivers the data
+	// so we can wire them once the widget exists.
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[InfoScan] EnemyCount=%d PlacerTeam=%d Loc=%s Radius=%.0f"),
+		EnemyCount, static_cast<int32>(PlacerTeam), *ScanLocation.ToCompactString(), ScanRadius);
 }
 
 // =====================================================================

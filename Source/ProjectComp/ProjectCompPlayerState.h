@@ -66,6 +66,35 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player")
 	float GetFlashFadeStartTime() const { return FlashFadeStartTime; }
 
+	// ---- Loom + Economy accessors ---------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "Player|Economy")
+	int32 GetCurrentCredits() const { return CurrentCredits; }
+
+	/** True if this player has spent their single Loom charge for the round. */
+	UFUNCTION(BlueprintPure, Category = "Player|Loom")
+	bool HasUsedLoomThisRound() const { return bHasUsedLoomThisRound; }
+
+	/** The Loom ability claimed during this round's PreRound draft. None = not yet claimed. */
+	UFUNCTION(BlueprintPure, Category = "Player|Loom")
+	EAbilityType GetChosenLoomAbility() const { return ChosenLoomAbility; }
+
+	// ---- Grenade accessors ----------------------------------------------
+
+	/** Up to two distinct grenade types equipped this round. */
+	const TArray<EGrenadeType>& GetEquippedGrenadeTypes() const { return EquippedGrenadeTypes; }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Grenade")
+	bool HasGrenadeEquipped(EGrenadeType Type) const;
+
+	/** Server-time at which the given grenade's cooldown expires. 0 = ready (or not equipped). */
+	UFUNCTION(BlueprintPure, Category = "Player|Grenade")
+	float GetGrenadeCooldownEndTime(EGrenadeType Type) const;
+
+	/** True if the given grenade is equipped AND its cooldown end-time is in the future. */
+	UFUNCTION(BlueprintPure, Category = "Player|Grenade")
+	bool IsGrenadeOnCooldown(EGrenadeType Type) const;
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	/** Server: assign this player to a team. */
@@ -98,6 +127,45 @@ public:
 	/** Server: apply a flash effect with the given full-white + fade durations.
 	 *  Stamps FlashFadeStartTime + FlashEndTime in absolute server-time and replicates. */
 	void Server_ApplyFlash(float FullWhiteDuration, float FadeDuration);
+
+	// ---- Server: Economy -------------------------------------------------
+
+	/** Server: set wallet to an absolute amount (clamped to uint16 range). */
+	void Server_SetCredits(int32 NewAmount);
+
+	/** Server: add credits (positive Delta). Clamped to uint16 ceiling. */
+	void Server_AddCredits(int32 Delta);
+
+	/** Server: try to deduct Cost. Returns true if the player had enough and was charged. */
+	bool Server_SpendCredits(int32 Cost);
+
+	// ---- Server: Loom ---------------------------------------------------
+
+	/** Server: claim a Loom ability for this round. No same-team duplicate check here —
+	 *  the GameMode performs first-claim arbitration before calling this. */
+	void Server_SetChosenLoomAbility(EAbilityType Ability);
+
+	/** Server: clear the Loom claim (called at PreRound start). */
+	void Server_ClearChosenLoomAbility();
+
+	/** Server: record that the player has spent their single Loom charge for the round. */
+	void Server_MarkLoomUsed();
+
+	/** Server: clear the per-round Loom usage flag (called at PreRound start). */
+	void Server_ResetLoomUsage();
+
+	// ---- Server: Grenades -----------------------------------------------
+
+	/** Server: equip a grenade type if not already equipped and slots available (max 2).
+	 *  Returns true on success. Does NOT charge credits — GameMode handles purchasing. */
+	bool Server_EquipGrenade(EGrenadeType Type);
+
+	/** Server: remove all equipped grenade types and reset all cooldown end-times.
+	 *  Called at PreRound start to clear last round's loadout. */
+	void Server_ClearEquippedGrenades();
+
+	/** Server: set the absolute server-time at which the given grenade's cooldown expires. */
+	void Server_SetGrenadeCooldownEndTime(EGrenadeType Type, float NewEndTime);
 
 protected:
 
@@ -142,4 +210,38 @@ protected:
 	/** Server-time the fade phase begins. Equal to FlashEndTime - FadeDuration. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	float FlashFadeStartTime = 0.0f;
+
+	// ---- Economy --------------------------------------------------------
+
+	/** Credits this player has available to spend in the PreRound buy phase.
+	 *  Owner-only on the wire — opponent wallets aren't useful info to leak.
+	 *  uint16 is not BP-readable directly; BP consumes via GetCurrentCredits(). */
+	UPROPERTY(Replicated)
+	uint16 CurrentCredits = 0;
+
+	// ---- Loom -----------------------------------------------------------
+
+	/** Loom ability this player claimed during the current round's draft.
+	 *  Replicated to everyone: teammates need it for duplicate-prevention UI;
+	 *  enemies learn it anyway the moment it's cast. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loom")
+	EAbilityType ChosenLoomAbility = EAbilityType::None;
+
+	/** True once this player has spent their single Loom charge for the current
+	 *  round. Reset by Server_ResetLoomUsage at PreRound start. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loom")
+	bool bHasUsedLoomThisRound = false;
+
+	// ---- Grenades -------------------------------------------------------
+
+	/** Up to two distinct grenade types this player owns for the round.
+	 *  Owner-only: enemy loadouts are revealed by use, not replicated up-front. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Grenade")
+	TArray<EGrenadeType> EquippedGrenadeTypes;
+
+	/** Per-type cooldown end times in absolute server-time. Fixed-size, indexed by
+	 *  (uint8)EGrenadeType — slot 0 (None) is unused. Owner-only on the wire.
+	 *  0.0 = ready (or grenade not equipped). */
+	UPROPERTY(Replicated)
+	TArray<float> GrenadeCooldownEndTimes;
 };

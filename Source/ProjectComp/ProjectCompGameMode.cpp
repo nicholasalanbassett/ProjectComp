@@ -92,6 +92,19 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	const float Remaining = GS->GetPhaseTimeRemaining() - DeltaSeconds;
 	GS->Server_SetPhaseTimeRemaining(FMath::Max(Remaining, 0.0f));
 
+	// Close the selection window once SelectionWindowDuration has elapsed within
+	// PreRound. Cheap test — single bool flip — runs at most once per round.
+	if (GS->GetCurrentPhase() == ERoundPhase::PreRound && GS->IsSelectionWindowOpen())
+	{
+		const float Elapsed = PreRoundDuration - Remaining;
+		if (Elapsed >= SelectionWindowDuration)
+		{
+			GS->Server_SetSelectionWindowOpen(false);
+			UE_LOG(LogProjectComp, Log, TEXT("PreRound: selection window closed at %.1fs (PreRound %.1fs total)."),
+				SelectionWindowDuration, PreRoundDuration);
+		}
+	}
+
 	// Recharge ability pools only while gunplay is live.
 	if (GS->GetCurrentPhase() == ERoundPhase::RoundActive)
 	{
@@ -125,6 +138,7 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 				UE_LOG(LogProjectComp, Log, TEXT("Round %d: Timer expired with no plant. Defenders +1 (now %d)."),
 					GS->GetCurrentRound(),
 					GS->GetTeamLoadout(ETeamID::Defenders).Score);
+				AwardRoundEndCredits(ETeamID::Defenders);
 				StartPostRound();
 				break;
 			case ERoundPhase::PostRound:
@@ -162,6 +176,10 @@ void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 		PS->Server_SetTeamID(PickTeamForNewPlayer());
 		PS->Server_SetIsAlive(true);
 		PS->Server_ClearVotes();
+		// Bootstrap the new player's wallet so their first PreRound buy window
+		// has something to spend. Mid-match joiners get the same baseline —
+		// graduated catch-up bonuses can be layered on later if needed.
+		PS->Server_SetCredits(StartingCredits);
 	}
 
 	Super::PostLogin(NewPlayer);
@@ -401,6 +419,10 @@ void AProjectCompGameMode::StartPreRound()
 	}
 
 	// Clear all player votes; reset alive state + lives for the new round.
+	// Also reset the new per-player Loom + grenade state (per grenade-system memory):
+	// Loom claim cleared so this round's draft can run fresh, Loom usage flag
+	// reset so each player gets their 1-per-round charge back, grenade loadout
+	// cleared so credits-spent-last-round don't carry items into this one.
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
@@ -411,9 +433,16 @@ void AProjectCompGameMode::StartPreRound()
 				PS->Server_SetIsAlive(true);
 				PS->Server_ResetLives();
 				PS->Server_SetRespawnEndTime(0.0f);
+				PS->Server_ClearChosenLoomAbility();
+				PS->Server_ResetLoomUsage();
+				PS->Server_ClearEquippedGrenades();
 			}
 		}
 	}
+
+	// Open the selection window for the first SelectionWindowDuration seconds of
+	// this PreRound. Tick() will flip it closed when elapsed crosses the threshold.
+	GS->Server_SetSelectionWindowOpen(true);
 
 	// Fresh round = fresh spawn allocation. Clear sticky assignments so the
 	// next ChoosePlayerStart for each player picks a new (teammate-avoiding)
@@ -463,6 +492,10 @@ void AProjectCompGameMode::StartRoundActive()
 	// Tally votes -> lock team loadouts.
 	TallyAndLockTeamDraft(ETeamID::Attackers);
 	TallyAndLockTeamDraft(ETeamID::Defenders);
+
+	// Defensive: selection window is gated by elapsed time in Tick, but a low
+	// PreRoundDuration or future timing change could leave it open. Force-close.
+	GS->Server_SetSelectionWindowOpen(false);
 
 	GS->Server_SetPhase(ERoundPhase::RoundActive);
 	SetPhaseTimer(RoundActiveDuration);
@@ -785,9 +818,11 @@ void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
 		return;
 	}
 
+	ETeamID WinningTeam = ETeamID::Spectator;
 	if (Site->bIsDetonated)
 	{
 		GS->Server_AddTeamScore(ETeamID::Attackers, Site->PointValue);
+		WinningTeam = ETeamID::Attackers;
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DETONATED at %s. Attackers +%d (now %d)."),
 			GS->GetCurrentRound(), *Site->Label.ToString(), Site->PointValue,
 			GS->GetTeamLoadout(ETeamID::Attackers).Score);
@@ -795,11 +830,13 @@ void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
 	else if (Site->bIsDefused)
 	{
 		GS->Server_AddTeamScore(ETeamID::Defenders, Site->DefusePointValue);
+		WinningTeam = ETeamID::Defenders;
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DEFUSED at %s. Defenders +%d (now %d)."),
 			GS->GetCurrentRound(), *Site->Label.ToString(), Site->DefusePointValue,
 			GS->GetTeamLoadout(ETeamID::Defenders).Score);
 	}
 
+	AwardRoundEndCredits(WinningTeam);
 	StartPostRound();
 }
 
@@ -908,6 +945,7 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 						TEXT("Round %d: Defenders eliminated with bomb planted at %s. Attackers +%d (now %d)."),
 						GS->GetCurrentRound(), *Site->Label.ToString(),
 						Site->PointValue, GS->GetTeamLoadout(ETeamID::Attackers).Score);
+					AwardRoundEndCredits(ETeamID::Attackers);
 					StartPostRound();
 					return;
 				}
@@ -924,6 +962,7 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Attackers eliminated. Defenders +1 (now %d)."),
 			GS->GetCurrentRound(),
 			GS->GetTeamLoadout(ETeamID::Defenders).Score);
+		AwardRoundEndCredits(ETeamID::Defenders);
 		StartPostRound();
 	}
 	else if (bAllDefendersDead)
@@ -932,6 +971,7 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Defenders eliminated. Attackers +1 (now %d)."),
 			GS->GetCurrentRound(),
 			GS->GetTeamLoadout(ETeamID::Attackers).Score);
+		AwardRoundEndCredits(ETeamID::Attackers);
 		StartPostRound();
 	}
 }
@@ -1055,6 +1095,7 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 	if (AProjectCompPlayerState* KillerPS = Killer ? Killer->GetPlayerState<AProjectCompPlayerState>() : nullptr)
 	{
 		KillerPS->Server_AddKill();
+		KillerPS->Server_AddCredits(KillCreditBonus);
 	}
 
 	// Looming-mobile: the dead player keeps input + movement so they can
@@ -1173,4 +1214,215 @@ bool AProjectCompGameMode::IsValidVotePair(EAbilityType First, EAbilityType Seco
 	return First != EAbilityType::None
 		&& Second != EAbilityType::None
 		&& First != Second;
+}
+
+// =====================================================================
+// Economy + grenade purchase + Loom claim arbitration
+// =====================================================================
+
+int32 AProjectCompGameMode::GetGrenadeCost(EGrenadeType Type) const
+{
+	switch (Type)
+	{
+	case EGrenadeType::Flash:      return FlashGrenadeCost;
+	case EGrenadeType::Info:       return InfoGrenadeCost;
+	case EGrenadeType::Vulnerable: return VulnerableGrenadeCost;
+	case EGrenadeType::Sound:      return SoundGrenadeCost;
+	default:                       return 0;
+	}
+}
+
+void AProjectCompGameMode::Server_CheatEndRound(ETeamID WinningTeam)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	if (GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+	{
+		UE_LOG(LogProjectComp, Warning,
+			TEXT("[Cheat] EndRound rejected: phase=%d (must be RoundActive)."),
+			static_cast<int32>(GS->GetCurrentPhase()));
+		return;
+	}
+
+	if (WinningTeam != ETeamID::Attackers && WinningTeam != ETeamID::Defenders)
+	{
+		UE_LOG(LogProjectComp, Warning, TEXT("[Cheat] EndRound rejected: invalid team %d."),
+			static_cast<int32>(WinningTeam));
+		return;
+	}
+
+	GS->Server_AddTeamScore(WinningTeam, 1);
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Cheat] Round %d force-ended. Team %d +1 (now %d)."),
+		GS->GetCurrentRound(), static_cast<int32>(WinningTeam),
+		GS->GetTeamLoadout(WinningTeam).Score);
+	AwardRoundEndCredits(WinningTeam);
+	StartPostRound();
+}
+
+void AProjectCompGameMode::AwardRoundEndCredits(ETeamID WinningTeam)
+{
+	if (!HasAuthority() || WinningTeam == ETeamID::Spectator)
+	{
+		return;
+	}
+
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PC = It->Get();
+		AProjectCompPlayerState* PS = PC ? PC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		if (!PS)
+		{
+			continue;
+		}
+		const ETeamID Team = PS->GetTeamID();
+		if (Team == ETeamID::Spectator)
+		{
+			continue;
+		}
+		PS->Server_AddCredits(Team == WinningTeam ? RoundWinCreditBonus : RoundLossCreditBonus);
+	}
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("Round %d: credits awarded — winners +%d, losers +%d (winning team=%d)."),
+		GetTypedGameState() ? GetTypedGameState()->GetCurrentRound() : -1,
+		RoundWinCreditBonus, RoundLossCreditBonus, static_cast<int32>(WinningTeam));
+}
+
+bool AProjectCompGameMode::Server_ClaimLoomAbility(APlayerController* Claimer, EAbilityType Ability)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return false;
+	}
+
+	// Phase + selection-window gate. Claims only land while the buy UI is open.
+	if (GS->GetCurrentPhase() != ERoundPhase::PreRound || !GS->IsSelectionWindowOpen())
+	{
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom claim] Rejected: phase=%d window=%d."),
+			static_cast<int32>(GS->GetCurrentPhase()), GS->IsSelectionWindowOpen() ? 1 : 0);
+		return false;
+	}
+
+	if (Ability == EAbilityType::None)
+	{
+		return false;
+	}
+
+	AProjectCompPlayerState* ClaimerPS = Claimer ? Claimer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!ClaimerPS)
+	{
+		return false;
+	}
+
+	const ETeamID Team = ClaimerPS->GetTeamID();
+	if (Team == ETeamID::Spectator)
+	{
+		return false;
+	}
+
+	// First-claim-wins arbitration: reject if any teammate already holds this
+	// ability for the round. The claimer themselves is excluded so re-claiming
+	// the same slot is a no-op success rather than a hard reject.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* OtherPC = It->Get();
+		if (OtherPC == Claimer)
+		{
+			continue;
+		}
+		AProjectCompPlayerState* OtherPS = OtherPC ? OtherPC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		if (OtherPS && OtherPS->GetTeamID() == Team && OtherPS->GetChosenLoomAbility() == Ability)
+		{
+			UE_LOG(LogProjectComp, Verbose,
+				TEXT("[Loom claim] Rejected: ability %d already held by teammate."),
+				static_cast<int32>(Ability));
+			return false;
+		}
+	}
+
+	ClaimerPS->Server_SetChosenLoomAbility(Ability);
+	UE_LOG(LogProjectComp, Log, TEXT("[Loom claim] Team %d player '%s' claimed ability %d."),
+		static_cast<int32>(Team), *ClaimerPS->GetPlayerName(), static_cast<int32>(Ability));
+	return true;
+}
+
+bool AProjectCompGameMode::Server_BuyGrenade(APlayerController* Buyer, EGrenadeType Type)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return false;
+	}
+
+	if (GS->GetCurrentPhase() != ERoundPhase::PreRound || !GS->IsSelectionWindowOpen())
+	{
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Grenade buy] Rejected: phase=%d window=%d."),
+			static_cast<int32>(GS->GetCurrentPhase()), GS->IsSelectionWindowOpen() ? 1 : 0);
+		return false;
+	}
+
+	if (Type == EGrenadeType::None)
+	{
+		return false;
+	}
+
+	AProjectCompPlayerState* BuyerPS = Buyer ? Buyer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!BuyerPS || BuyerPS->GetTeamID() == ETeamID::Spectator)
+	{
+		return false;
+	}
+
+	// Up-front gating so we can mutate atomically below without rollback paths.
+	if (BuyerPS->HasGrenadeEquipped(Type))
+	{
+		return false;  // no same-type stacking
+	}
+
+	constexpr int32 MaxEquippedGrenadeTypes = 2;
+	if (BuyerPS->GetEquippedGrenadeTypes().Num() >= MaxEquippedGrenadeTypes)
+	{
+		return false;  // kit full
+	}
+
+	const int32 Cost = GetGrenadeCost(Type);
+	if (Cost <= 0)
+	{
+		return false;
+	}
+
+	if (BuyerPS->GetCurrentCredits() < Cost)
+	{
+		return false;
+	}
+
+	// All gates passed: spend + equip. Each helper still runs its own asserts;
+	// neither can fail here given the checks above.
+	BuyerPS->Server_SpendCredits(Cost);
+	BuyerPS->Server_EquipGrenade(Type);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Grenade buy] '%s' bought grenade %d for %d credits (remaining %d)."),
+		*BuyerPS->GetPlayerName(), static_cast<int32>(Type), Cost, BuyerPS->GetCurrentCredits());
+	return true;
 }

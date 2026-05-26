@@ -40,6 +40,58 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void RequestAbilityCast(EAbilityType Type, FVector TargetLocation);
 
+	/** Owning-client entry point: claim a Loom ability during PreRound selection window.
+	 *  First-come-first-served per team (no duplicates). Server arbitrates. */
+	UFUNCTION(BlueprintCallable, Category = "Loom")
+	void ClaimLoomAbility(EAbilityType Ability);
+
+	/** Owning-client entry point: purchase a grenade during PreRound selection window. */
+	UFUNCTION(BlueprintCallable, Category = "Grenade")
+	void BuyGrenade(EGrenadeType Type);
+
+	// ---- Dev/test console hooks (PIE listen-server convenience) -----------
+	// Use the UE console (~) and call e.g. `BuyNade 1` to buy a Flash.
+	// Indices for BuyNade: 1=Flash 2=Info 3=Vulnerable 4=Sound.
+	// Indices for ClaimLoom: 1=AA 2=AC 3=AM 4=CC 5=CA 6=CM 7=MM 8=MA 9=MC.
+
+	UFUNCTION(Exec)
+	void BuyNade(int32 TypeIndex);
+
+	UFUNCTION(Exec)
+	void ClaimLoom(int32 AbilityIndex);
+
+	/** CHEAT: server-only-effective credit top-up for testing the buy phase. */
+	UFUNCTION(Exec)
+	void GiveCredits(int32 Amount);
+
+	/** Logs a one-line snapshot of phase, selection window, and the calling
+	 *  player's economy/Loom/grenade state to the Output Log. */
+	UFUNCTION(Exec)
+	void DumpEcon();
+
+	/** CHEAT: force-end the current RoundActive with the given team as winner.
+	 *  TeamIndex: 0=Attackers 1=Defenders. */
+	UFUNCTION(Exec)
+	void EndRound(int32 TeamIndex);
+
+	/** Throw / place the equipped grenade of the given type from the caller's
+	 *  pawn (origin = pawn location, direction = camera forward). Indices:
+	 *  1=Flash 2=Info 3=Vulnerable 4=Sound. RoundActive only.
+	 *  AltFire (0/1, default 0): FLASH right-click self-flash, others ignore. */
+	UFUNCTION(Exec)
+	void UseNade(int32 TypeIndex, int32 AltFire = 0);
+
+	/** Toggle the caller's active SOUND grenade on/off. Only works while
+	 *  the caller is the original placer and the grenade still exists. */
+	UFUNCTION(Exec)
+	void ToggleSound();
+
+	/** Reposition the caller's active SOUND grenade to where their camera
+	 *  is currently looking (or pawn location if no camera). Valid once per
+	 *  round; rejected if used previously or if not the original placer. */
+	UFUNCTION(Exec)
+	void ReposSound();
+
 	/** Owning-client entry point: toggle the Loom cast minimap. Only effective
 	 *  while looming — alive callers are silently ignored. Bound to the
 	 *  MinimapAction input but BP-callable for menus / cheats. */
@@ -78,6 +130,39 @@ protected:
 
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_RequestAbilityCast(EAbilityType Type, FVector TargetLocation);
+
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_ClaimLoomAbility(EAbilityType Ability);
+
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_BuyGrenade(EGrenadeType Type);
+
+	/** CHEAT path: tops up the caller's credits on the server. Unconditional —
+	 *  this is dev-only and should be stripped or gated for production. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_CheatAddCredits(int32 Amount);
+
+	/** CHEAT path: force-end the current RoundActive with the given winner. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_CheatEndRound(ETeamID WinningTeam);
+
+	/** Server RPC: forward a grenade-use request to the pawn's GrenadeComponent.
+	 *  Origin and Direction are computed client-side from the pawn pose, then
+	 *  re-validated server-side inside the component.
+	 *  bAltFire: subclass-specific secondary mode (FLASH right-click = self-flash). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_UseGrenade(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction);
+
+	/** Server RPC: toggle the caller's placed SOUND grenade on/off. Server
+	 *  finds the caller's grenade via IsPlacedBy() ownership check. */
+	UFUNCTION(Server, Reliable)
+	void Server_ToggleSoundGrenade();
+
+	/** Server RPC: reposition the caller's placed SOUND grenade to NewOrigin.
+	 *  Validates: caller is the placer, grenade still has reposition uses
+	 *  remaining, caller is not permanently dead. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_RepositionSoundGrenade(FVector NewOrigin);
 
 private:
 

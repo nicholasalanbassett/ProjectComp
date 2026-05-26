@@ -43,6 +43,29 @@ enum class EAbilityType : uint8
 	MM, MA, MC
 };
 
+/**
+ * Grenade type identity. Four utility grenades on the Aggro/Control/Midrange matrix.
+ * Players equip up to two distinct types per round (bought during PreRound).
+ *
+ *  - Flash:      Aggro Midrange. Hand-thrown straight-line projectile; phases one wall.
+ *  - Info:       Midrange Control. Map-placed; snapshots enemy count after delay.
+ *  - Vulnerable: Aggro Control. Map-placed; 2x damage zone, breakable at 1 HP.
+ *  - Sound:      Midrange Control. Map-placed; dampens enemy audio, toggleable by placer.
+ *
+ * Indexed numerically by (uint8) cast for TArray lookups (e.g. cooldown end times).
+ * GrenadeType_MAX is the array-size sentinel; do not use as a valid type.
+ */
+UENUM(BlueprintType)
+enum class EGrenadeType : uint8
+{
+	None = 0,
+	Flash,
+	Info,
+	Vulnerable,
+	Sound,
+	GrenadeType_MAX UMETA(Hidden)
+};
+
 /** Payload for a single kill event; pushed into the GameState queue on every client. */
 USTRUCT()
 struct FKillFeedData

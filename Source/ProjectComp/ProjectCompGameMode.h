@@ -55,6 +55,28 @@ public:
 	 */
 	bool Server_RequestAbilityCast(APlayerController* Caster, EAbilityType Type, FVector TargetLocation);
 
+	/**
+	 * Resolves a Loom-ability draft claim. Validates: PreRound + selection window
+	 * open, caller has valid team, ability != None, AND no teammate already
+	 * holds this ability (first-claim-wins arbitration per design memory
+	 * "grenade-system-and-loom-pivot"). On success, writes the claim onto the
+	 * claimer's PlayerState.
+	 */
+	bool Server_ClaimLoomAbility(APlayerController* Claimer, EAbilityType Ability);
+
+	/**
+	 * Resolves a grenade purchase. Validates: PreRound + selection window open,
+	 * caller has valid team + alive, type != None, not already equipped, room
+	 * for one more (max 2 distinct types), enough credits. On success, deducts
+	 * credits and equips the grenade for the round.
+	 */
+	bool Server_BuyGrenade(APlayerController* Buyer, EGrenadeType Type);
+
+	/** CHEAT: force-end the current RoundActive by awarding +1 score and round-end
+	 *  credits to WinningTeam, then transitioning to PostRound. No-op outside
+	 *  RoundActive. Dev/test only — strip or gate before production. */
+	void Server_CheatEndRound(ETeamID WinningTeam);
+
 	/** Public so the HealthComponent (or other damage source) can drive the death cascade. */
 	void HandlePlayerDeath(APlayerController* Victim, AController* Killer);
 
@@ -155,9 +177,14 @@ protected:
 
 	// ---- Tuning knobs (editable in BP defaults) ---------------------------
 
-	/** Duration of the PreRound phase in seconds (draft + barrier). */
+	/** Duration of the PreRound phase in seconds (selection window + spawn positioning). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
-	float PreRoundDuration = 15.0f;
+	float PreRoundDuration = 20.0f;
+
+	/** First N seconds of PreRound during which the Loom draft + grenade-buy UI is active.
+	 *  After this window closes, players can move/position in spawn until the round starts. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float SelectionWindowDuration = 10.0f;
 
 	/** Duration of an active round in seconds. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
@@ -199,6 +226,47 @@ protected:
 	 *  hooks the visual mesh + material; the C++ base handles all gameplay. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
 	TSubclassOf<class AProjectCompFlashDome> FlashDomeClass;
+
+	// ---- Economy tuning (CS-style; all playtest-tunable in BP defaults) ----
+
+	/** Credits granted on PostLogin (i.e. when a player joins). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 StartingCredits = 1000;
+
+	/** Credits granted to every member of the winning team at round end. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 RoundWinCreditBonus = 600;
+
+	/** Credits granted to every member of the losing team at round end. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 RoundLossCreditBonus = 400;
+
+	/** Credits granted to a player when they earn a kill. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 KillCreditBonus = 200;
+
+	/** Per-grenade purchase prices. All four start at the same baseline; tune in
+	 *  BP defaults once playtest data exists. Lookup via GetGrenadeCost(EGrenadeType). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 FlashGrenadeCost = 300;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 InfoGrenadeCost = 300;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 VulnerableGrenadeCost = 300;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 SoundGrenadeCost = 300;
+
+	/** Returns the configured cost for the given grenade type. Returns 0 for None. */
+	int32 GetGrenadeCost(EGrenadeType Type) const;
+
+	/** Awards round-end credits to all players based on the winning team.
+	 *  Spectators receive nothing. Called from each win-determination path
+	 *  immediately BEFORE StartPostRound() so credits replicate during PostRound
+	 *  and are present by the time the next PreRound's buy window opens. */
+	void AwardRoundEndCredits(ETeamID WinningTeam);
 
 public:
 	float GetFriendlyFireScalar() const { return FriendlyFireScalar; }

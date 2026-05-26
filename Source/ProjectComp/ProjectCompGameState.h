@@ -48,6 +48,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Round State")
 	bool IsTeamAbilityReady(ETeamID Team) const;
 
+	/** True during the first SelectionWindowDuration seconds of PreRound — the buy/draft
+	 *  UI is active and the server accepts Server_BuyGrenade / Server_ClaimLoomAbility.
+	 *  Always false in other phases. */
+	UFUNCTION(BlueprintPure, Category = "Round State")
+	bool IsSelectionWindowOpen() const { return bSelectionWindowOpen; }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	void Server_SetPhase(ERoundPhase NewPhase);
@@ -56,6 +62,7 @@ public:
 	void Server_SetTeamLoadout(ETeamID Team, const FTeamLoadout& NewLoadout);
 	void Server_SetTeamCooldownPool(ETeamID Team, float NewPool);
 	void Server_AddTeamScore(ETeamID Team, int32 Delta = 1);
+	void Server_SetSelectionWindowOpen(bool bOpen);
 
 	// ---- Multicast hooks --------------------------------------------------
 
@@ -74,6 +81,15 @@ public:
 	 */
 	UFUNCTION(NetMulticast, Unreliable)
 	void Multicast_OnPlayerKilled(const FString& KillerName, const FString& VictimName, ETeamID KillerTeam, ETeamID VictimTeam);
+
+	/**
+	 * Fires on every client when an Info grenade completes its scan. Clients on
+	 * the placer's team render the EnemyCount; clients whose pawn was within
+	 * ScanRadius of ScanLocation at receive-time show a "you were scanned" tell.
+	 * Reliable so the count + warning don't get dropped under jittery net.
+	 */
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_OnInfoScan(int32 EnemyCount, ETeamID PlacerTeam, FVector ScanLocation, float ScanRadius);
 
 	/**
 	 * Client-side queue consumed by UProjectCompHUDWidget::UpdateKillFeed each
@@ -105,6 +121,11 @@ protected:
 	/** Two-element array (size 2): index 0 = Attackers, index 1 = Defenders. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
 	TArray<FTeamLoadout> Teams;
+
+	/** Flips true at PreRound start, false SelectionWindowDuration seconds later.
+	 *  Authoritative gate for all buy/claim RPCs — clients render UI based on this. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
+	bool bSelectionWindowOpen = false;
 
 	// ---- RepNotify handlers ----------------------------------------------
 

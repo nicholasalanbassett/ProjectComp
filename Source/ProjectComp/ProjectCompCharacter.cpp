@@ -14,6 +14,7 @@
 #include "ProjectComp.h"
 #include "ProjectCompCharacterMovementComponent.h"
 #include "ProjectCompHealthComponent.h"
+#include "ProjectCompGrenadeComponent.h"
 #include "ProjectCompBombSite.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompPlayerController.h"
@@ -67,6 +68,10 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
 
     // Health container — replicated; bridges damage events into GameMode death flow.
     HealthComponent = CreateDefaultSubobject<UProjectCompHealthComponent>(TEXT("Health Component"));
+
+    // Grenade dispatcher — server-only logic for spawning grenades and applying
+    // cooldowns. Stateless on the wire (kit + cooldowns live on PlayerState).
+    GrenadeComponent = CreateDefaultSubobject<UProjectCompGrenadeComponent>(TEXT("Grenade Component"));
 
     // Third-person mesh: body other players see; hidden from the local owner.
     GetMesh()->SetOwnerNoSee(true);
@@ -323,6 +328,15 @@ float AProjectCompCharacter::TakeDamage(float DamageAmount, const FDamageEvent& 
             const float Scalar = GM ? GM->GetFriendlyFireScalar() : 0.0f;
             Adjusted *= Scalar;
         }
+    }
+
+    // Vulnerable-zone multiplier: applied AFTER friendly-fire scaling so a
+    // (rare) friendly hit landing in a teammate's vuln zone still scales by
+    // the FF scalar first. The zone tagging is done server-side by
+    // AProjectCompVulnerableGrenade, which only tags ENEMIES of the placer.
+    if (HasAuthority() && VulnerableZoneOverlapCount > 0)
+    {
+        Adjusted *= VulnerableDamageMultiplier;
     }
 
     if (Adjusted <= 0.0f)
@@ -918,6 +932,21 @@ void AProjectCompCharacter::OnBombSiteOverlapChanged(bool bEntered)
         BombSiteOverlapCount = FMath::Max(0, BombSiteOverlapCount - 1);
     }
     UpdateInteractLock();
+}
+
+void AProjectCompCharacter::OnVulnerableZoneOverlapChanged(bool bEntered)
+{
+    if (bEntered)
+    {
+        ++VulnerableZoneOverlapCount;
+    }
+    else
+    {
+        // Clamp at 0 in case of begin/end imbalance during teleport / destroy races,
+        // mirroring the BombSiteOverlapCount safety. A spurious extra "exit" then
+        // becomes a no-op rather than driving the count negative.
+        VulnerableZoneOverlapCount = FMath::Max(0, VulnerableZoneOverlapCount - 1);
+    }
 }
 
 void AProjectCompCharacter::NotifyBombSiteOverlapChanged()

@@ -12,6 +12,7 @@ class USkeletalMeshComponent;
 class UCameraComponent;
 class UInputAction;
 class UProjectCompHealthComponent;
+class UProjectCompGrenadeComponent;
 class AProjectCompHitscanWeapon;
 struct FInputActionValue;
 
@@ -62,6 +63,11 @@ class AProjectCompCharacter : public ACharacter
 	/** Health container — replicated; routes damage into the GameMode death flow. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	UProjectCompHealthComponent* HealthComponent;
+
+	/** Server-side dispatcher for grenade use (validates kit + cooldown, spawns the
+	 *  AProjectCompGrenadeBase subclass, stamps PlayerState cooldown end-time). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	UProjectCompGrenadeComponent* GrenadeComponent;
 
 protected:
 
@@ -290,6 +296,7 @@ public:
 	USkeletalMeshComponent* GetFirstPersonMesh() const { return FirstPersonMesh; }
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
 	UProjectCompHealthComponent* GetHealthComponent() const { return HealthComponent; }
+	UProjectCompGrenadeComponent* GetGrenadeComponent() const { return GrenadeComponent; }
 	AProjectCompHitscanWeapon* GetCurrentWeapon() const { return CurrentWeapon; }
 	/** True while the player is locked into a plant/defuse interaction. Read by
 	 *  the weapon to block fire + reload during the interaction. */
@@ -392,6 +399,16 @@ protected:
 	 *  allocation in GetOverlappingActors. */
 	int32 BombSiteOverlapCount = 0;
 
+	/** Number of enemy AProjectCompVulnerableGrenade AOEs currently overlapping
+	 *  this character. Server-only counter — not replicated; the damage
+	 *  multiplier is applied authoritatively in TakeDamage where this is read. */
+	int32 VulnerableZoneOverlapCount = 0;
+
+	/** Multiplier applied to incoming damage while VulnerableZoneOverlapCount > 0.
+	 *  Design memory says "2x damage taken" — exposed as UPROPERTY for BP tuning. */
+	UPROPERTY(EditDefaultsOnly, Category = "Vulnerable", meta = (ClampMin = "1.0", ClampMax = "10.0"))
+	float VulnerableDamageMultiplier = 2.0f;
+
 	// ---- Aim-rate clamp bookkeeping (server-only) -------------------------
 	/** Last server-time Server_GetValidatedAimRotation ran. Used to compute the
 	 *  per-call max-delta budget. -1 = first call, seed without clamping. */
@@ -424,6 +441,15 @@ public:
 	 *  Maintains the overlap counter that backs IsOverlappingBombSite() and then
 	 *  re-evaluates the interact lock state. */
 	void OnBombSiteOverlapChanged(bool bEntered);
+
+	/** True if this character is currently inside one or more enemy
+	 *  AProjectCompVulnerableGrenade AOEs. Drives the incoming-damage
+	 *  multiplier applied in TakeDamage. Server-side counter. */
+	bool IsInVulnerableZone() const { return VulnerableZoneOverlapCount > 0; }
+
+	/** Called by AProjectCompVulnerableGrenade on enemy begin/end-overlap.
+	 *  Server-only — clamps to non-negative. */
+	void OnVulnerableZoneOverlapChanged(bool bEntered);
 protected:
 
 	/** Apply or release the interact movement lock based on bUseHeld + bomb site overlap.
