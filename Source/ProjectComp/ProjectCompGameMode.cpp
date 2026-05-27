@@ -1405,6 +1405,40 @@ bool AProjectCompGameMode::Server_BuyGrenade(APlayerController* Buyer, EGrenadeT
 		return false;  // kit full
 	}
 
+	// Per-team holder cap: at most MaxHoldersPerTypePerTeam players on the same
+	// team can equip the same grenade type per round. Forces team-composition
+	// diversity during the selection-window draft race — late-claimers may be
+	// rejected on popular types and have to fall back to alternatives. Math:
+	// 5 players × 2 picks = 10 desired, but cap × 4 types = 8 max → expected
+	// 2-pick team shortage per round (deliberate; see grenade-system memory).
+	constexpr int32 MaxHoldersPerTypePerTeam = 2;
+	const ETeamID BuyerTeam = BuyerPS->GetTeamID();
+	int32 TeamHolders = 0;
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* OtherPC = It->Get();
+		if (!OtherPC || OtherPC == Buyer)
+		{
+			continue;
+		}
+		const AProjectCompPlayerState* OtherPS = OtherPC->GetPlayerState<AProjectCompPlayerState>();
+		if (!OtherPS || OtherPS->GetTeamID() != BuyerTeam)
+		{
+			continue;
+		}
+		if (OtherPS->HasGrenadeEquipped(Type))
+		{
+			++TeamHolders;
+			if (TeamHolders >= MaxHoldersPerTypePerTeam)
+			{
+				UE_LOG(LogProjectComp, Verbose,
+					TEXT("[Grenade buy] Rejected: team %d already at cap (%d) for type %d."),
+					static_cast<int32>(BuyerTeam), MaxHoldersPerTypePerTeam, static_cast<int32>(Type));
+				return false;
+			}
+		}
+	}
+
 	const int32 Cost = GetGrenadeCost(Type);
 	if (Cost <= 0)
 	{

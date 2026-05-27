@@ -110,6 +110,27 @@ protected:
 	UPROPERTY(EditAnywhere, Category ="Input")
 	UInputAction* ReloadAction;
 
+	/** EQUIP the grenade in PlayerState slot 0 (LMB/RMB then throws it).
+	 *  Defaults to E in the IMC. Re-pressing while already equipped to slot 0
+	 *  is a no-op per design — use SwitchToWeaponAction to disarm. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* GrenadeSlot1Action;
+
+	/** EQUIP the grenade in PlayerState slot 1. Defaults to Q in the IMC. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* GrenadeSlot2Action;
+
+	/** Switch back to the primary weapon (un-equip any held grenade). Defaults
+	 *  to "1" in the IMC. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* SwitchToWeaponAction;
+
+	/** Right mouse button. When a grenade is equipped, throws it in alt-fire
+	 *  mode (RMB throw). When the weapon is equipped, currently a no-op —
+	 *  reserved for future ADS / scope binding. */
+	UPROPERTY(EditAnywhere, Category ="Input")
+	UInputAction* AltFireAction;
+
 	/** Weapon class spawned for every freshly-possessed character. Set in BP defaults. */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
@@ -169,6 +190,25 @@ protected:
 
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoReload();
+
+	/** Input handler: equip the grenade in PlayerState slot 0. No-op if that
+	 *  slot is empty or already equipped. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoEquipGrenadeSlot1();
+
+	/** Input handler: equip the grenade in PlayerState slot 1. No-op rules
+	 *  same as slot 0. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoEquipGrenadeSlot2();
+
+	/** Input handler: un-equip any held grenade, return to primary weapon. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoSwitchToWeapon();
+
+	/** Input handler: RMB. Routes to grenade alt-fire if equipped; otherwise
+	 *  no-op (reserved for ADS / scope when that lands). */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoAltFireStart();
 
 	/** Common ability-cast plumbing: resolve the slot to the team's drafted
 	 *  ability via GameState, aim-trace from the camera to compute a world
@@ -297,6 +337,11 @@ public:
 	UCameraComponent* GetFirstPersonCameraComponent() const { return FirstPersonCameraComponent; }
 	UProjectCompHealthComponent* GetHealthComponent() const { return HealthComponent; }
 	UProjectCompGrenadeComponent* GetGrenadeComponent() const { return GrenadeComponent; }
+
+	/** Owning-client equip state: -1 = primary weapon, 0/1 = grenade slot index.
+	 *  Read by HUD to highlight the active loadout entry. */
+	UFUNCTION(BlueprintPure, Category="Grenade")
+	int32 GetEquippedGrenadeSlot() const { return EquippedGrenadeSlot; }
 	AProjectCompHitscanWeapon* GetCurrentWeapon() const { return CurrentWeapon; }
 	/** True while the player is locked into a plant/defuse interaction. Read by
 	 *  the weapon to block fire + reload during the interaction. */
@@ -366,6 +411,16 @@ protected:
 
 	/** Server-only: tracked Use-key state for plant/defuse interactions. */
 	bool bUseHeld = false;
+
+	/** Owning-client-local state. -1 = weapon equipped (default). 0 = holding
+	 *  the grenade in PlayerState::EquippedGrenadeTypes[0]. 1 = holding slot 1.
+	 *  Drives LMB/RMB routing: while >= 0, fire input throws the grenade
+	 *  instead of firing the weapon; weapon fire + reload are gated off.
+	 *
+	 *  Not replicated — client predicts equip locally, and the actual grenade
+	 *  spawn (the only server-authoritative event) goes through the existing
+	 *  Server_UseGrenade path which does its own validation. */
+	int32 EquippedGrenadeSlot = -1;
 
 	/** Walk speed defaults cached in BeginPlay. Restored when Use is released. */
 	float DefaultMaxWalkSpeed = 560.0f;

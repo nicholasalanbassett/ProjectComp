@@ -175,6 +175,28 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(ReloadAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoReload);
         }
 
+        // Equip-first grenade flow:
+        //   E/Q → equip slot 0/1 (don't throw yet)
+        //   1   → un-equip (back to weapon)
+        //   LMB → fire weapon OR throw grenade primary (context-dependent)
+        //   RMB → throw grenade alt-fire (no-op when weapon equipped)
+        if (GrenadeSlot1Action)
+        {
+            EnhancedInputComponent->BindAction(GrenadeSlot1Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoEquipGrenadeSlot1);
+        }
+        if (GrenadeSlot2Action)
+        {
+            EnhancedInputComponent->BindAction(GrenadeSlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoEquipGrenadeSlot2);
+        }
+        if (SwitchToWeaponAction)
+        {
+            EnhancedInputComponent->BindAction(SwitchToWeaponAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoSwitchToWeapon);
+        }
+        if (AltFireAction)
+        {
+            EnhancedInputComponent->BindAction(AltFireAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoAltFireStart);
+        }
+
         // Re-emit held input on possession (fixes the "held F/Mouse1 across
         // respawn never re-engages" bug). Deferred one tick so Enhanced Input
         // has processed the first frame and the equipped weapon exists.
@@ -495,9 +517,23 @@ void AProjectCompCharacter::DoCrouchEnd()
 }
 
 // Fire input handlers route through Server_SetTriggerHeld so the authoritative
-// weapon (which lives server-side) starts/stops its fire loop.
+// weapon (which lives server-side) starts/stops its fire loop. When a grenade
+// is equipped, LMB context-switches to a grenade throw — weapon fire is
+// suppressed entirely.
 void AProjectCompCharacter::DoFireStart()
 {
+    if (EquippedGrenadeSlot >= 0)
+    {
+        // Throw the equipped grenade in primary (LMB) mode, then auto-switch
+        // back to the weapon. Server validates phase/cooldown/kit ownership.
+        if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+        {
+            PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ false);
+        }
+        EquippedGrenadeSlot = -1;
+        return;
+    }
+
     bIsFiring = true;
     // Reset accumulated recoil so each new spray starts clean.
     AccumulatedRecoilPitch = 0.0f;
@@ -762,9 +798,80 @@ void AProjectCompCharacter::DoCastAbilitySlot2()
 
 void AProjectCompCharacter::DoReload()
 {
-    // No precondition checks here — server is authoritative and silently
-    // rejects ineligible reloads. Keeps the client side dumb-fire.
+    // Gate reloads while holding a grenade — can't reload a gun that's not in
+    // your hands. Server is authoritative for the actual reload eligibility
+    // (mag-full, reserves > 0, alive, etc.) — this is just an input-side
+    // short-circuit so the RPC isn't wasted.
+    if (EquippedGrenadeSlot >= 0)
+    {
+        return;
+    }
     Server_RequestReload();
+}
+
+void AProjectCompCharacter::DoEquipGrenadeSlot1()
+{
+    // No-op if already equipped to slot 0 (per design). Cross-slot press
+    // (e.g. Q while holding slot 0) DOES swap — that's standard inventory
+    // behavior and the user's "doesn't do anything" rule was for re-pressing
+    // the same slot key.
+    if (EquippedGrenadeSlot == 0)
+    {
+        return;
+    }
+    // Verify the player actually owns a grenade in slot 0 — empty slot = no-op.
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS || !PS->GetEquippedGrenadeTypes().IsValidIndex(0))
+    {
+        return;
+    }
+    EquippedGrenadeSlot = 0;
+    // Release the weapon trigger if it was held — you can't fire while holding
+    // a grenade, and we don't want a stuck server-side trigger flag.
+    Server_SetTriggerHeld(false);
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot 0 grenade equipped."));
+}
+
+void AProjectCompCharacter::DoEquipGrenadeSlot2()
+{
+    if (EquippedGrenadeSlot == 1)
+    {
+        return;
+    }
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS || !PS->GetEquippedGrenadeTypes().IsValidIndex(1))
+    {
+        return;
+    }
+    EquippedGrenadeSlot = 1;
+    Server_SetTriggerHeld(false);
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot 1 grenade equipped."));
+}
+
+void AProjectCompCharacter::DoSwitchToWeapon()
+{
+    if (EquippedGrenadeSlot == -1)
+    {
+        return;  // already on weapon
+    }
+    EquippedGrenadeSlot = -1;
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Switched back to primary weapon."));
+}
+
+void AProjectCompCharacter::DoAltFireStart()
+{
+    if (EquippedGrenadeSlot < 0)
+    {
+        // Weapon equipped — RMB is unbound for now. Future: ADS / scope.
+        return;
+    }
+    if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+    {
+        PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ true);
+    }
+    // Auto-switch back to weapon after the throw — design says one throw
+    // returns the player to gunplay. The server-side cooldown gates re-use.
+    EquippedGrenadeSlot = -1;
 }
 
 void AProjectCompCharacter::Server_RequestReload_Implementation()

@@ -148,6 +148,30 @@ protected:
 	 *  smooth even though only end-time + fade-start-time replicate. */
 	UPROPERTY() TObjectPtr<UImage> FlashOverlay;
 
+	/** Bottom-center equipped-item indicator row. Three vertical boxes side
+	 *  by side, each containing a cooldown text on top and a label text
+	 *  below: cooldown text shows seconds remaining only when the grenade
+	 *  is on CD (hidden otherwise); label is "[key] NAME". The currently-
+	 *  equipped slot glows in its grenade-specific color (weapon = team color).
+	 *  Equipped state from AProjectCompCharacter::GetEquippedGrenadeSlot. */
+	UPROPERTY() TObjectPtr<UTextBlock> EquipWeaponText;
+	UPROPERTY() TObjectPtr<UTextBlock> EquipSlot1Text;
+	UPROPERTY() TObjectPtr<UTextBlock> EquipSlot2Text;
+
+	/** Cooldown countdown texts. Weapon's slot has no CD so its text stays
+	 *  permanently hidden — kept around so the three columns align vertically
+	 *  even when only the grenades show counts. */
+	UPROPERTY() TObjectPtr<UTextBlock> CooldownWeaponText;
+	UPROPERTY() TObjectPtr<UTextBlock> CooldownSlot1Text;
+	UPROPERTY() TObjectPtr<UTextBlock> CooldownSlot2Text;
+
+	/** Pull the equipped state + kit into the indicator widgets each tick. */
+	void RefreshEquipIndicator();
+
+	/** Per-grenade brand color used for the equipped-state glow. Matches the
+	 *  design palette: FLASH=YELLOW, INFO=CYAN, VULN=NEON CORAL, SOUND=GREY. */
+	static FLinearColor GetGrenadeBrandColor(EGrenadeType Type);
+
 	/** Update FlashOverlay alpha + visibility from local PlayerState's flash times.
 	 *  Returns the alpha that was applied (mainly useful for testing). */
 	float RefreshFlashOverlay();

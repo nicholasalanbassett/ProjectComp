@@ -6,25 +6,38 @@
 #include "ProjectCompGameMode.h"
 #include "ProjectCompPlayerState.h"
 #include "Camera/CameraComponent.h"
-#include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
+
+// Toggle for the FLASH-specific detonation viz (radius sphere, per-target rays,
+// self-flash marker). Separate from the throwable base's projectile-path
+// CVar (`pc.ThrowableGrenade.Debug`) so you can toggle detonation effects
+// independently from the flight tracer.
+static TAutoConsoleVariable<int32> CVarFlashGrenadeDebugDraw(
+	TEXT("pc.FlashGrenade.Debug"),
+	1,
+	TEXT("Draw flash grenade detonation viz (radius sphere, per-target rays). 0=off, 1=on"),
+	ECVF_Default);
 
 AProjectCompFlashGrenade::AProjectCompFlashGrenade()
 {
-	// Tick disabled by default; Server_InitializeExtra turns it on in projectile mode.
-	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.bStartWithTickEnabled = false;
+	// FLASH wants instant detonation on impact — no fuse window.
+	FuseAfterImpact = 0.0f;
 
-	ProjectileMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectileMesh"));
-	SetRootComponent(ProjectileMesh);
-	// Per design: FLASH is unbreakable mid-flight. NoCollision means weapon
-	// traces (ECC_Visibility) and player capsules pass straight through without
-	// imparting force or registering hits. Server runs its OWN line trace each
-	// tick for wall/player contact — that's where detonation triggers are read.
-	ProjectileMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	// LMB: standard phase-one-wall throw (inherited default — explicit for clarity).
+	PrimaryFireMode = EThrowableFireMode::PhaseOneWall;
+	PrimaryProjectileSpeed = 3500.0f;
+	PrimaryGravity = 0.0f;
+
+	// RMB: underarm lob. Slower initial speed + Earth-like gravity gives a
+	// short forward arc that drops in front of the player. Flash effect at
+	// landing — anyone close (including the thrower) gets caught in the radius.
+	AltFireMode = EThrowableFireMode::GravityLob;
+	AltProjectileSpeed = 1500.0f;
+	AltGravity = 980.0f;
 }
 
 void AProjectCompFlashGrenade::BeginPlay()
@@ -32,167 +45,16 @@ void AProjectCompFlashGrenade::BeginPlay()
 	Super::BeginPlay();
 	if (HasAuthority())
 	{
-		SpawnServerTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-		// Mirror FlashDome's pre-reserved scratch buffer. 16 covers 5v5 + headroom.
+		// Pre-allocate the LOS-ignore scratch buffer (used at detonation).
+		// 16 covers a 5v5 plus the dome / grenade actor + headroom.
 		IgnoreActorsScratch.Reserve(16);
 	}
 }
 
-void AProjectCompFlashGrenade::Server_InitializeExtra(bool bAltFire, const FVector& AimDirection)
+void AProjectCompFlashGrenade::OnEnterActivePhase()
 {
-	if (!HasAuthority())
-	{
-		return;
-	}
-
-	if (bAltFire)
-	{
-		// Self-flash mode: no projectile flight, no Tick — detonate immediately
-		// and let HandleDetonationGameplay scope the effect to the instigator.
-		bIsSelfFlashMode = true;
-		UE_LOG(LogProjectComp, Log, TEXT("[FlashGrenade] %s entering self-flash mode."), *GetName());
-		Server_Detonate();
-		return;
-	}
-
-	// Projectile mode: stamp velocity from aim direction + enable Tick.
-	bIsSelfFlashMode = false;
-	FVector Dir = AimDirection;
-	if (!Dir.Normalize())
-	{
-		Dir = GetActorForwardVector();
-	}
-	Velocity = Dir * ProjectileSpeed;
-	SetActorRotation(Dir.Rotation());
-	SetActorTickEnabled(true);
-
-	UE_LOG(LogProjectComp, Log,
-		TEXT("[FlashGrenade] %s entering projectile mode at %.0f cm/s."),
-		*GetName(), ProjectileSpeed);
-}
-
-void AProjectCompFlashGrenade::Tick(float DeltaSeconds)
-{
-	Super::Tick(DeltaSeconds);
-
-	if (!HasAuthority() || IsDetonated())
-	{
-		return;
-	}
-
-	// Safety cap — never let a stray projectile linger forever.
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-	if (Now - SpawnServerTime > MaxProjectileLifetime)
-	{
-		UE_LOG(LogProjectComp, Log, TEXT("[FlashGrenade] %s exceeded lifetime — force-detonating."), *GetName());
-		Server_Detonate();
-		return;
-	}
-
-	UWorld* World = GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	const FVector PrevLoc = GetActorLocation();
-	const FVector NewLoc = PrevLoc + Velocity * DeltaSeconds;
-
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(FlashProjectile), /*bTraceComplex*/ false, this);
-	if (AActor* MyOwner = GetOwner())
-	{
-		Params.AddIgnoredActor(MyOwner);
-		// Also ignore the instigator pawn so we don't immediately detonate on
-		// our own body while the projectile is leaving the muzzle.
-		if (APawn* InstigatorPawn = Cast<APawn>(MyOwner) ? Cast<APawn>(MyOwner) : nullptr)
-		{
-			Params.AddIgnoredActor(InstigatorPawn);
-		}
-	}
-	if (APawn* InstigPawn = GetInstigator())
-	{
-		Params.AddIgnoredActor(InstigPawn);
-	}
-
-	FHitResult Hit;
-	const bool bHit = World->LineTraceSingleByChannel(Hit, PrevLoc, NewLoc, ECC_Visibility, Params);
-
-#if !UE_BUILD_SHIPPING
-	// Tracer line for PIE testing. Stripped from shipping.
-	DrawDebugLine(World, PrevLoc, NewLoc,
-		bHasPhasedWall ? FColor(255, 200, 80) : FColor(255, 255, 80),
-		/*bPersistent*/ false, /*Life*/ 1.5f, 0, /*Thickness*/ 2.0f);
-#endif
-
-	if (!bHit)
-	{
-		SetActorLocation(NewLoc, /*bSweep*/ false, nullptr, ETeleportType::TeleportPhysics);
-		return;
-	}
-
-	// Hit a character? Detonate immediately regardless of phase status — players
-	// are not walls to phase through.
-	const AActor* HitActor = Hit.GetActor();
-	const bool bHitCharacter = HitActor && HitActor->IsA<AProjectCompCharacter>();
-	if (bHitCharacter)
-	{
-		SetActorLocation(Hit.ImpactPoint, false, nullptr, ETeleportType::TeleportPhysics);
-		UE_LOG(LogProjectComp, Log, TEXT("[FlashGrenade] %s hit character %s — detonating."),
-			*GetName(), *GetNameSafe(HitActor));
-		Server_Detonate();
-		return;
-	}
-
-	// Hit world geometry. If we haven't phased yet, phase through; otherwise
-	// detonate on this surface.
-	if (!bHasPhasedWall)
-	{
-		const FVector WallEntry = Hit.ImpactPoint;
-		const FVector Dir = Velocity.GetSafeNormal();
-		const FVector FarSide = WallEntry + Dir * MaxWallThickness;
-
-		// Backward trace from FarSide toward WallEntry. The first hit is the
-		// BACK FACE of the wall we just entered — that's where we exit.
-		FHitResult BackHit;
-		FCollisionQueryParams BackParams(SCENE_QUERY_STAT(FlashProjectileBackTrace), false, this);
-		BackParams.AddIgnoredActor(this);
-		const bool bFoundBack = World->LineTraceSingleByChannel(
-			BackHit, FarSide, WallEntry, ECC_Visibility, BackParams);
-
-		if (!bFoundBack)
-		{
-			// Wall is thicker than MaxWallThickness, OR there's no back face
-			// within range (rare — e.g. against an unbounded brush). Detonate
-			// at entry rather than disappearing into the wall.
-			SetActorLocation(WallEntry, false, nullptr, ETeleportType::TeleportPhysics);
-			UE_LOG(LogProjectComp, Log,
-				TEXT("[FlashGrenade] %s couldn't phase wall (thickness > %.0fcm) — detonating at entry."),
-				*GetName(), MaxWallThickness);
-			Server_Detonate();
-			return;
-		}
-
-		// Teleport just past the back face so the next tick's trace starts
-		// outside the wall. A 1cm offset is enough to avoid re-hitting the
-		// same back surface from inside.
-		const FVector ExitPoint = BackHit.ImpactPoint + Dir * 1.0f;
-		SetActorLocation(ExitPoint, false, nullptr, ETeleportType::TeleportPhysics);
-		bHasPhasedWall = true;
-
-		UE_LOG(LogProjectComp, Verbose,
-			TEXT("[FlashGrenade] %s phased wall: entry=%s exit=%s thickness=%.1fcm."),
-			*GetName(),
-			*WallEntry.ToCompactString(),
-			*ExitPoint.ToCompactString(),
-			(BackHit.ImpactPoint - WallEntry).Size());
-		return;
-	}
-
-	// Already phased once — this is the second surface contact. Detonate.
-	SetActorLocation(Hit.ImpactPoint, false, nullptr, ETeleportType::TeleportPhysics);
-	UE_LOG(LogProjectComp, Log,
-		TEXT("[FlashGrenade] %s post-phase contact at %s — detonating."),
-		*GetName(), *Hit.ImpactPoint.ToCompactString());
+	// FLASH has no persistence — the moment the projectile reaches the
+	// detonation point, the scan + flash apply runs and the actor cleans up.
 	Server_Detonate();
 }
 
@@ -204,28 +66,24 @@ void AProjectCompFlashGrenade::HandleDetonationGameplay()
 		return;
 	}
 
-	// ---- Self-flash mode: instigator only --------------------------------
-	if (bIsSelfFlashMode)
-	{
-		if (AProjectCompPlayerState* InstigatorPS = GetOwnerPlayerState())
-		{
-			InstigatorPS->Server_ApplyFlash(SelfFlashFullWhiteDuration, SelfFlashFadeDuration);
-			UE_LOG(LogProjectComp, Log, TEXT("[FlashGrenade] self-flash applied to '%s'."),
-				*InstigatorPS->GetPlayerName());
-		}
-		return;
-	}
-
-	// ---- Projectile mode: radius scan w/ LOS + facing --------------------
+	// Radius scan with LOS + facing. Applies to ALL players in range —
+	// teammates and enemies alike (per design: "throw it well or eat your
+	// own flash"). The only filter is spectators, who aren't valid targets.
 	const FVector BlastCenter = GetActorLocation();
-	const ETeamID ThrowerTeam = GetOwnerTeam();
-	if (ThrowerTeam == ETeamID::Spectator)
-	{
-		return;
-	}
 
-	// Build the LOS-ignore list against the live-character registry so a
-	// teammate's body doesn't shield an enemy from the flash trace.
+#if !UE_BUILD_SHIPPING
+	const bool bDrawDebug = CVarFlashGrenadeDebugDraw.GetValueOnGameThread() != 0;
+	if (bDrawDebug)
+	{
+		DrawDebugSphere(World, BlastCenter, FlashRadius, 32, FColor::Cyan,
+			false, DebugDrawDuration, 0, 1.5f);
+		DrawDebugSphere(World, BlastCenter, 18.0f, 10, FColor::Yellow,
+			false, DebugDrawDuration, 0, 2.0f);
+	}
+#else
+	constexpr bool bDrawDebug = false;
+#endif
+
 	IgnoreActorsScratch.Reset();
 	IgnoreActorsScratch.Add(this);
 	if (AProjectCompGameMode* GM = World->GetAuthGameMode<AProjectCompGameMode>())
@@ -242,60 +100,115 @@ void AProjectCompFlashGrenade::HandleDetonationGameplay()
 
 	const float RadiusSq = FlashRadius * FlashRadius;
 
+	enum class EFlashOutcome : uint8 { SkipNoPawn, SkipTeam, SkipDead, OutOfRange, LOSBlocked, FullFlash, HalfFlash };
+
+	int32 FullCount = 0, HalfCount = 0, RangeFailCount = 0, LOSFailCount = 0, SkipCount = 0;
+
 	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 	{
 		APlayerController* PC = It->Get();
-		if (!PC)
-		{
-			continue;
-		}
+		if (!PC) { continue; }
 
 		AProjectCompPlayerState* PS = PC->GetPlayerState<AProjectCompPlayerState>();
-		if (!PS || !PS->IsAlive())
-		{
-			continue;
-		}
-
-		// Enemies only. Same-team and spectators skipped.
-		const ETeamID PawnTeam = PS->GetTeamID();
-		if (PawnTeam == ETeamID::Spectator || PawnTeam == ThrowerTeam)
-		{
-			continue;
-		}
-
-		AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(PC->GetPawn());
+		AProjectCompCharacter* Char = PS ? Cast<AProjectCompCharacter>(PC->GetPawn()) : nullptr;
 		if (!Char || !Char->GetFirstPersonCameraComponent())
 		{
+			++SkipCount;
 			continue;
 		}
 
 		const FVector CamLoc = Char->GetFirstPersonCameraComponent()->GetComponentLocation();
-		if ((BlastCenter - CamLoc).SizeSquared() > RadiusSq)
+		EFlashOutcome Outcome = EFlashOutcome::SkipTeam;
+		float FacingDot = 0.0f;
+		float DistanceCm = 0.0f;
+
+		if (!PS->IsAlive())
 		{
-			continue;
+			Outcome = EFlashOutcome::SkipDead;
+		}
+		else if (PS->GetTeamID() == ETeamID::Spectator)
+		{
+			// Spectators are skipped — they have no pawn to flash. NOTE: this
+			// is the ONLY filter; teammates DO get flashed per design.
+			Outcome = EFlashOutcome::SkipTeam;
+		}
+		else
+		{
+			DistanceCm = (BlastCenter - CamLoc).Size();
+			if (DistanceCm * DistanceCm > RadiusSq)
+			{
+				Outcome = EFlashOutcome::OutOfRange;
+			}
+			else if (!HasClearLineOfSight(CamLoc, BlastCenter, IgnoreActors))
+			{
+				Outcome = EFlashOutcome::LOSBlocked;
+			}
+			else
+			{
+				const FVector ViewDir = PC->GetControlRotation().Vector();
+				const FVector ToCenter = (BlastCenter - CamLoc).GetSafeNormal();
+				FacingDot = FVector::DotProduct(ViewDir, ToCenter);
+				Outcome = (FacingDot >= FacingDotThreshold)
+					? EFlashOutcome::FullFlash
+					: EFlashOutcome::HalfFlash;
+			}
 		}
 
-		if (!HasClearLineOfSight(CamLoc, BlastCenter, IgnoreActors))
+		// Distance scaling: durations lerp from 1.0x at the detonation point
+		// down to MinDistanceScalar at the radius edge.
+		const float DistanceRatio = FlashRadius > 0.0f
+			? FMath::Clamp(DistanceCm / FlashRadius, 0.0f, 1.0f)
+			: 1.0f;
+		const float DistanceScale = FMath::Lerp(1.0f, MinDistanceScalar, DistanceRatio);
+
+		if (Outcome == EFlashOutcome::FullFlash)
 		{
-			continue;
+			const float FullWhite = FlashFullWhiteDuration * DistanceScale;
+			const float Fade      = FlashFadeDuration      * DistanceScale;
+			PS->Server_ApplyFlash(FullWhite, Fade);
+			++FullCount;
+			UE_LOG(LogProjectComp, Verbose,
+				TEXT("[FlashGrenade] FULL pawn=%s dist=%.0fcm dot=%.2f scale=%.2f total=%.2fs"),
+				*GetNameSafe(Char), DistanceCm, FacingDot, DistanceScale, FullWhite + Fade);
 		}
+		else if (Outcome == EFlashOutcome::HalfFlash)
+		{
+			const float FullWhite = HalfFlashFullWhiteDuration * DistanceScale;
+			const float Fade      = HalfFlashFadeDuration      * DistanceScale;
+			PS->Server_ApplyFlash(FullWhite, Fade);
+			++HalfCount;
+			UE_LOG(LogProjectComp, Verbose,
+				TEXT("[FlashGrenade] HALF pawn=%s dist=%.0fcm dot=%.2f scale=%.2f total=%.2fs"),
+				*GetNameSafe(Char), DistanceCm, FacingDot, DistanceScale, FullWhite + Fade);
+		}
+		else if (Outcome == EFlashOutcome::OutOfRange) { ++RangeFailCount; }
+		else if (Outcome == EFlashOutcome::LOSBlocked) { ++LOSFailCount; }
+		else { ++SkipCount; }
 
-		const FVector ViewDir = PC->GetControlRotation().Vector();
-		const FVector ToCenter = (BlastCenter - CamLoc).GetSafeNormal();
-		const float FacingDot = FVector::DotProduct(ViewDir, ToCenter);
-		const bool bFacingCenter = FacingDot >= FacingDotThreshold;
-
-		const float FullWhite = bFacingCenter ? FlashFullWhiteDuration : HalfFlashFullWhiteDuration;
-		const float Fade      = bFacingCenter ? FlashFadeDuration      : HalfFlashFadeDuration;
-
-		PS->Server_ApplyFlash(FullWhite, Fade);
-
-		UE_LOG(LogProjectComp, Verbose,
-			TEXT("[FlashGrenade] %s-flashed pawn=%s (team=%d) for %.2fs."),
-			bFacingCenter ? TEXT("FULL") : TEXT("HALF"),
-			*GetNameSafe(Char), static_cast<int32>(PawnTeam),
-			FullWhite + Fade);
+#if !UE_BUILD_SHIPPING
+		if (bDrawDebug)
+		{
+			FColor RayColor = FColor::Blue;
+			switch (Outcome)
+			{
+				case EFlashOutcome::FullFlash:  RayColor = FColor::Green;  break;
+				case EFlashOutcome::HalfFlash:  RayColor = FColor(255, 220, 60); break;
+				case EFlashOutcome::OutOfRange: RayColor = FColor(140, 140, 140); break;
+				case EFlashOutcome::LOSBlocked: RayColor = FColor::Red;    break;
+				default:                        RayColor = FColor::Blue;   break;
+			}
+			DrawDebugLine(World, BlastCenter, CamLoc, RayColor,
+				false, DebugDrawDuration, 0, 2.0f);
+			DrawDebugSphere(World, CamLoc, 14.0f, 8, RayColor,
+				false, DebugDrawDuration, 0, 1.5f);
+		}
+#endif
 	}
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[FlashGrenade] scan @%s r=%.0f: full=%d half=%d outOfRange=%d LOSBlocked=%d skipped=%d"),
+		*BlastCenter.ToCompactString(), FlashRadius,
+		FullCount, HalfCount, RangeFailCount, LOSFailCount, SkipCount);
 }
 
 bool AProjectCompFlashGrenade::HasClearLineOfSight(const FVector& PawnCameraLoc,

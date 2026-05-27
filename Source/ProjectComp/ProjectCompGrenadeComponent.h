@@ -62,16 +62,16 @@ protected:
 	// ---- Per-type cooldowns (seconds) ------------------------------------
 
 	UPROPERTY(EditDefaultsOnly, Category = "Grenade|Cooldowns", meta = (ClampMin = "0.0"))
-	float FlashCooldown = 25.0f;
+	float FlashCooldown = 15.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Grenade|Cooldowns", meta = (ClampMin = "0.0"))
-	float InfoCooldown = 35.0f;
+	float InfoCooldown = 15.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Grenade|Cooldowns", meta = (ClampMin = "0.0"))
-	float VulnerableCooldown = 45.0f;
+	float VulnerableCooldown = 15.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Grenade|Cooldowns", meta = (ClampMin = "0.0"))
-	float SoundCooldown = 30.0f;
+	float SoundCooldown = 15.0f;
 
 private:
 	/** Cached pointer to owning character. Resolved in BeginPlay. */

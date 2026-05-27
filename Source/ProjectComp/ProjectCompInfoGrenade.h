@@ -3,34 +3,23 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ProjectCompGrenadeBase.h"
+#include "ProjectCompThrowableGrenadeBase.h"
 #include "ProjectCompInfoGrenade.generated.h"
 
-class USphereComponent;
-class UStaticMeshComponent;
-
 /**
- * Info grenade (Midrange Control). Map-placed util that, after FuseDuration
- * seconds, snapshots the count of enemy players inside ScanRadius and
- * broadcasts the result via GameState::Multicast_OnInfoScan.
+ * Info grenade (Midrange Control). Thrown like FLASH:
+ *  - LMB = wall-phase projectile
+ *  - RMB = single-bounce projectile
  *
- * Design contract:
- *  - Count only, no positions reported.
- *  - Enemies inside the scan are aware they were scanned (the broadcast
- *    location + radius lets each enemy client decide locally whether to
- *    show the "you were scanned" tell).
- *  - One-shot detonate; not toggleable / not repositionable.
+ * On impact, sits for FuseAfterImpact seconds (default 1s — gives enemies a
+ * brief audio/visual tell to move), then snapshots the count of enemy players
+ * within ScanRadius of the impact point and broadcasts the result via
+ * GameState::Multicast_OnInfoScan.
  *
- * Lifecycle:
- *  - SpawnActor (by GrenadeComponent)
- *  - Server_Initialize stamps team + type
- *  - Server_InitializeExtra (default no-op) — bAltFire ignored for INFO
- *  - BeginPlay schedules the fuse timer
- *  - Fuse fires → HandleDetonationGameplay runs the scan + multicast
- *  - Base class queues Destroy() after CleanupDelay
+ * One-shot detonate. Not toggleable, not repositionable.
  */
 UCLASS()
-class PROJECTCOMP_API AProjectCompInfoGrenade : public AProjectCompGrenadeBase
+class PROJECTCOMP_API AProjectCompInfoGrenade : public AProjectCompThrowableGrenadeBase
 {
 	GENERATED_BODY()
 
@@ -38,27 +27,13 @@ public:
 	AProjectCompInfoGrenade();
 
 protected:
-	virtual void BeginPlay() override;
-	virtual void HandleDetonationGameplay() override;
+	virtual void OnEnterActivePhase() override;
 
-	/** Cosmetic mesh slot — set in BP. C++ leaves it empty. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	UStaticMeshComponent* DeviceMesh;
-
-	/** Visual indicator of the scan volume — pure cosmetic, non-blocking. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	USphereComponent* ScanVolume;
-
-	/** Seconds between place and scan. User design said "1/2/3s delay (TBD)" —
-	 *  defaulting to 2s as the middle option; tune in BP defaults. */
-	UPROPERTY(EditDefaultsOnly, Category = "Info", meta = (ClampMin = "0.1"))
-	float FuseDuration = 2.0f;
-
-	/** Radius (cm) inside which enemy players are counted. */
+	/** Radius (cm) inside which enemy players are counted at scan time. */
 	UPROPERTY(EditDefaultsOnly, Category = "Info", meta = (ClampMin = "100.0"))
 	float ScanRadius = 1000.0f;
 
-private:
-	/** Server-only fuse timer handle. */
-	FTimerHandle FuseTimer;
+	/** Seconds the debug shapes persist post-scan. Ignored in shipping. */
+	UPROPERTY(EditDefaultsOnly, Category = "Info|Debug", meta = (ClampMin = "0.5"))
+	float DebugDrawDuration = 4.0f;
 };

@@ -49,6 +49,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Grenade")
 	void BuyGrenade(EGrenadeType Type);
 
+	/** Owning-client entry point: use the grenade currently in EquippedGrenadeTypes[SlotIndex].
+	 *  No-op if the slot is empty (player didn't buy 2 grenades). Resolves origin/direction
+	 *  from the pawn's camera and forwards to Server_UseGrenade. Slot index 0 or 1. */
+	UFUNCTION(BlueprintCallable, Category = "Grenade")
+	void UseGrenadeInSlot(int32 SlotIndex, bool bAltFire = false);
+
 	// ---- Dev/test console hooks (PIE listen-server convenience) -----------
 	// Use the UE console (~) and call e.g. `BuyNade 1` to buy a Flash.
 	// Indices for BuyNade: 1=Flash 2=Info 3=Vulnerable 4=Sound.

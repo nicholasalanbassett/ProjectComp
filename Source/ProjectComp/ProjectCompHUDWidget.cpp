@@ -341,6 +341,55 @@ void UProjectCompHUDWidget::BuildLayout()
 	NotifSlot->SetAutoSize(true);
 	KillNotifText->SetVisibility(ESlateVisibility::Hidden);
 
+	// ---- Bottom-center: equipped-item indicator ----------------------------
+	// Three vertical columns side-by-side. Each column has a small cooldown
+	// text on top (only visible while that grenade is on CD) and a larger
+	// label below ("[key] NAME"). Equipped slot glows in its brand color.
+	{
+		UHorizontalBox* EquipRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("EquipRow"));
+		UCanvasPanelSlot* EquipRowSlot = RootCanvas->AddChildToCanvas(EquipRow);
+		EquipRowSlot->SetAnchors(FAnchors(0.5f, 1.0f));
+		EquipRowSlot->SetAlignment(FVector2D(0.5f, 1.0f));
+		EquipRowSlot->SetPosition(FVector2D(0.0f, -CornerPadding));
+		EquipRowSlot->SetAutoSize(true);
+
+		auto AddEquipColumn = [&](const TCHAR* CDName, const TCHAR* LabelName,
+		                          TObjectPtr<UTextBlock>& OutCDText,
+		                          TObjectPtr<UTextBlock>& OutLabelText)
+		{
+			UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass());
+			UHorizontalBoxSlot* HSlot = EquipRow->AddChildToHorizontalBox(Col);
+			HSlot->SetPadding(FMargin(28.0f, 0.0f));
+			HSlot->SetVerticalAlignment(VAlign_Bottom);
+
+			OutCDText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), CDName);
+			OutCDText->SetFont(MakeFont(16));
+			OutCDText->SetText(FText::GetEmpty());
+			OutCDText->SetColorAndOpacity(PrimaryTextColor);
+			OutCDText->SetJustification(ETextJustify::Center);
+			ApplyTextShadow(OutCDText);
+			OutCDText->SetVisibility(ESlateVisibility::Hidden);
+			UVerticalBoxSlot* CDSlot = Col->AddChildToVerticalBox(OutCDText);
+			CDSlot->SetHorizontalAlignment(HAlign_Center);
+
+			OutLabelText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), LabelName);
+			OutLabelText->SetFont(MakeFont(22));
+			OutLabelText->SetText(FText::FromString(TEXT("---")));
+			OutLabelText->SetColorAndOpacity(LabelTextColor);
+			OutLabelText->SetJustification(ETextJustify::Center);
+			ApplyTextShadow(OutLabelText);
+			UVerticalBoxSlot* LabelSlot = Col->AddChildToVerticalBox(OutLabelText);
+			LabelSlot->SetHorizontalAlignment(HAlign_Center);
+		};
+
+		AddEquipColumn(TEXT("CooldownWeaponText"), TEXT("EquipWeaponText"),
+			CooldownWeaponText, EquipWeaponText);
+		AddEquipColumn(TEXT("CooldownSlot1Text"),  TEXT("EquipSlot1Text"),
+			CooldownSlot1Text, EquipSlot1Text);
+		AddEquipColumn(TEXT("CooldownSlot2Text"),  TEXT("EquipSlot2Text"),
+			CooldownSlot2Text, EquipSlot2Text);
+	}
+
 	// ---- Flash overlay (full-screen white) ---------------------------------
 	// Added LAST so it sits on top of every other HUD element in Z-order.
 	// HitTestInvisible so clicks/input pass through. Anchored to all four edges
@@ -685,6 +734,139 @@ void UProjectCompHUDWidget::RefreshDisplay()
 	}
 
 	RefreshBombStatus();
+	RefreshEquipIndicator();
+}
+
+// =====================================================================
+// Equipped-item indicator (bottom-center)
+// =====================================================================
+
+FLinearColor UProjectCompHUDWidget::GetGrenadeBrandColor(EGrenadeType Type)
+{
+	// Design memory project_grenade_system: FLASH=YELLOW, INFO=CYAN,
+	// VULN=NEON CORAL, SOUND=GREY. The SOUND grey is intentionally bright
+	// (~85% lightness) so the equipped-glow reads as highlighted rather than
+	// blending with the "not equipped" dim grey at ~55% lightness.
+	switch (Type)
+	{
+	case EGrenadeType::Flash:      return FLinearColor(1.00f, 0.85f, 0.00f);
+	case EGrenadeType::Info:       return FLinearColor(0.00f, 0.85f, 1.00f);
+	case EGrenadeType::Vulnerable: return FLinearColor(1.00f, 0.376f, 0.251f);
+	case EGrenadeType::Sound:      return FLinearColor(0.85f, 0.85f, 0.90f);
+	default:                       return FLinearColor::White;
+	}
+}
+
+void UProjectCompHUDWidget::RefreshEquipIndicator()
+{
+	if (!EquipWeaponText || !EquipSlot1Text || !EquipSlot2Text)
+	{
+		return;
+	}
+
+	const AProjectCompCharacter* Char = GetLocalCharacter();
+	const AProjectCompPlayerState* PS = GetLocalPlayerState();
+	if (!Char || !PS)
+	{
+		EquipWeaponText->SetVisibility(ESlateVisibility::Hidden);
+		EquipSlot1Text->SetVisibility(ESlateVisibility::Hidden);
+		EquipSlot2Text->SetVisibility(ESlateVisibility::Hidden);
+		if (CooldownSlot1Text) CooldownSlot1Text->SetVisibility(ESlateVisibility::Hidden);
+		if (CooldownSlot2Text) CooldownSlot2Text->SetVisibility(ESlateVisibility::Hidden);
+		return;
+	}
+	EquipWeaponText->SetVisibility(ESlateVisibility::HitTestInvisible);
+	EquipSlot1Text->SetVisibility(ESlateVisibility::HitTestInvisible);
+	EquipSlot2Text->SetVisibility(ESlateVisibility::HitTestInvisible);
+	if (CooldownWeaponText) CooldownWeaponText->SetVisibility(ESlateVisibility::Hidden); // weapon never has a CD
+
+	const int32 EquippedSlot = Char->GetEquippedGrenadeSlot();
+	const FLinearColor TeamColor = GetTeamColor(PS->GetTeamID());
+	const TArray<EGrenadeType>& Kit = PS->GetEquippedGrenadeTypes();
+
+	// Pseudo-glow: TextBlock shadow at offset (0,0) tinted with the slot's
+	// glow color reads as a halo around the glyphs. The text itself is also
+	// glow-tinted so the equipped item pops. Non-equipped items revert to a
+	// dim grey with a normal small drop shadow.
+	auto StyleEquipText = [](UTextBlock* Text, bool bEquipped, const FLinearColor& GlowColor)
+	{
+		if (bEquipped)
+		{
+			Text->SetColorAndOpacity(FSlateColor(GlowColor));
+			Text->SetShadowOffset(FVector2D(0.0f, 0.0f));
+			Text->SetShadowColorAndOpacity(FLinearColor(GlowColor.R, GlowColor.G, GlowColor.B, 0.9f));
+		}
+		else
+		{
+			Text->SetColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.55f, 0.55f, 0.85f)));
+			Text->SetShadowOffset(FVector2D(1.0f, 1.0f));
+			Text->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.55f));
+		}
+	};
+
+	auto GrenadeShortName = [](EGrenadeType Type) -> const TCHAR*
+	{
+		switch (Type)
+		{
+		case EGrenadeType::Flash:      return TEXT("FLASH");
+		case EGrenadeType::Info:       return TEXT("INFO");
+		case EGrenadeType::Vulnerable: return TEXT("VULN");
+		case EGrenadeType::Sound:      return TEXT("SOUND");
+		default:                       return TEXT("---");
+		}
+	};
+
+	// ---- Weapon column ---------------------------------------------------
+	EquipWeaponText->SetText(FText::FromString(TEXT("[1] WEAPON")));
+	StyleEquipText(EquipWeaponText, EquippedSlot == -1, TeamColor);
+
+	// ---- Grenade slots: brand-color glow + cooldown countdown ------------
+	const AProjectCompGameState* GS = GetTypedGameState();
+	const float ServerNow = GS ? GS->GetServerWorldTimeSeconds() : 0.0f;
+
+	auto RefreshGrenadeColumn = [&](UTextBlock* LabelText, UTextBlock* CDText,
+	                                int32 KitIndex, const TCHAR* KeyLabel)
+	{
+		const bool bHasGrenade = Kit.IsValidIndex(KitIndex) && Kit[KitIndex] != EGrenadeType::None;
+		const EGrenadeType Type = bHasGrenade ? Kit[KitIndex] : EGrenadeType::None;
+
+		const FString Label = bHasGrenade
+			? FString::Printf(TEXT("[%s] %s"), KeyLabel, GrenadeShortName(Type))
+			: FString::Printf(TEXT("[%s] ---"), KeyLabel);
+		LabelText->SetText(FText::FromString(Label));
+
+		const FLinearColor GlowColor = bHasGrenade
+			? GetGrenadeBrandColor(Type)
+			: FLinearColor::White;
+		StyleEquipText(LabelText, EquippedSlot == KitIndex, GlowColor);
+
+		// Cooldown text above the label — hidden when no grenade or ready.
+		if (CDText)
+		{
+			if (!bHasGrenade)
+			{
+				CDText->SetVisibility(ESlateVisibility::Hidden);
+				return;
+			}
+			const float EndTime = PS->GetGrenadeCooldownEndTime(Type);
+			const float Remaining = FMath::Max(0.0f, EndTime - ServerNow);
+			if (Remaining > 0.05f)
+			{
+				CDText->SetText(FText::FromString(FString::Printf(TEXT("%.1fs"), Remaining)));
+				// Tint the cooldown text in the grenade's brand color too —
+				// reinforces which grenade is on CD at a glance.
+				CDText->SetColorAndOpacity(FSlateColor(GlowColor));
+				CDText->SetVisibility(ESlateVisibility::HitTestInvisible);
+			}
+			else
+			{
+				CDText->SetVisibility(ESlateVisibility::Hidden);
+			}
+		}
+	};
+
+	RefreshGrenadeColumn(EquipSlot1Text, CooldownSlot1Text, /*KitIndex*/ 0, TEXT("E"));
+	RefreshGrenadeColumn(EquipSlot2Text, CooldownSlot2Text, /*KitIndex*/ 1, TEXT("Q"));
 }
 
 // =====================================================================

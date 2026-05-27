@@ -161,6 +161,45 @@ void AProjectCompPlayerController::BuyGrenade(EGrenadeType Type)
 	Server_BuyGrenade(Type);
 }
 
+void AProjectCompPlayerController::UseGrenadeInSlot(int32 SlotIndex, bool bAltFire)
+{
+	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+	if (!PS)
+	{
+		return;
+	}
+	const TArray<EGrenadeType>& Kit = PS->GetEquippedGrenadeTypes();
+	if (!Kit.IsValidIndex(SlotIndex))
+	{
+		// Slot empty — player didn't buy a 2nd grenade. Silent no-op so the
+		// keybind doesn't spam errors when the kit isn't full.
+		return;
+	}
+	const EGrenadeType Type = Kit[SlotIndex];
+	if (Type == EGrenadeType::None)
+	{
+		return;
+	}
+
+	APawn* MyPawn = GetPawn();
+	if (!MyPawn)
+	{
+		return;
+	}
+	// Mirror UseNade exec — resolve origin/direction from the first-person camera.
+	FVector Origin = MyPawn->GetActorLocation();
+	FVector Direction = MyPawn->GetActorForwardVector();
+	if (const AProjectCompCharacter* PCChar = Cast<AProjectCompCharacter>(MyPawn))
+	{
+		if (const UCameraComponent* Cam = PCChar->GetFirstPersonCameraComponent())
+		{
+			Origin = Cam->GetComponentLocation();
+			Direction = Cam->GetForwardVector();
+		}
+	}
+	Server_UseGrenade(Type, bAltFire, Origin, Direction);
+}
+
 // =====================================================================
 // Server RPCs — _Validate runs first (drop the connection on cheating),
 // then _Implementation forwards to the GameMode for authoritative logic.

@@ -3,36 +3,39 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ProjectCompGrenadeBase.h"
+#include "ProjectCompThrowableGrenadeBase.h"
 #include "ProjectCompVulnerableGrenade.generated.h"
 
 class USphereComponent;
-class UStaticMeshComponent;
 class UPrimitiveComponent;
 class AProjectCompCharacter;
 
 /**
- * Vulnerable grenade (Aggro Control). Map-placed circle util that applies a
- * 2x incoming-damage multiplier to enemies who are physically overlapping
- * its AOE sphere. Friendlies are unaffected.
+ * Vulnerable grenade (Aggro Control). Thrown like FLASH:
+ *  - LMB = wall-phase projectile
+ *  - RMB = single-bounce projectile
  *
- * Breakable: the device mesh (root) is 1 HP — any bullet hit destroys the
- * grenade and cleans up the multiplier on still-overlapping characters.
- * Routing: weapon hits → AActor::TakeDamage (virtual dispatch) → our override.
+ * On impact, sits for FuseAfterImpact seconds, then activates a zone at the
+ * impact point: enemies overlapping the AOE take 2x incoming damage. The zone
+ * persists until ZoneLifetime expires or it's destroyed by a single bullet
+ * (1-HP breakable). Friendlies are unaffected.
  *
- * Lifecycle:
- *  - Spawn → AOE active immediately (no fuse)
- *  - Tracks enemy enter/exit via OnComponentBegin/EndOverlap → toggles each
- *    character's VulnerableZoneOverlapCount on AProjectCompCharacter.
- *  - On TakeDamage OR ZoneLifetime expiry → Server_Detonate cleans up.
+ * Three lifecycle phases (inherited from ThrowableGrenadeBase):
+ *  - Projectile: flying. Mesh has NoCollision (unbreakable in flight).
+ *  - Fused: stationary at impact. Same NoCollision.
+ *  - Active: zone enabled — mesh becomes bullet-blocking, overlap events drive
+ *    the per-enemy multiplier counter on AProjectCompCharacter.
  */
 UCLASS()
-class PROJECTCOMP_API AProjectCompVulnerableGrenade : public AProjectCompGrenadeBase
+class PROJECTCOMP_API AProjectCompVulnerableGrenade : public AProjectCompThrowableGrenadeBase
 {
 	GENERATED_BODY()
 
 public:
 	AProjectCompVulnerableGrenade();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void Tick(float DeltaSeconds) override;
 
 	virtual float TakeDamage(float DamageAmount,
 	                         const struct FDamageEvent& DamageEvent,
@@ -42,6 +45,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
 
 	UFUNCTION()
@@ -58,12 +62,7 @@ protected:
 	                      UPrimitiveComponent* OtherComp,
 	                      int32 OtherBodyIndex);
 
-	/** Visible device — bullet-blocking on ECC_Visibility so weapon traces hit
-	 *  it. 1-HP semantics implemented in the TakeDamage override. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
-	UStaticMeshComponent* DeviceMesh;
-
-	/** AOE sphere — overlap-only, no blocking, large radius. */
+	/** AOE sphere — overlap-only, no blocking. Enabled in OnEnterActivePhase. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	USphereComponent* ZoneSphere;
 
@@ -71,18 +70,23 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Vulnerable", meta = (ClampMin = "100.0"))
 	float ZoneRadius = 600.0f;
 
-	/** Server-side life cap. Zone auto-detonates after this many seconds even
-	 *  if never shot. Designed to prevent permanent zones — tune in BP. */
+	/** Seconds the zone stays active after impact-fuse completes. Auto-detonates
+	 *  at expiry; can also be cut short by being shot out (1-HP). */
 	UPROPERTY(EditDefaultsOnly, Category = "Vulnerable", meta = (ClampMin = "1.0"))
 	float ZoneLifetime = 30.0f;
 
+	/** Replicated active flag — clients tick this to draw the neon coral zone
+	 *  viz. Set true when the zone activates (post-fuse), false during the
+	 *  detonate cleanup. Per design, the zone is visible to all players
+	 *  (placer's team + enemies + spectators). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Vulnerable")
+	bool bIsZoneActive = false;
+
 private:
-	/** Server-only: pawns currently inside the zone whose overlap counter we
-	 *  incremented. Used at detonate-time to decrement (cleanup), so a
-	 *  multiplier doesn't linger on a target that's still standing in a
-	 *  zone whose physics body just got destroyed. */
+	/** Server-only: pawns currently inside the active zone whose overlap
+	 *  counter we incremented. Used at detonate-time for cleanup. */
 	TSet<TWeakObjectPtr<AProjectCompCharacter>> TrackedOverlaps;
 
-	/** Server-only lifetime timer. */
+	/** Server-only lifetime timer (started when entering Active phase). */
 	FTimerHandle LifetimeTimer;
 };
