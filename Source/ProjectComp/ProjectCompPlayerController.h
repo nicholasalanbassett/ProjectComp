@@ -75,6 +75,17 @@ public:
 	UFUNCTION(Exec)
 	void DumpEcon();
 
+	/** Apply a single-call scalability preset. Friend-friendly wrapper for the
+	 *  built-in sg.* commands so weak-hardware players can dial down with one
+	 *  console line. Levels:
+	 *    0 = Lowest  (ResolutionScale 50%, everything else off)
+	 *    1 = Low     (ResolutionScale 75%, others Low)
+	 *    2 = Medium  (ResolutionScale 90%, others Medium)
+	 *    3 = High    (full resolution, others High)
+	 *    4 = Epic    (full resolution, others Epic — UE default) */
+	UFUNCTION(Exec)
+	void Perf(int32 Level);
+
 	/** CHEAT: force-end the current RoundActive with the given team as winner.
 	 *  TeamIndex: 0=Attackers 1=Defenders. */
 	UFUNCTION(Exec)

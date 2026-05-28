@@ -21,11 +21,12 @@ static TAutoConsoleVariable<int32> CVarThrowableGrenadeDebugDraw(
 
 AProjectCompThrowableGrenadeBase::AProjectCompThrowableGrenadeBase()
 {
-	// Tick is enabled by Server_InitializeExtra once the velocity is stamped.
-	// Default-off so a misconfigured spawn (e.g. forgot to call InitializeExtra)
-	// doesn't run an idle Tick on a stationary actor.
+	// Tick is enabled from spawn on EVERY machine. The server does projectile
+	// motion (gated by HasAuthority + Phase below); clients use the same Tick
+	// to draw a local tracer based on the replicated actor position. Without
+	// always-on client tick, in-flight grenades only show tracers on the host.
 	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.bStartWithTickEnabled = false;
+	PrimaryActorTick.bStartWithTickEnabled = true;
 
 	ProjectileMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectileMesh"));
 	SetRootComponent(ProjectileMesh);
@@ -87,6 +88,13 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
+	// Local tracer — runs on EVERY machine (server + each client) so non-host
+	// peers see the in-flight trail. Uses the replicated actor position; no
+	// extra RPC traffic per tick. Must run BEFORE the HasAuthority gate.
+#if !UE_BUILD_SHIPPING
+	DrawTracerSegment_Local();
+#endif
+
 	if (!HasAuthority() || IsDetonated() || Phase != EThrowablePhase::Projectile)
 	{
 		return;
@@ -137,32 +145,8 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 	const bool bHit = World->LineTraceSingleByChannel(Hit, PrevLoc, NewLoc, ECC_Visibility, Params);
 
 	const EThrowableFireMode Mode = GetActiveFireMode();
-
-#if !UE_BUILD_SHIPPING
-	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() != 0)
-	{
-		// Tracer color encodes mode + state:
-		//   PhaseOneWall pre-phase = bright yellow ; post-phase = orange
-		//   BounceOnce   pre-bounce = bright cyan  ; post-bounce = light blue
-		//   GravityLob              = magenta (no phase/bounce state)
-		FColor TracerColor;
-		switch (Mode)
-		{
-		case EThrowableFireMode::PhaseOneWall:
-			TracerColor = bHasPhasedWall ? FColor(255, 200, 80) : FColor(255, 255, 80);
-			break;
-		case EThrowableFireMode::BounceOnce:
-			TracerColor = bHasBounced ? FColor(120, 200, 255) : FColor(60, 240, 240);
-			break;
-		case EThrowableFireMode::GravityLob:
-		default:
-			TracerColor = FColor(255, 100, 220);
-			break;
-		}
-		DrawDebugLine(World, PrevLoc, NewLoc, TracerColor,
-			/*bPersistent*/ false, /*Life*/ 1.5f, 0, /*Thickness*/ 2.0f);
-	}
-#endif
+	// (Tracer drawing now lives in DrawTracerSegment_Local, called above the
+	// HasAuthority gate so it runs on every machine.)
 
 	if (!bHit)
 	{
@@ -224,17 +208,11 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 				*GetName(), *WallEntry.ToCompactString(), *ExitPoint.ToCompactString(),
 				(BackHit.ImpactPoint - WallEntry).Size());
 
-#if !UE_BUILD_SHIPPING
-			if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() != 0)
-			{
-				DrawDebugSphere(World, WallEntry, 12.0f, 8, FColor(255, 160, 60),
-					false, 3.0f, 0, 1.5f);
-				DrawDebugSphere(World, BackHit.ImpactPoint, 12.0f, 8, FColor(60, 220, 100),
-					false, 3.0f, 0, 1.5f);
-				DrawDebugLine(World, WallEntry, BackHit.ImpactPoint, FColor(200, 200, 200),
-					false, 3.0f, 0, 1.0f);
-			}
-#endif
+			// Multicast the phase event so every machine draws the entry/exit
+			// markers + connecting line locally. Server's own draw runs via
+			// the multicast implementation too (the multicast hits the server
+			// in addition to clients).
+			Multicast_DrawPhaseEvent(WallEntry, BackHit.ImpactPoint);
 			return;
 		}
 		// Post-phase contact — impact.
@@ -268,16 +246,7 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 				*Incoming.ToCompactString(), *Normal.ToCompactString(),
 				*Reflected.ToCompactString());
 
-#if !UE_BUILD_SHIPPING
-			if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() != 0)
-			{
-				DrawDebugSphere(World, Hit.ImpactPoint, 12.0f, 8, FColor(60, 240, 240),
-					false, 3.0f, 0, 1.5f);
-				DrawDebugDirectionalArrow(World, Hit.ImpactPoint,
-					Hit.ImpactPoint + Normal * 80.0f,
-					20.0f, FColor::White, false, 3.0f, 0, 1.5f);
-			}
-#endif
+			Multicast_DrawBounceEvent(Hit.ImpactPoint, Normal);
 			return;
 		}
 		HandleImpact(Hit.ImpactPoint);
@@ -301,11 +270,21 @@ void AProjectCompThrowableGrenadeBase::HandleImpact(const FVector& ImpactLocatio
 
 	SetActorLocation(ImpactLocation, /*bSweep*/ false, nullptr, ETeleportType::TeleportPhysics);
 	Velocity = FVector::ZeroVector;
+	// NOTE: tick stays enabled on clients (they don't run server motion anyway,
+	// and the local tracer Tick path returns silently with no movement).
+	// On the server we keep Tick on too — subclasses (e.g. VULN) may need
+	// Tick during Fused/Active phases; they call SetActorTickEnabled(true)
+	// themselves in OnEnterActivePhase to make this explicit.
 	SetActorTickEnabled(false);
 
 	UE_LOG(LogProjectComp, Log,
 		TEXT("[Throwable] %s impact at %s (fuse=%.1fs)."),
 		*GetName(), *ImpactLocation.ToCompactString(), FuseAfterImpact);
+
+	// Tell every machine to draw a small marker at the impact point so clients
+	// know exactly where the projectile landed (otherwise they just see the
+	// in-flight tracer stop, with no clear "this is the impact spot" signal).
+	Multicast_DrawImpactMarker(ImpactLocation);
 
 	if (FuseAfterImpact > 0.0f)
 	{
@@ -334,4 +313,97 @@ void AProjectCompThrowableGrenadeBase::TransitionToActive()
 	Phase = EThrowablePhase::Active;
 	UE_LOG(LogProjectComp, Verbose, TEXT("[Throwable] %s entering Active phase."), *GetName());
 	OnEnterActivePhase();
+}
+
+// =====================================================================
+// Local + multicast debug viz
+// =====================================================================
+
+void AProjectCompThrowableGrenadeBase::DrawTracerSegment_Local()
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const FVector CurLoc = GetActorLocation();
+	if (bHasLastDrawLocation)
+	{
+		// Skip near-zero-delta segments — happens while the actor is stationary
+		// (pre-launch, post-impact). Threshold lower than projectile speed * dt.
+		const float SegmentLengthSq = (CurLoc - LastDrawLocation).SizeSquared();
+		if (SegmentLengthSq > 1.0f)
+		{
+			DrawDebugLine(World, LastDrawLocation, CurLoc, FColor(255, 255, 80),
+				/*bPersistent*/ false, /*Life*/ 1.5f, 0, /*Thickness*/ 2.0f);
+		}
+	}
+	LastDrawLocation = CurLoc;
+	bHasLastDrawLocation = true;
+#endif
+}
+
+void AProjectCompThrowableGrenadeBase::Multicast_DrawPhaseEvent_Implementation(FVector WallEntry, FVector ExitPoint)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// Orange entry sphere, green exit sphere, grey line through the wall.
+	DrawDebugSphere(World, WallEntry, 12.0f, 8, FColor(255, 160, 60),
+		false, 3.0f, 0, 1.5f);
+	DrawDebugSphere(World, ExitPoint, 12.0f, 8, FColor(60, 220, 100),
+		false, 3.0f, 0, 1.5f);
+	DrawDebugLine(World, WallEntry, ExitPoint, FColor(200, 200, 200),
+		false, 3.0f, 0, 1.0f);
+#endif
+}
+
+void AProjectCompThrowableGrenadeBase::Multicast_DrawBounceEvent_Implementation(FVector ImpactAt, FVector ImpactNormal)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	DrawDebugSphere(World, ImpactAt, 12.0f, 8, FColor(60, 240, 240),
+		false, 3.0f, 0, 1.5f);
+	DrawDebugDirectionalArrow(World, ImpactAt, ImpactAt + ImpactNormal * 80.0f,
+		20.0f, FColor::White, false, 3.0f, 0, 1.5f);
+#endif
+}
+
+void AProjectCompThrowableGrenadeBase::Multicast_DrawImpactMarker_Implementation(FVector ImpactAt)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// Small magenta sphere at the impact point — clearly distinct from the
+	// phase (orange/green) and bounce (cyan) markers.
+	DrawDebugSphere(World, ImpactAt, 10.0f, 10, FColor(255, 60, 200),
+		false, 3.0f, 0, 2.0f);
+#endif
 }

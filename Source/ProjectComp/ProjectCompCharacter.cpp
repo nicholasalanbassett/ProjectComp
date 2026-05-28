@@ -57,7 +57,10 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     FirstPersonCameraComponent->bUsePawnControlRotation = true;
     FirstPersonCameraComponent->bEnableFirstPersonFieldOfView = true;
     FirstPersonCameraComponent->bEnableFirstPersonScale = true;
-    FirstPersonCameraComponent->FirstPersonFieldOfView = 70.0f;
+    // 70 was the original value but caused real motion sickness in extended
+    // playtests. 90 is the tac-FPS norm (CS2≈90, Valorant=103, COD/Apex=90+).
+    // Wider FOV reduces the "tunnel vision" vestibular-conflict feel.
+    FirstPersonCameraComponent->FirstPersonFieldOfView = 90.0f;
     FirstPersonCameraComponent->FirstPersonScale = 0.6f;
 
     FirstPersonMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("First Person Mesh"));

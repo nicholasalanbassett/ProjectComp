@@ -39,16 +39,11 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 	const FVector ScanCenter = GetActorLocation();
 	const ETeamID PlacerTeam = GetOwnerTeam();
 
+	// Center viz (dome + center marker + count text) replicates to every
+	// machine via multicast. Count is finalized below so we delay the
+	// multicast until after the scan loop.
 #if !UE_BUILD_SHIPPING
 	const bool bDrawDebug = CVarInfoGrenadeDebugDraw.GetValueOnGameThread() != 0;
-	if (bDrawDebug)
-	{
-		// Cyan wireframe sphere = scan area. Yellow marker at exact center.
-		DrawDebugSphere(World, ScanCenter, ScanRadius, 32, FColor::Cyan,
-			false, DebugDrawDuration, 0, 2.0f);
-		DrawDebugSphere(World, ScanCenter, 18.0f, 10, FColor::Yellow,
-			false, DebugDrawDuration, 0, 2.0f);
-	}
 #else
 	constexpr bool bDrawDebug = false;
 #endif
@@ -108,15 +103,9 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 		TEXT("[InfoGrenade] %s scan complete: %d enemy/ies inside r=%.0fcm at %s."),
 		*GetName(), EnemyCount, ScanRadius, *ScanCenter.ToCompactString());
 
-#if !UE_BUILD_SHIPPING
-	if (bDrawDebug)
-	{
-		const FString CountText = FString::Printf(TEXT("Enemies: %d"), EnemyCount);
-		DrawDebugString(World, ScanCenter + FVector(0.0f, 0.0f, 200.0f),
-			CountText, /*TestBaseActor*/ nullptr, FColor::Yellow,
-			DebugDrawDuration, /*bDrawShadow*/ true, /*FontScale*/ 2.0f);
-	}
-#endif
+	// Now that the scan has run and EnemyCount is finalized, multicast the
+	// dome + count text to all machines so non-host peers see them too.
+	Multicast_DrawScanViz(ScanCenter, ScanRadius, EnemyCount);
 
 	// Broadcast to all clients — placer's team sees the count, enemies in the
 	// zone get the "you were scanned" tell.
@@ -127,4 +116,29 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 
 	// One-shot — clean up the grenade actor now that the scan has run.
 	Server_Detonate();
+}
+
+void AProjectCompInfoGrenade::Multicast_DrawScanViz_Implementation(FVector Center, float Radius, int32 EnemyCount)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarInfoGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// Cyan wireframe scan sphere + yellow center marker.
+	DrawDebugSphere(World, Center, Radius, 32, FColor::Cyan,
+		false, DebugDrawDuration, 0, 2.0f);
+	DrawDebugSphere(World, Center, 18.0f, 10, FColor::Yellow,
+		false, DebugDrawDuration, 0, 2.0f);
+	// World-space count text floating ~2m above the center.
+	const FString CountText = FString::Printf(TEXT("Enemies: %d"), EnemyCount);
+	DrawDebugString(World, Center + FVector(0.0f, 0.0f, 200.0f),
+		CountText, /*TestBaseActor*/ nullptr, FColor::Yellow,
+		DebugDrawDuration, /*bDrawShadow*/ true, /*FontScale*/ 2.0f);
+#endif
 }

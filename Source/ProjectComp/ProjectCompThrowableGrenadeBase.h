@@ -193,4 +193,28 @@ protected:
 
 	/** Server: invokes the subclass's OnEnterActivePhase. Set Phase=Active. */
 	void TransitionToActive();
+
+	// ---- Multicast debug-draw events (every-machine viz) ----------------
+	// Fired by the server at discrete moments (phase, bounce); each client
+	// + the listen-server host runs the DrawDebug calls locally so all
+	// peers see the same visualization.
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawPhaseEvent(FVector WallEntry, FVector ExitPoint);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawBounceEvent(FVector ImpactAt, FVector ImpactNormal);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawImpactMarker(FVector ImpactAt);
+
+	/** Local-machine helper invoked from Tick on every peer. Draws a short
+	 *  tracer line from the actor's last-seen position to its current
+	 *  position — works on clients because the actor's location is
+	 *  replicated via standard movement replication. */
+	void DrawTracerSegment_Local();
+
+	/** Per-machine state for the local tracer. NOT replicated. */
+	FVector LastDrawLocation = FVector::ZeroVector;
+	bool bHasLastDrawLocation = false;
 };

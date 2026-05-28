@@ -71,15 +71,14 @@ void AProjectCompFlashGrenade::HandleDetonationGameplay()
 	// own flash"). The only filter is spectators, who aren't valid targets.
 	const FVector BlastCenter = GetActorLocation();
 
+	// Center viz (radius dome + center marker) goes to ALL machines via
+	// multicast — clients on a non-host PC also see the dome this way. Per-
+	// target rays below stay server-only (a tuning detail, expensive to
+	// replicate for low payoff).
+	Multicast_DrawDetonationViz(BlastCenter, FlashRadius);
+
 #if !UE_BUILD_SHIPPING
 	const bool bDrawDebug = CVarFlashGrenadeDebugDraw.GetValueOnGameThread() != 0;
-	if (bDrawDebug)
-	{
-		DrawDebugSphere(World, BlastCenter, FlashRadius, 32, FColor::Cyan,
-			false, DebugDrawDuration, 0, 1.5f);
-		DrawDebugSphere(World, BlastCenter, 18.0f, 10, FColor::Yellow,
-			false, DebugDrawDuration, 0, 2.0f);
-	}
 #else
 	constexpr bool bDrawDebug = false;
 #endif
@@ -209,6 +208,25 @@ void AProjectCompFlashGrenade::HandleDetonationGameplay()
 		TEXT("[FlashGrenade] scan @%s r=%.0f: full=%d half=%d outOfRange=%d LOSBlocked=%d skipped=%d"),
 		*BlastCenter.ToCompactString(), FlashRadius,
 		FullCount, HalfCount, RangeFailCount, LOSFailCount, SkipCount);
+}
+
+void AProjectCompFlashGrenade::Multicast_DrawDetonationViz_Implementation(FVector Center, float Radius)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarFlashGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	DrawDebugSphere(World, Center, Radius, 32, FColor::Cyan,
+		false, DebugDrawDuration, 0, 1.5f);
+	DrawDebugSphere(World, Center, 18.0f, 10, FColor::Yellow,
+		false, DebugDrawDuration, 0, 2.0f);
+#endif
 }
 
 bool AProjectCompFlashGrenade::HasClearLineOfSight(const FVector& PawnCameraLoc,

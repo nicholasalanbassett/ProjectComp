@@ -168,9 +168,11 @@ public:
 	/**
 	 * Degrees per second at which the camera smoothly eases back during a spray.
 	 * Recovery only runs while the trigger is held; camera stays put on release.
+	 * Bumped from 2.0 → 15.0 — old value left the camera drifting for many seconds
+	 * after a single burst, which was a major nausea contributor in playtest.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))
-	float RecoilRecoveryRate = 2.0f;
+	float RecoilRecoveryRate = 15.0f;
 
 	/** Seconds after each shot before intra-spray recovery begins (usually 0). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Recoil", meta = (ClampMin = "0.0"))

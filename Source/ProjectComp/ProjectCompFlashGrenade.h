@@ -39,6 +39,13 @@ protected:
 	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
 
+	/** Multicast: every machine draws the FLASH detonation viz (radius sphere
+	 *  + center marker) at the supplied center. Server fires this from
+	 *  HandleDetonationGameplay so clients see the dome too — without it,
+	 *  only the host's screen would render the visualization. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawDetonationViz(FVector Center, float Radius);
+
 	// ---- Flash-effect tunables (mirror FlashDome's tuning model) ---------
 
 	/** Radius (cm) within which enemies are eligible for flash on detonation. */

@@ -431,7 +431,7 @@ protected:
 	// Reset at the start of each new spray; recovery only runs while firing.
 	float AccumulatedRecoilPitch = 0.0f;
 	float AccumulatedRecoilYaw = 0.0f;
-	float RecoilRecoveryRate = 4.0f;
+	float RecoilRecoveryRate = 15.0f;
 	float TimeUntilRecoilRecovery = 0.0f;
 	bool bIsFiring = false;
 

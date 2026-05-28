@@ -537,6 +537,46 @@ void AProjectCompPlayerController::EndRound(int32 TeamIndex)
 	Server_CheatEndRound(Team);
 }
 
+void AProjectCompPlayerController::Perf(int32 Level)
+{
+	Level = FMath::Clamp(Level, 0, 4);
+
+	// ResolutionQuality is a percentage (0-100), the rest are 0-4 buckets.
+	// Map each preset level to the right percentage so the FPS gains scale
+	// hardest at the lowest setting (which is what the iGPU friends need).
+	const int32 ResolutionPct = (Level == 0) ? 50
+	                           : (Level == 1) ? 75
+	                           : (Level == 2) ? 90
+	                           : 100;
+
+	// Map preset → bucket index. Levels 0/1 both clamp to bucket 0 (off/low)
+	// because UE only exposes 4 buckets; this lets Level 0 still differ from
+	// Level 1 via the resolution percentage.
+	const int32 Bucket = (Level == 0) ? 0
+	                    : (Level == 1) ? 1
+	                    : (Level == 2) ? 2
+	                    : (Level == 3) ? 3
+	                    : 4;
+
+	auto Run = [this](const FString& Cmd)
+	{
+		ConsoleCommand(Cmd, /*bWriteToLog*/ true);
+	};
+
+	Run(FString::Printf(TEXT("sg.ResolutionQuality %d"), ResolutionPct));
+	Run(FString::Printf(TEXT("sg.ViewDistanceQuality %d"), Bucket));
+	Run(FString::Printf(TEXT("sg.AntiAliasingQuality %d"), Bucket));
+	Run(FString::Printf(TEXT("sg.ShadowQuality %d"),       Bucket));
+	Run(FString::Printf(TEXT("sg.PostProcessQuality %d"),  Bucket));
+	Run(FString::Printf(TEXT("sg.TextureQuality %d"),      Bucket));
+	Run(FString::Printf(TEXT("sg.EffectsQuality %d"),      Bucket));
+	Run(FString::Printf(TEXT("sg.FoliageQuality %d"),      Bucket));
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Perf] Applied preset Level=%d (ResolutionScale=%d%%, bucket=%d)."),
+		Level, ResolutionPct, Bucket);
+}
+
 void AProjectCompPlayerController::DumpEcon()
 {
 	const AProjectCompGameState* GS = GetWorld() ? GetWorld()->GetGameState<AProjectCompGameState>() : nullptr;

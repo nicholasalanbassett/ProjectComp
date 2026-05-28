@@ -29,6 +29,12 @@ public:
 protected:
 	virtual void OnEnterActivePhase() override;
 
+	/** Multicast: every machine draws the scan-completion viz (dome + center
+	 *  marker + count text) at the supplied center. Server fires it from
+	 *  OnEnterActivePhase so clients see the visualization too. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawScanViz(FVector Center, float Radius, int32 EnemyCount);
+
 	/** Radius (cm) inside which enemy players are counted at scan time. */
 	UPROPERTY(EditDefaultsOnly, Category = "Info", meta = (ClampMin = "100.0"))
 	float ScanRadius = 1000.0f;
