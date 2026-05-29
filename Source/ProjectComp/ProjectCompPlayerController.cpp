@@ -575,12 +575,18 @@ void AProjectCompPlayerController::Server_FulfillGrenadeRequest_Implementation(A
 
 bool AProjectCompPlayerController::Server_CheatAddCredits_Validate(int32 Amount)
 {
+#if !UE_BUILD_SHIPPING
 	// Cap the cheat to a sane band so a typo can't overflow uint16 storage.
 	return Amount >= 0 && Amount <= 65535;
+#else
+	(void)Amount;
+	return false;  // Validation fails in shipping — disconnects any caller.
+#endif
 }
 
 void AProjectCompPlayerController::Server_CheatAddCredits_Implementation(int32 Amount)
 {
+#if !UE_BUILD_SHIPPING
 	if (AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>())
 	{
 		PS->Server_AddCredits(Amount);
@@ -588,19 +594,31 @@ void AProjectCompPlayerController::Server_CheatAddCredits_Implementation(int32 A
 			TEXT("[Cheat] %s credits topped up by %d (now %d)."),
 			*PS->GetPlayerName(), Amount, PS->GetCurrentCredits());
 	}
+#else
+	(void)Amount;
+#endif
 }
 
 bool AProjectCompPlayerController::Server_CheatEndRound_Validate(ETeamID WinningTeam)
 {
+#if !UE_BUILD_SHIPPING
 	return WinningTeam == ETeamID::Attackers || WinningTeam == ETeamID::Defenders;
+#else
+	(void)WinningTeam;
+	return false;
+#endif
 }
 
 void AProjectCompPlayerController::Server_CheatEndRound_Implementation(ETeamID WinningTeam)
 {
+#if !UE_BUILD_SHIPPING
 	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
 	{
 		GM->Server_CheatEndRound(WinningTeam);
 	}
+#else
+	(void)WinningTeam;
+#endif
 }
 
 bool AProjectCompPlayerController::Server_UseGrenade_Validate(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction)
@@ -763,6 +781,7 @@ void AProjectCompPlayerController::ClaimLoom(int32 AbilityIndex)
 
 void AProjectCompPlayerController::GiveCredits(int32 Amount)
 {
+#if !UE_BUILD_SHIPPING
 	if (Amount < 0)
 	{
 		UE_LOG(LogProjectComp, Warning, TEXT("[Exec] GiveCredits: negative amount %d rejected."), Amount);
@@ -770,6 +789,9 @@ void AProjectCompPlayerController::GiveCredits(int32 Amount)
 	}
 	UE_LOG(LogProjectComp, Log, TEXT("[Exec] GiveCredits %d → Server_CheatAddCredits."), Amount);
 	Server_CheatAddCredits(Amount);
+#else
+	(void)Amount;
+#endif
 }
 
 void AProjectCompPlayerController::UseNade(int32 TypeIndex, int32 AltFire)
@@ -842,6 +864,7 @@ void AProjectCompPlayerController::BuyA(int32 LevelIndex)
 
 void AProjectCompPlayerController::EndRound(int32 TeamIndex)
 {
+#if !UE_BUILD_SHIPPING
 	if (TeamIndex != 0 && TeamIndex != 1)
 	{
 		UE_LOG(LogProjectComp, Warning,
@@ -852,6 +875,9 @@ void AProjectCompPlayerController::EndRound(int32 TeamIndex)
 	const ETeamID Team = static_cast<ETeamID>(TeamIndex);
 	UE_LOG(LogProjectComp, Log, TEXT("[Exec] EndRound %d → Server_CheatEndRound."), TeamIndex);
 	Server_CheatEndRound(Team);
+#else
+	(void)TeamIndex;
+#endif
 }
 
 void AProjectCompPlayerController::Perf(int32 Level)

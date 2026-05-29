@@ -619,9 +619,12 @@ bool AProjectCompCharacter::Server_GetHistoricalSnapshot(float TargetServerTime,
         }
     }
 
-    // Requested time is older than the oldest sample we have — use the oldest.
-    Out = HistoryBuf[IndexAtOffset(HistoryCount - 1)];
-    return true;
+    // Requested time is older than our oldest sample. Returning the oldest
+    // would silently favour laggy players on server hitches (they'd get
+    // rewound to a stale pose). Skip rewind instead — Server_RewindTo early-
+    // returns on false, leaving the target at its live position so the shot
+    // resolves against current state rather than fabricated history.
+    return false;
 }
 
 void AProjectCompCharacter::Server_RewindTo(float TargetServerTime)

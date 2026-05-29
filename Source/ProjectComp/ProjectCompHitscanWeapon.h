@@ -94,9 +94,11 @@ public:
 
 	/** Ground speed (cm/s) above which a STANDING character incurs the full
 	 *  movement spread penalty. Below = perfectly accurate. Set above your
-	 *  tactical-walk speed to allow shift-walk + still to stay accurate. */
+	 *  tactical-walk speed to allow shift-walk + still to stay accurate.
+	 *  Default 350 sits between TacticalWalkSpeed (320) and MaxWalkSpeed (560)
+	 *  so tac-walk → WalkingSpreadAdd and run → MovingSpreadAdd. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon|Spread", meta = (ClampMin = "0.0"))
-	float MoveSpeedThreshold = 100.0f;
+	float MoveSpeedThreshold = 350.0f;
 
 	/** Ground speed (cm/s) above which a CROUCHED character incurs the crouch-
 	 *  movement spread penalty. Kept independent of MoveSpeedThreshold so you
