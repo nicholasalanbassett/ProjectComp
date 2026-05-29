@@ -20,7 +20,9 @@ public class ProjectComp : ModuleRules
 			"SlateCore"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		// PerfCheck exec needs: RHI (GNumDrawCallsRHI, GNumPrimitivesDrawnRHI,
+		// RHIGetGPUFrameCycles) + RenderCore (GGameThreadTime, GRenderThreadTime).
+		PrivateDependencyModuleNames.AddRange(new string[] { "RHI", "RenderCore" });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"ProjectComp"

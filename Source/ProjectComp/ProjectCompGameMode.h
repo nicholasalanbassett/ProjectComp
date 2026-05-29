@@ -72,6 +72,42 @@ public:
 	 */
 	bool Server_BuyGrenade(APlayerController* Buyer, EGrenadeType Type);
 
+	/**
+	 * Resolves a weapon purchase. Validates: PreRound + selection window open,
+	 * caller has valid team, Weapon != None, slot/class match (Pistol → Secondary,
+	 * Rifle/SMG → Primary), enough credits. On success, deducts credits and
+	 * sets the slot on PlayerState.
+	 */
+	bool Server_BuyWeapon(APlayerController* Buyer, EWeaponClass Weapon);
+
+	/**
+	 * Resolves an armour purchase. Validates: PreRound + selection window open,
+	 * caller has valid team, Level != None, enough credits. On success deducts
+	 * credits and sets ArmourLevel on PlayerState.
+	 */
+	bool Server_BuyArmour(APlayerController* Buyer, EArmourLevel Level);
+
+	/**
+	 * Right-click in the buy panel: toggle the item in the caller's request
+	 * list. Adds if missing, removes if already there. PreRound buy window
+	 * gated only. Replicated requests are visible to all teammates.
+	 */
+	bool Server_RequestWeapon (APlayerController* Requester, EWeaponClass Weapon);
+	bool Server_RequestArmour (APlayerController* Requester, EArmourLevel Level);
+	bool Server_RequestGrenade(APlayerController* Requester, EGrenadeType Type);
+
+	/**
+	 * Teammate fulfillment: caller pays the item's cost and the item is set on
+	 * the Requester's loadout. The request is then cleared. Validates: same
+	 * team, requester actually had the item requested, caller has credits,
+	 * phase is PreRound buy window, slot/level constraints. Returns false on
+	 * any rejection (silently — no broadcast). For weapons, the fulfilled
+	 * weapon overwrites whatever was in the Requester's relevant slot.
+	 */
+	bool Server_FulfillWeaponRequest (APlayerController* Fulfiller, APlayerController* Requester, EWeaponClass Weapon);
+	bool Server_FulfillArmourRequest (APlayerController* Fulfiller, APlayerController* Requester, EArmourLevel Level);
+	bool Server_FulfillGrenadeRequest(APlayerController* Fulfiller, APlayerController* Requester, EGrenadeType Type);
+
 	/** CHEAT: force-end the current RoundActive by awarding +1 score and round-end
 	 *  credits to WinningTeam, then transitioning to PostRound. No-op outside
 	 *  RoundActive. Dev/test only — strip or gate before production. */
@@ -135,10 +171,22 @@ protected:
 
 	// ---- Phase transition handlers (server only) --------------------------
 
+	/** Server: 10s mouse-locked Loom claim phase. Inserted before rounds where
+	 *  the rotation rule fires; see ShouldRunLoomSelectionForRound. Clears
+	 *  ChosenLoomAbility on every player at start so picks happen fresh. */
+	void StartLoomSelection();
+
 	void StartPreRound();
 	void StartRoundActive();
 	void StartPostRound();
 	void EndMatch();
+
+	/** Server: rotation rule — true if the round needs a LoomSelection before
+	 *  its PreRound. Fires on rounds 1, 4, 7, 10, 13, 16, 19, 22 (every 3
+	 *  starting from 1). Halftime guarantee: also true for HalftimeRoundNumber+1
+	 *  to ensure post-swap players get a fresh pick window, even if the rotation
+	 *  math wouldn't naturally place a selection there. */
+	bool ShouldRunLoomSelectionForRound(int32 Round) const;
 
 	/** Tally votes for both teams and write the top-2 picks into the GameState team loadouts. */
 	void TallyAndLockTeamDraft(ETeamID Team);
@@ -177,12 +225,19 @@ protected:
 
 	// ---- Tuning knobs (editable in BP defaults) ---------------------------
 
-	/** Duration of the PreRound phase in seconds (selection window + spawn positioning). */
+	/** Duration of the LoomSelection phase in seconds. Mouse-locked, no movement,
+	 *  Loom claim only. Inserted before rounds 1, 4, 7, 10, 13, 16, 19, 22
+	 *  (rotation rule (round-1)%3 == 0 + halftime guarantee). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
-	float PreRoundDuration = 20.0f;
+	float LoomSelectionDuration = 10.0f;
 
-	/** First N seconds of PreRound during which the Loom draft + grenade-buy UI is active.
-	 *  After this window closes, players can move/position in spawn until the round starts. */
+	/** Duration of the PreRound phase in seconds (buy window + positioning). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
+	float PreRoundDuration = 30.0f;
+
+	/** First N seconds of PreRound during which the buy UI is active. After
+	 *  this window closes, players can move/position in spawn for the
+	 *  remaining (PreRoundDuration - SelectionWindowDuration) seconds. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
 	float SelectionWindowDuration = 10.0f;
 
@@ -259,8 +314,31 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
 	int32 SoundGrenadeCost = 300;
 
+	// ---- Weapon + armour pricing (CS-style ballpark; tune in playtest) ---
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 PistolCost = 250;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 SMGCost = 1200;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 RifleCost = 2700;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 ArmourLightCost = 650;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
+	int32 ArmourHeavyCost = 1000;
+
 	/** Returns the configured cost for the given grenade type. Returns 0 for None. */
 	int32 GetGrenadeCost(EGrenadeType Type) const;
+
+	/** Returns the configured cost for the given weapon class. Returns 0 for None. */
+	int32 GetWeaponCost(EWeaponClass Weapon) const;
+
+	/** Returns the configured cost for the given armour level. Returns 0 for None. */
+	int32 GetArmourCost(EArmourLevel Level) const;
 
 	/** Awards round-end credits to all players based on the winning team.
 	 *  Spectators receive nothing. Called from each win-determination path
@@ -290,12 +368,22 @@ protected:
 	 * Scores stay with the team, not the player. Set to 0 to disable.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0"))
-	int32 HalftimeRoundNumber = 8;
+	int32 HalftimeRoundNumber = 12;
 
 private:
 
 	/** Convenience getter for the typed GameState. */
 	AProjectCompGameState* GetTypedGameState() const;
+
+	/** Server: per-round prep that needs to happen exactly once at the start
+	 *  of each round, regardless of whether that round opens with
+	 *  LoomSelection or jumps straight to PreRound. Idempotent — guarded by
+	 *  LastPreparedRound so a second call within the same round no-ops. */
+	void PrepareForNewRound();
+
+	/** Server-only counter: the CurrentRound value that PrepareForNewRound has
+	 *  already run for. Starts at 0 so round 1's first call always prepares. */
+	int32 LastPreparedRound = 0;
 
 	/** Returns true if the given pair is a valid draft submission (distinct, non-None). */
 	static bool IsValidVotePair(EAbilityType First, EAbilityType Second);

@@ -12,14 +12,33 @@
 #include "ProjectCompGameState.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompGrenadeComponent.h"
+#include "ProjectCompHUD.h"
+#include "ProjectCompHUDWidget.h"
 #include "ProjectCompMinimapWidget.h"
 #include "ProjectCompPlayerState.h"
+#include "ProjectCompSettingsWidget.h"
 #include "ProjectCompSoundGrenade.h"
 #include "Camera/CameraComponent.h"
 #include "EngineUtils.h"
 #include "Blueprint/UserWidget.h"
+#include "Engine/Engine.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "Components/LightComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "GameFramework/PlayerInput.h"
+#include "HAL/IConsoleManager.h"
+#include "Particles/ParticleSystemComponent.h"
+#include "RHI.h"
+#include "RenderTimer.h"
+
+// UE5.7 doesn't expose these in any public header — they're defined in
+// UnrealEngine.cpp as ENGINE_API globals. PerfCheck reads them for the
+// smoothed FPS/frame-time display.
+extern ENGINE_API float GAverageFPS;
+extern ENGINE_API float GAverageMS;
 
 AProjectCompPlayerController::AProjectCompPlayerController()
 {
@@ -52,6 +71,16 @@ void AProjectCompPlayerController::SetupInputComponent()
 			EIC->BindAction(MinimapAction, ETriggerEvent::Started, this, &AProjectCompPlayerController::ToggleMinimap);
 		}
 	}
+
+	// Raw-key binding for B = toggle PreRound buy menu. Using BindKey rather
+	// than an InputAction asset so the keymap doesn't need editor changes;
+	// ToggleBuyMenu itself is a cheap state flip and self-gates on phase.
+	if (InputComponent)
+	{
+		InputComponent->BindKey(EKeys::B, IE_Pressed, this, &AProjectCompPlayerController::ToggleBuyMenu);
+		// Raw-key binding for P = toggle perf settings overlay. Always available.
+		InputComponent->BindKey(EKeys::P, IE_Pressed, this, &AProjectCompPlayerController::ToggleSettings);
+	}
 }
 
 void AProjectCompPlayerController::OnPossess(APawn* InPawn)
@@ -65,6 +94,98 @@ void AProjectCompPlayerController::OnPossess(APawn* InPawn)
 		{
 			SetMinimapOpen(false);
 		}
+	}
+}
+
+void AProjectCompPlayerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+	UpdateInputModeForPhase();
+}
+
+void AProjectCompPlayerController::UpdateInputModeForPhase()
+{
+	if (!IsLocalPlayerController())
+	{
+		return;
+	}
+	// Loom minimap input mode takes priority — the player explicitly opted into
+	// it and we don't want a phase transition to steal cursor capture.
+	if (bMinimapOpen)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
+	if (!GS)
+	{
+		return;
+	}
+
+	EAppliedInputMode Desired = EAppliedInputMode::GameOnly;
+	const ERoundPhase Phase = GS->GetCurrentPhase();
+
+	// Settings overlay takes priority — when it's open the cursor must be
+	// usable to click tier buttons regardless of phase.
+	if (bSettingsOpen)
+	{
+		Desired = EAppliedInputMode::GameAndUILocked;
+	}
+	else if (Phase == ERoundPhase::LoomSelection)
+	{
+		// Mouse-locked claim phase. Cursor is captured to the viewport so
+		// players can't accidentally click outside the buy panel.
+		Desired = EAppliedInputMode::GameAndUILocked;
+	}
+	else if (Phase == ERoundPhase::PreRound && GS->IsSelectionWindowOpen())
+	{
+		// PreRound default = full game input so the player can look around and
+		// reposition freely. Only flip to hover-free when the buy menu is
+		// actually open (B). Closed → GameOnly stays the default.
+		bool bBuyOpen = false;
+		if (const AProjectCompHUD* H = Cast<AProjectCompHUD>(GetHUD()))
+		{
+			if (const UProjectCompHUDWidget* W = H->GetHUDWidget())
+			{
+				bBuyOpen = W->IsBuyMenuOpen();
+			}
+		}
+		Desired = bBuyOpen ? EAppliedInputMode::GameAndUIHoverFree : EAppliedInputMode::GameOnly;
+	}
+
+	if (Desired == LastAppliedInputMode)
+	{
+		return;
+	}
+	LastAppliedInputMode = Desired;
+
+	switch (Desired)
+	{
+	case EAppliedInputMode::GameOnly:
+		bShowMouseCursor = false;
+		SetInputMode(FInputModeGameOnly());
+		break;
+	case EAppliedInputMode::GameAndUILocked:
+	{
+		bShowMouseCursor = true;
+		FInputModeGameAndUI Mode;
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::LockAlways);
+		Mode.SetHideCursorDuringCapture(false);
+		SetInputMode(Mode);
+		break;
+	}
+	case EAppliedInputMode::GameAndUIHoverFree:
+	{
+		bShowMouseCursor = true;
+		FInputModeGameAndUI Mode;
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		Mode.SetHideCursorDuringCapture(false);
+		SetInputMode(Mode);
+		break;
+	}
+	default:
+		break;
 	}
 }
 
@@ -84,6 +205,56 @@ void AProjectCompPlayerController::ToggleMinimap()
 	}
 
 	SetMinimapOpen(!bMinimapOpen);
+}
+
+void AProjectCompPlayerController::ToggleBuyMenu()
+{
+	// Route to the HUD widget; widget gates its own visibility on phase, so
+	// pressing B outside PreRound just no-ops visually (state is reset on
+	// PreRound entry anyway).
+	if (AProjectCompHUD* H = Cast<AProjectCompHUD>(GetHUD()))
+	{
+		if (UProjectCompHUDWidget* W = H->GetHUDWidget())
+		{
+			W->ToggleBuyMenu();
+		}
+	}
+}
+
+UProjectCompSettingsWidget* AProjectCompPlayerController::EnsureSettingsWidget()
+{
+	if (SettingsInstance) { return SettingsInstance; }
+
+	// Fall back to the C++ class if no BP subclass was assigned in defaults.
+	UClass* Class = SettingsWidgetClass
+		? SettingsWidgetClass.Get()
+		: UProjectCompSettingsWidget::StaticClass();
+
+	SettingsInstance = CreateWidget<UProjectCompSettingsWidget>(this, Class);
+	return SettingsInstance;
+}
+
+void AProjectCompPlayerController::ToggleSettings()
+{
+	if (!IsLocalController()) { return; }
+
+	UProjectCompSettingsWidget* W = EnsureSettingsWidget();
+	if (!W) { return; }
+
+	bSettingsOpen = !bSettingsOpen;
+	if (bSettingsOpen)
+	{
+		if (!W->IsInViewport()) { W->AddToViewport(50); }
+	}
+	else
+	{
+		W->RemoveFromParent();
+	}
+
+	// Force the input-mode tracker to re-apply on the next tick. Without this
+	// the cached LastAppliedInputMode would suppress the GameOnly -> locked
+	// transition when settings opens during phases that share input modes.
+	LastAppliedInputMode = EAppliedInputMode::Unknown;
 }
 
 void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
@@ -160,6 +331,24 @@ void AProjectCompPlayerController::BuyGrenade(EGrenadeType Type)
 {
 	Server_BuyGrenade(Type);
 }
+
+void AProjectCompPlayerController::BuyWeapon(EWeaponClass Weapon)
+{
+	Server_BuyWeapon(Weapon);
+}
+
+void AProjectCompPlayerController::BuyArmour(EArmourLevel Level)
+{
+	Server_BuyArmour(Level);
+}
+
+void AProjectCompPlayerController::RequestWeapon (EWeaponClass Weapon) { Server_RequestWeapon(Weapon); }
+void AProjectCompPlayerController::RequestArmour (EArmourLevel Level)  { Server_RequestArmour(Level); }
+void AProjectCompPlayerController::RequestGrenade(EGrenadeType Type)   { Server_RequestGrenade(Type); }
+
+void AProjectCompPlayerController::FulfillWeaponRequest (APlayerController* R, EWeaponClass W) { if (R) Server_FulfillWeaponRequest(R, W); }
+void AProjectCompPlayerController::FulfillArmourRequest (APlayerController* R, EArmourLevel L) { if (R) Server_FulfillArmourRequest(R, L); }
+void AProjectCompPlayerController::FulfillGrenadeRequest(APlayerController* R, EGrenadeType T) { if (R) Server_FulfillGrenadeRequest(R, T); }
 
 void AProjectCompPlayerController::UseGrenadeInSlot(int32 SlotIndex, bool bAltFire)
 {
@@ -284,6 +473,104 @@ void AProjectCompPlayerController::Server_BuyGrenade_Implementation(EGrenadeType
 	{
 		GM->Server_BuyGrenade(this, Type);
 	}
+}
+
+bool AProjectCompPlayerController::Server_BuyWeapon_Validate(EWeaponClass Weapon)
+{
+	const uint8 Byte = static_cast<uint8>(Weapon);
+	const uint8 MaxValid = static_cast<uint8>(EWeaponClass::Rifle);
+	return Byte != 0 && Byte <= MaxValid;
+}
+
+void AProjectCompPlayerController::Server_BuyWeapon_Implementation(EWeaponClass Weapon)
+{
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_BuyWeapon(this, Weapon);
+	}
+}
+
+bool AProjectCompPlayerController::Server_BuyArmour_Validate(EArmourLevel Level)
+{
+	const uint8 Byte = static_cast<uint8>(Level);
+	const uint8 MaxValid = static_cast<uint8>(EArmourLevel::Heavy);
+	return Byte != 0 && Byte <= MaxValid;
+}
+
+void AProjectCompPlayerController::Server_BuyArmour_Implementation(EArmourLevel Level)
+{
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_BuyArmour(this, Level);
+	}
+}
+
+// ---- Request / Fulfill server RPCs ----------------------------------
+
+bool AProjectCompPlayerController::Server_RequestWeapon_Validate(EWeaponClass Weapon)
+{
+	const uint8 B = static_cast<uint8>(Weapon);
+	return B != 0 && B <= static_cast<uint8>(EWeaponClass::Rifle);
+}
+void AProjectCompPlayerController::Server_RequestWeapon_Implementation(EWeaponClass Weapon)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_RequestWeapon(this, Weapon);
+}
+
+bool AProjectCompPlayerController::Server_RequestArmour_Validate(EArmourLevel Level)
+{
+	const uint8 B = static_cast<uint8>(Level);
+	return B != 0 && B <= static_cast<uint8>(EArmourLevel::Heavy);
+}
+void AProjectCompPlayerController::Server_RequestArmour_Implementation(EArmourLevel Level)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_RequestArmour(this, Level);
+}
+
+bool AProjectCompPlayerController::Server_RequestGrenade_Validate(EGrenadeType Type)
+{
+	const uint8 B = static_cast<uint8>(Type);
+	return B != 0 && B <= static_cast<uint8>(EGrenadeType::Sound);
+}
+void AProjectCompPlayerController::Server_RequestGrenade_Implementation(EGrenadeType Type)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_RequestGrenade(this, Type);
+}
+
+bool AProjectCompPlayerController::Server_FulfillWeaponRequest_Validate(APlayerController* Requester, EWeaponClass Weapon)
+{
+	const uint8 B = static_cast<uint8>(Weapon);
+	return Requester != nullptr && B != 0 && B <= static_cast<uint8>(EWeaponClass::Rifle);
+}
+void AProjectCompPlayerController::Server_FulfillWeaponRequest_Implementation(APlayerController* Requester, EWeaponClass Weapon)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_FulfillWeaponRequest(this, Requester, Weapon);
+}
+
+bool AProjectCompPlayerController::Server_FulfillArmourRequest_Validate(APlayerController* Requester, EArmourLevel Level)
+{
+	const uint8 B = static_cast<uint8>(Level);
+	return Requester != nullptr && B != 0 && B <= static_cast<uint8>(EArmourLevel::Heavy);
+}
+void AProjectCompPlayerController::Server_FulfillArmourRequest_Implementation(APlayerController* Requester, EArmourLevel Level)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_FulfillArmourRequest(this, Requester, Level);
+}
+
+bool AProjectCompPlayerController::Server_FulfillGrenadeRequest_Validate(APlayerController* Requester, EGrenadeType Type)
+{
+	const uint8 B = static_cast<uint8>(Type);
+	return Requester != nullptr && B != 0 && B <= static_cast<uint8>(EGrenadeType::Sound);
+}
+void AProjectCompPlayerController::Server_FulfillGrenadeRequest_Implementation(APlayerController* Requester, EGrenadeType Type)
+{
+	if (auto* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+		GM->Server_FulfillGrenadeRequest(this, Requester, Type);
 }
 
 bool AProjectCompPlayerController::Server_CheatAddCredits_Validate(int32 Amount)
@@ -523,6 +810,36 @@ void AProjectCompPlayerController::UseNade(int32 TypeIndex, int32 AltFire)
 	Server_UseGrenade(Type, bAltFire, Origin, Direction);
 }
 
+void AProjectCompPlayerController::BuyW(int32 ClassIndex)
+{
+	const int32 MaxValid = static_cast<int32>(EWeaponClass::Rifle);
+	if (ClassIndex <= 0 || ClassIndex > MaxValid)
+	{
+		UE_LOG(LogProjectComp, Warning,
+			TEXT("[Exec] BuyW: invalid index %d. Use 1=Pistol 2=SMG 3=Rifle."),
+			ClassIndex);
+		return;
+	}
+	const EWeaponClass Weapon = static_cast<EWeaponClass>(ClassIndex);
+	UE_LOG(LogProjectComp, Log, TEXT("[Exec] BuyW %d → Server_BuyWeapon."), ClassIndex);
+	Server_BuyWeapon(Weapon);
+}
+
+void AProjectCompPlayerController::BuyA(int32 LevelIndex)
+{
+	const int32 MaxValid = static_cast<int32>(EArmourLevel::Heavy);
+	if (LevelIndex <= 0 || LevelIndex > MaxValid)
+	{
+		UE_LOG(LogProjectComp, Warning,
+			TEXT("[Exec] BuyA: invalid index %d. Use 1=Light 2=Heavy."),
+			LevelIndex);
+		return;
+	}
+	const EArmourLevel Level = static_cast<EArmourLevel>(LevelIndex);
+	UE_LOG(LogProjectComp, Log, TEXT("[Exec] BuyA %d → Server_BuyArmour."), LevelIndex);
+	Server_BuyArmour(Level);
+}
+
 void AProjectCompPlayerController::EndRound(int32 TeamIndex)
 {
 	if (TeamIndex != 0 && TeamIndex != 1)
@@ -572,6 +889,8 @@ void AProjectCompPlayerController::Perf(int32 Level)
 	Run(FString::Printf(TEXT("sg.EffectsQuality %d"),      Bucket));
 	Run(FString::Printf(TEXT("sg.FoliageQuality %d"),      Bucket));
 
+	CurrentPerfLevel = Level;
+
 	UE_LOG(LogProjectComp, Log,
 		TEXT("[Perf] Applied preset Level=%d (ResolutionScale=%d%%, bucket=%d)."),
 		Level, ResolutionPct, Bucket);
@@ -607,4 +926,141 @@ void AProjectCompPlayerController::DumpEcon()
 		static_cast<int32>(PS->GetChosenLoomAbility()),
 		PS->HasUsedLoomThisRound() ? 1 : 0,
 		*GrenadeKit);
+}
+
+void AProjectCompPlayerController::PerfCheck()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogProjectComp, Warning, TEXT("[PerfCheck] No world."));
+		return;
+	}
+
+	// ---- Frame timing -----------------------------------------------------
+	// GAverageFPS is smoothed across recent frames; the cycle counters give a
+	// per-thread snapshot of the last completed frame. Derive ms from FPS so
+	// we don't depend on GAverageMS (renamed/removed in some 5.x branches).
+	const float FPS       = GAverageFPS;
+	const float FrameMs   = (FPS > 0.0f) ? (1000.0f / FPS) : 0.0f;
+	const float GameMs    = FPlatformTime::ToMilliseconds(GGameThreadTime);
+	const float RenderMs  = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+	const float GPUMs     = FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles());
+
+	// ---- Draw calls + RHI -------------------------------------------------
+	// GNumDrawCallsRHI accumulates across all viewports for the frame; index 0
+	// is the main viewport.
+	const int32 DrawCalls = GNumDrawCallsRHI[0];
+	const int32 PrimsDrawn = GNumPrimitivesDrawnRHI[0];
+
+	// ---- Scene composition -----------------------------------------------
+	int32 NumActors = 0;
+	int32 NumStaticMeshes = 0;
+	int32 NumSkelMeshes = 0;
+	int32 NumLights = 0;
+	int32 NumPSCs = 0;
+	int32 NaniteEnabledMeshes = 0;
+	int64 TotalStaticTris = 0;
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		++NumActors;
+	}
+	for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+	{
+		if (!It->IsValidLowLevelFast() || It->GetWorld() != World) { continue; }
+		if (!It->IsVisible() || It->IsTemplate()) { continue; }
+		++NumStaticMeshes;
+		if (UStaticMesh* SM = It->GetStaticMesh())
+		{
+			if (SM->IsNaniteEnabled()) { ++NaniteEnabledMeshes; }
+			if (SM->GetRenderData() && SM->GetRenderData()->LODResources.Num() > 0)
+			{
+				TotalStaticTris += SM->GetRenderData()->LODResources[0].GetNumTriangles();
+			}
+		}
+	}
+	for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
+	{
+		if (!It->IsValidLowLevelFast() || It->GetWorld() != World) { continue; }
+		if (!It->IsVisible() || It->IsTemplate()) { continue; }
+		++NumSkelMeshes;
+	}
+	for (TObjectIterator<ULightComponent> It; It; ++It)
+	{
+		if (!It->IsValidLowLevelFast() || It->GetWorld() != World) { continue; }
+		if (It->IsTemplate()) { continue; }
+		++NumLights;
+	}
+	for (TObjectIterator<UParticleSystemComponent> It; It; ++It)
+	{
+		if (!It->IsValidLowLevelFast() || It->GetWorld() != World) { continue; }
+		if (!It->IsActive() || It->IsTemplate()) { continue; }
+		++NumPSCs;
+	}
+
+	// ---- Key rendering CVars (snapshot — confirms current quality level) -
+	auto ReadCVarInt = [](const TCHAR* Name) -> int32
+	{
+		IConsoleVariable* CV = IConsoleManager::Get().FindConsoleVariable(Name);
+		return CV ? CV->GetInt() : -1;
+	};
+	auto ReadCVarFloat = [](const TCHAR* Name) -> float
+	{
+		IConsoleVariable* CV = IConsoleManager::Get().FindConsoleVariable(Name);
+		return CV ? CV->GetFloat() : -1.0f;
+	};
+	const float ScreenPct = ReadCVarFloat(TEXT("r.ScreenPercentage"));
+	const int32 SgShadow  = ReadCVarInt(TEXT("sg.ShadowQuality"));
+	const int32 SgPP      = ReadCVarInt(TEXT("sg.PostProcessQuality"));
+	const int32 SgView    = ReadCVarInt(TEXT("sg.ViewDistanceQuality"));
+	const int32 SgEffects = ReadCVarInt(TEXT("sg.EffectsQuality"));
+	const int32 SgGI      = ReadCVarInt(TEXT("sg.GlobalIlluminationQuality"));
+	const int32 SgRefl    = ReadCVarInt(TEXT("sg.ReflectionQuality"));
+
+	// ---- Format + emit ----------------------------------------------------
+	TArray<FString> Lines;
+	Lines.Add(TEXT("===== PerfCheck ====="));
+	Lines.Add(FString::Printf(TEXT("Frame:  %.2fms (%.1f FPS)   Game:%.2f  Render:%.2f  GPU:%.2f"),
+		FrameMs, FPS, GameMs, RenderMs, GPUMs));
+	Lines.Add(FString::Printf(TEXT("RHI:    %d draws   %d prims drawn"),
+		DrawCalls, PrimsDrawn));
+	Lines.Add(FString::Printf(TEXT("Scene:  %d actors  StaticMC:%d (Nanite:%d, ~%lldk static tris)  SkelMC:%d  Lights:%d  ActivePSC:%d"),
+		NumActors, NumStaticMeshes, NaniteEnabledMeshes, TotalStaticTris / 1000, NumSkelMeshes, NumLights, NumPSCs));
+	Lines.Add(FString::Printf(TEXT("CVars:  r.ScreenPercentage=%.0f  sg(shadow=%d pp=%d view=%d fx=%d gi=%d refl=%d)"),
+		ScreenPct, SgShadow, SgPP, SgView, SgEffects, SgGI, SgRefl));
+
+	// Heuristic verdicts so you don't have to remember the rules of thumb.
+	{
+		FString Verdict;
+		if      (FPS >= 90.f)              { Verdict += TEXT("FPS:OK ");      }
+		else if (FPS >= 60.f)              { Verdict += TEXT("FPS:fine ");    }
+		else if (FPS >= 30.f)              { Verdict += TEXT("FPS:LOW ");     }
+		else                               { Verdict += TEXT("FPS:CRIT ");    }
+
+		if      (DrawCalls < 1500)         { Verdict += TEXT("Draws:OK ");    }
+		else if (DrawCalls < 3000)         { Verdict += TEXT("Draws:high ");  }
+		else                               { Verdict += TEXT("Draws:CRIT ");  }
+
+		// CPU-bound vs GPU-bound hint.
+		const float CpuMs = FMath::Max(GameMs, RenderMs);
+		if      (CpuMs > GPUMs * 1.25f)    { Verdict += TEXT("Bound:CPU ");   }
+		else if (GPUMs > CpuMs * 1.25f)    { Verdict += TEXT("Bound:GPU ");   }
+		else                               { Verdict += TEXT("Bound:bal ");   }
+		Lines.Add(FString::Printf(TEXT("Verdict: %s"), *Verdict));
+	}
+
+	for (const FString& Line : Lines)
+	{
+		UE_LOG(LogProjectComp, Display, TEXT("%s"), *Line);
+	}
+	if (GEngine)
+	{
+		// Stagger keys so the lines stack in order rather than overwrite.
+		int32 Key = 9000;
+		for (const FString& Line : Lines)
+		{
+			GEngine->AddOnScreenDebugMessage(Key++, 12.0f, FColor::Yellow, Line);
+		}
+	}
 }

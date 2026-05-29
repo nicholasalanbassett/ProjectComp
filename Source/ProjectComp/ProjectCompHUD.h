@@ -23,6 +23,11 @@ public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+	/** Accessor for the active HUD widget. PlayerController uses this to route
+	 *  input (e.g. B = toggle buy menu) into widget state. May be null before
+	 *  BeginPlay or after EndPlay. */
+	UProjectCompHUDWidget* GetHUDWidget() const { return HUDWidget; }
+
 protected:
 
 	/** WBP_HUD subclass to spawn. Assigned in BP defaults. */

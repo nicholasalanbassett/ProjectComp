@@ -49,6 +49,19 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	// use, not by upfront wire data. Same info-economy logic as VotedAbility{1,2}.
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, EquippedGrenadeTypes, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, GrenadeCooldownEndTimes, COND_OwnerOnly);
+
+	// Weapon/armour purchases are owner-only — same info-economy reason as
+	// the grenade kit. Public observation is via in-world weapon mesh once
+	// integration with character spawn lands.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, EquippedPrimary,   COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, EquippedSecondary, COND_OwnerOnly);
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, ArmourLevel,       COND_OwnerOnly);
+
+	// Request lists replicate to ALL — teammates need to see + click them in
+	// their HUD teammates column. Small wire cost (a handful of bytes max).
+	DOREPLIFETIME(AProjectCompPlayerState, RequestedWeapons);
+	DOREPLIFETIME(AProjectCompPlayerState, RequestedArmour);
+	DOREPLIFETIME(AProjectCompPlayerState, RequestedGrenades);
 }
 
 void AProjectCompPlayerState::Server_SetTeamID(ETeamID NewTeam)
@@ -303,6 +316,32 @@ bool AProjectCompPlayerState::Server_EquipGrenade(EGrenadeType Type)
 	return true;
 }
 
+bool AProjectCompPlayerState::Server_UnequipGrenade(EGrenadeType Type)
+{
+	if (!ensure(HasAuthority()))
+	{
+		return false;
+	}
+	if (Type == EGrenadeType::None)
+	{
+		return false;
+	}
+	const int32 RemovedCount = EquippedGrenadeTypes.RemoveSingle(Type);
+	if (RemovedCount <= 0)
+	{
+		return false;
+	}
+	// Clear the cooldown for this type so a re-buy in the same window starts
+	// fresh (matters if a refund/re-buy ever happens after a use — currently
+	// can't because buys are gated to PreRound, but kept for safety).
+	const int32 Index = static_cast<int32>(Type);
+	if (GrenadeCooldownEndTimes.IsValidIndex(Index))
+	{
+		GrenadeCooldownEndTimes[Index] = 0.0f;
+	}
+	return true;
+}
+
 void AProjectCompPlayerState::Server_ClearEquippedGrenades()
 {
 	if (!ensure(HasAuthority()))
@@ -329,4 +368,85 @@ void AProjectCompPlayerState::Server_SetGrenadeCooldownEndTime(EGrenadeType Type
 		return;
 	}
 	GrenadeCooldownEndTimes[Index] = NewEndTime;
+}
+
+// =============================================================================
+// Loadout (weapons + armour)
+// =============================================================================
+
+void AProjectCompPlayerState::Server_SetEquippedPrimary(EWeaponClass NewWeapon)
+{
+	if (!ensure(HasAuthority())) { return; }
+	EquippedPrimary = NewWeapon;
+}
+
+void AProjectCompPlayerState::Server_SetEquippedSecondary(EWeaponClass NewWeapon)
+{
+	if (!ensure(HasAuthority())) { return; }
+	EquippedSecondary = NewWeapon;
+}
+
+void AProjectCompPlayerState::Server_SetArmourLevel(EArmourLevel NewLevel)
+{
+	if (!ensure(HasAuthority())) { return; }
+	ArmourLevel = NewLevel;
+}
+
+void AProjectCompPlayerState::Server_ClearLoadout()
+{
+	if (!ensure(HasAuthority())) { return; }
+	EquippedPrimary   = EWeaponClass::None;
+	EquippedSecondary = EWeaponClass::None;
+	ArmourLevel       = EArmourLevel::None;
+	RequestedWeapons.Reset();
+	RequestedArmour.Reset();
+	RequestedGrenades.Reset();
+}
+
+void AProjectCompPlayerState::Server_ToggleWeaponRequest(EWeaponClass Weapon)
+{
+	if (!ensure(HasAuthority())) { return; }
+	if (Weapon == EWeaponClass::None) { return; }
+	if (RequestedWeapons.RemoveSingle(Weapon) == 0)
+	{
+		RequestedWeapons.Add(Weapon);
+	}
+}
+
+void AProjectCompPlayerState::Server_ToggleArmourRequest(EArmourLevel Level)
+{
+	if (!ensure(HasAuthority())) { return; }
+	if (Level == EArmourLevel::None) { return; }
+	if (RequestedArmour.RemoveSingle(Level) == 0)
+	{
+		RequestedArmour.Add(Level);
+	}
+}
+
+void AProjectCompPlayerState::Server_ToggleGrenadeRequest(EGrenadeType Type)
+{
+	if (!ensure(HasAuthority())) { return; }
+	if (Type == EGrenadeType::None) { return; }
+	if (RequestedGrenades.RemoveSingle(Type) == 0)
+	{
+		RequestedGrenades.Add(Type);
+	}
+}
+
+void AProjectCompPlayerState::Server_RemoveWeaponRequest(EWeaponClass Weapon)
+{
+	if (!ensure(HasAuthority())) { return; }
+	RequestedWeapons.RemoveSingle(Weapon);
+}
+
+void AProjectCompPlayerState::Server_RemoveArmourRequest(EArmourLevel Level)
+{
+	if (!ensure(HasAuthority())) { return; }
+	RequestedArmour.RemoveSingle(Level);
+}
+
+void AProjectCompPlayerState::Server_RemoveGrenadeRequest(EGrenadeType Type)
+{
+	if (!ensure(HasAuthority())) { return; }
+	RequestedGrenades.RemoveSingle(Type);
 }

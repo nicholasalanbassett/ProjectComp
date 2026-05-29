@@ -14,17 +14,41 @@ enum class ETeamID : uint8
 	Spectator = 255
 };
 
-/** Round state machine phases. Server-driven, replicated to all clients. */
+/** Round state machine phases. Server-driven, replicated to all clients.
+ *
+ * Match shape: 12 rounds per half × 2 = 24 rounds max. Halftime swap after
+ * round 12. First-to-13 wins (CS-style).
+ *
+ * Phase flow per round:
+ *   [LoomSelection (10s)]  ←-- inserted before rounds 1, 4, 7, 10, 13,
+ *                                16, 19, 22 (rotation: (round-1)%3 == 0
+ *                                AND/OR halftime first-round guarantee).
+ *                                Mouse-locked, no movement, Loom claim only.
+ *   PreRound (30s)         ←-- 10s hover-free buy window for weapons +
+ *                                grenades + armour, then 20s positioning
+ *                                while the barrier holds. Mouse hover-free.
+ *   RoundActive (100s)     ←-- gunplay
+ *   PostRound (5s)         ←-- killfeed/MVP cleanup
+ *
+ * ChosenLoomAbility persists for the 3-round window between LoomSelections;
+ * bHasUsedLoomThisRound still resets every PreRound (1 cast per round). */
 UENUM(BlueprintType)
 enum class ERoundPhase : uint8
 {
 	/** Match has not begun. Initial state. */
 	None,
-	/** Barrier phase: draft voting + loadout selection. No gunplay. */
+	/** 10s mouse-locked Loom draft. Fires before rounds where the rotation
+	 *  rule (round-1)%3 == 0 hits (rounds 1, 4, 7, 10, 13, 16, 19, 22).
+	 *  Player picks ONE EAbilityType; no two teammates share a pick.
+	 *  Inserted between PostRound (prev round) and PreRound (this round). */
+	LoomSelection,
+	/** 30s barrier phase: 10s hover-free buy window for weapons/grenades/
+	 *  armour, then 20s of positioning while the barrier holds. */
 	PreRound,
 	/** Live gunplay phase. Death sends players to ghost spectator. */
 	RoundActive,
-	/** Win condition resolved; killfeed/MVP window. Cleanup before next PreRound. */
+	/** Win condition resolved; killfeed/MVP window. Cleanup before the next
+	 *  LoomSelection (or PreRound, depending on rotation). */
 	PostRound,
 	/** Final round complete; match summary shown. Terminal. */
 	MatchEnded
@@ -41,6 +65,37 @@ enum class EAbilityType : uint8
 	AA, AC, AM,
 	CC, CA, CM,
 	MM, MA, MC
+};
+
+/**
+ * Weapon class identity for the PreRound buy phase. Primary slot accepts Rifle
+ * + SMG; Secondary slot accepts Pistol. The server-side buy RPC validates the
+ * slot/class pairing.
+ *
+ * This is a stub list for the buy-phase UI — actual weapon BP classes are
+ * wired separately via a TMap<EWeaponClass, TSubclassOf<AProjectCompHitscanWeapon>>
+ * on the GameMode (to be added when integrating with character spawn).
+ */
+UENUM(BlueprintType)
+enum class EWeaponClass : uint8
+{
+	None = 0,
+	Pistol,
+	SMG,
+	Rifle,
+	WeaponClass_MAX UMETA(Hidden)
+};
+
+/**
+ * Armour purchase tiers. Persists for one round (resets in PrepareForNewRound).
+ */
+UENUM(BlueprintType)
+enum class EArmourLevel : uint8
+{
+	None = 0,
+	Light,
+	Heavy,
+	ArmourLevel_MAX UMETA(Hidden)
 };
 
 /**

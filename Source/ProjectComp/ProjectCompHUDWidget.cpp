@@ -2,13 +2,17 @@
 
 #include "ProjectCompHUDWidget.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompFulfillButton.h"
+#include "ProjectCompGameMode.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompGameState.h"
+#include "ProjectCompPlayerController.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompBombSite.h"
 #include "EngineUtils.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/Button.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
 #include "Components/HorizontalBox.h"
@@ -390,6 +394,10 @@ void UProjectCompHUDWidget::BuildLayout()
 			CooldownSlot2Text, EquipSlot2Text);
 	}
 
+	// ---- PreRound buy panel (centered overlay) ----------------------------
+	// Built before the FlashOverlay so the overlay still sits above it in Z.
+	BuildBuyPanel(RootCanvas);
+
 	// ---- Flash overlay (full-screen white) ---------------------------------
 	// Added LAST so it sits on top of every other HUD element in Z-order.
 	// HitTestInvisible so clicks/input pass through. Anchored to all four edges
@@ -735,6 +743,7 @@ void UProjectCompHUDWidget::RefreshDisplay()
 
 	RefreshBombStatus();
 	RefreshEquipIndicator();
+	RefreshBuyPanel();
 }
 
 // =====================================================================
@@ -1017,11 +1026,12 @@ FText UProjectCompHUDWidget::FormatPhaseText(ERoundPhase Phase) const
 {
 	switch (Phase)
 	{
-		case ERoundPhase::PreRound:    return NSLOCTEXT("HUD", "PreRound",    "PRE-ROUND");
-		case ERoundPhase::RoundActive: return NSLOCTEXT("HUD", "RoundActive", "LIVE");
-		case ERoundPhase::PostRound:   return NSLOCTEXT("HUD", "PostRound",   "POST-ROUND");
-		case ERoundPhase::MatchEnded:  return NSLOCTEXT("HUD", "MatchEnded",  "MATCH OVER");
-		default:                       return FText::FromString(TEXT("—"));
+		case ERoundPhase::LoomSelection: return NSLOCTEXT("HUD", "LoomSelection", "LOOM SELECTION");
+		case ERoundPhase::PreRound:      return NSLOCTEXT("HUD", "PreRound",      "PRE-ROUND");
+		case ERoundPhase::RoundActive:   return NSLOCTEXT("HUD", "RoundActive",   "LIVE");
+		case ERoundPhase::PostRound:     return NSLOCTEXT("HUD", "PostRound",     "POST-ROUND");
+		case ERoundPhase::MatchEnded:    return NSLOCTEXT("HUD", "MatchEnded",    "MATCH OVER");
+		default:                         return FText::FromString(TEXT("—"));
 	}
 }
 
@@ -1058,4 +1068,695 @@ AProjectCompPlayerState* UProjectCompHUDWidget::GetLocalPlayerState() const
 AProjectCompGameState* UProjectCompHUDWidget::GetTypedGameState() const
 {
 	return GetWorld() ? GetWorld()->GetGameState<AProjectCompGameState>() : nullptr;
+}
+
+// =====================================================================
+// PreRound buy panel — widget tree construction
+// =====================================================================
+
+void UProjectCompHUDWidget::BuildBuyPanel(UCanvasPanel* RootCanvas)
+{
+	if (!RootCanvas || !WidgetTree)
+	{
+		return;
+	}
+
+	// Root VBox anchored to screen center, autosize. Hidden until needed.
+	BuyPanelRoot = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("BuyPanelRoot"));
+	UCanvasPanelSlot* RootSlot = RootCanvas->AddChildToCanvas(BuyPanelRoot);
+	RootSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	RootSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+	RootSlot->SetPosition(FVector2D(0.0f, 0.0f));
+	RootSlot->SetAutoSize(true);
+	BuyPanelRoot->SetVisibility(ESlateVisibility::Collapsed);
+
+	// ---- Header row: credits | phase label | timer -----------------------
+	UHorizontalBox* HeaderRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BuyHeaderRow"));
+	UVerticalBoxSlot* HeaderSlot = BuyPanelRoot->AddChildToVerticalBox(HeaderRow);
+	HeaderSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f));
+	HeaderSlot->SetHorizontalAlignment(HAlign_Center);
+
+	BuyHeaderCredits = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BuyHeaderCredits"));
+	BuyHeaderCredits->SetFont(MakeFont(24));
+	BuyHeaderCredits->SetColorAndOpacity(PrimaryTextColor);
+	BuyHeaderCredits->SetText(FText::FromString(TEXT("$0")));
+	ApplyTextShadow(BuyHeaderCredits);
+	UHorizontalBoxSlot* CreditsSlot = HeaderRow->AddChildToHorizontalBox(BuyHeaderCredits);
+	CreditsSlot->SetPadding(FMargin(20.0f, 0.0f));
+	CreditsSlot->SetVerticalAlignment(VAlign_Center);
+
+	BuyHeaderPhase = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BuyHeaderPhase"));
+	BuyHeaderPhase->SetFont(MakeFont(24));
+	BuyHeaderPhase->SetColorAndOpacity(LabelTextColor);
+	BuyHeaderPhase->SetText(FText::FromString(TEXT("—")));
+	ApplyTextShadow(BuyHeaderPhase);
+	UHorizontalBoxSlot* PhaseSlot = HeaderRow->AddChildToHorizontalBox(BuyHeaderPhase);
+	PhaseSlot->SetPadding(FMargin(20.0f, 0.0f));
+	PhaseSlot->SetVerticalAlignment(VAlign_Center);
+
+	BuyHeaderTimer = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BuyHeaderTimer"));
+	BuyHeaderTimer->SetFont(MakeFont(24));
+	BuyHeaderTimer->SetColorAndOpacity(PrimaryTextColor);
+	BuyHeaderTimer->SetText(FText::FromString(TEXT("0:00")));
+	ApplyTextShadow(BuyHeaderTimer);
+	UHorizontalBoxSlot* TimerSlot = HeaderRow->AddChildToHorizontalBox(BuyHeaderTimer);
+	TimerSlot->SetPadding(FMargin(20.0f, 0.0f));
+	TimerSlot->SetVerticalAlignment(VAlign_Center);
+
+	// ---- 3-column row: Weapons | Grenades | Loom -------------------------
+	UHorizontalBox* ColumnsRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BuyColumnsRow"));
+	UVerticalBoxSlot* ColumnsSlot = BuyPanelRoot->AddChildToVerticalBox(ColumnsRow);
+	ColumnsSlot->SetHorizontalAlignment(HAlign_Center);
+
+	// Helper to build a column with title.
+	auto MakeColumn = [&](const TCHAR* Name, const FString& Title) -> UVerticalBox*
+	{
+		UVerticalBox* Col = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), Name);
+		UHorizontalBoxSlot* ColSlot = ColumnsRow->AddChildToHorizontalBox(Col);
+		ColSlot->SetPadding(FMargin(24.0f, 0.0f));
+		ColSlot->SetVerticalAlignment(VAlign_Top);
+
+		UTextBlock* TitleText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), FName(*(FString(Name) + TEXT("Title"))));
+		TitleText->SetFont(MakeFont(20));
+		TitleText->SetColorAndOpacity(LabelTextColor);
+		TitleText->SetText(FText::FromString(Title));
+		TitleText->SetJustification(ETextJustify::Center);
+		ApplyTextShadow(TitleText);
+		UVerticalBoxSlot* TitleSlot = Col->AddChildToVerticalBox(TitleText);
+		TitleSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f));
+		TitleSlot->SetHorizontalAlignment(HAlign_Center);
+		return Col;
+	};
+
+	BuyWeaponsColumn       = MakeColumn(TEXT("BuyWeaponsColumn"),       TEXT("WEAPONS"));
+	BuyGrenadesColumn      = MakeColumn(TEXT("BuyGrenadesColumn"),      TEXT("GRENADES"));
+	BuyLoomColumn          = MakeColumn(TEXT("BuyLoomColumn"),          TEXT("LOOM"));
+	TeammateLoadoutsColumn = MakeColumn(TEXT("TeammateLoadoutsColumn"), TEXT("TEAMMATES"));
+
+	// Pre-allocate up to 5 teammate rows. Each row is a vertical box holding
+	// a loadout label and a horizontal box for dynamically-spawned fulfill
+	// buttons (rebuilt per tick from each teammate's request lists).
+	TeammateRowContainers.Reserve(5);
+	TeammateLoadoutLabels.Reserve(5);
+	TeammateRequestsBoxes.Reserve(5);
+	for (int32 i = 0; i < 5; ++i)
+	{
+		UVerticalBox* Container = WidgetTree->ConstructWidget<UVerticalBox>(
+			UVerticalBox::StaticClass(),
+			FName(*FString::Printf(TEXT("TeammateRow%d"), i)));
+		UVerticalBoxSlot* ContainerSlot = TeammateLoadoutsColumn->AddChildToVerticalBox(Container);
+		ContainerSlot->SetPadding(FMargin(0.0f, 4.0f));
+		ContainerSlot->SetHorizontalAlignment(HAlign_Left);
+		Container->SetVisibility(ESlateVisibility::Collapsed);
+
+		UTextBlock* Label = WidgetTree->ConstructWidget<UTextBlock>(
+			UTextBlock::StaticClass(),
+			FName(*FString::Printf(TEXT("TeammateLabel%d"), i)));
+		Label->SetFont(MakeFont(14));
+		Label->SetColorAndOpacity(PrimaryTextColor);
+		Label->SetText(FText::FromString(TEXT("")));
+		ApplyTextShadow(Label);
+		Container->AddChildToVerticalBox(Label);
+
+		UHorizontalBox* RequestsRow = WidgetTree->ConstructWidget<UHorizontalBox>(
+			UHorizontalBox::StaticClass(),
+			FName(*FString::Printf(TEXT("TeammateRequests%d"), i)));
+		Container->AddChildToVerticalBox(RequestsRow);
+
+		TeammateRowContainers.Add(Container);
+		TeammateLoadoutLabels.Add(Label);
+		TeammateRequestsBoxes.Add(RequestsRow);
+	}
+
+	// Helper to add a buy button to a column. Returns the constructed button
+	// so the caller can bind the OnClicked delegate.
+	auto AddBuyButton = [&](UVerticalBox* Col, const TCHAR* WidgetName, const FString& Label) -> UButton*
+	{
+		UButton* Btn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), WidgetName);
+		UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),
+			FName(*(FString(WidgetName) + TEXT("_Txt"))));
+		T->SetText(FText::FromString(Label));
+		T->SetFont(MakeFont(14));
+		T->SetColorAndOpacity(PrimaryTextColor);
+		T->SetJustification(ETextJustify::Center);
+		Btn->AddChild(T);
+		UVerticalBoxSlot* BtnSlot = Col->AddChildToVerticalBox(Btn);
+		BtnSlot->SetPadding(FMargin(0.0f, 3.0f));
+		BtnSlot->SetHorizontalAlignment(HAlign_Fill);
+		return Btn;
+	};
+
+	// Helper for subsection titles within a column (e.g. "Primary", "Secondary").
+	auto AddSubTitle = [&](UVerticalBox* Col, const FString& Text)
+	{
+		UTextBlock* Sub = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+		Sub->SetFont(MakeFont(14));
+		Sub->SetColorAndOpacity(LabelTextColor);
+		Sub->SetText(FText::FromString(Text));
+		ApplyTextShadow(Sub);
+		UVerticalBoxSlot* S = Col->AddChildToVerticalBox(Sub);
+		S->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 2.0f));
+		S->SetHorizontalAlignment(HAlign_Left);
+	};
+
+	// ---- Weapons column: Primary | Secondary | Armour -------------------
+	AddSubTitle(BuyWeaponsColumn, TEXT("Primary"));
+	BtnBuySMG   = AddBuyButton(BuyWeaponsColumn, TEXT("BtnBuySMG"),   TEXT("SMG     $1200"));
+	BtnBuyRifle = AddBuyButton(BuyWeaponsColumn, TEXT("BtnBuyRifle"), TEXT("RIFLE   $2700"));
+
+	AddSubTitle(BuyWeaponsColumn, TEXT("Secondary"));
+	BtnBuyPistol = AddBuyButton(BuyWeaponsColumn, TEXT("BtnBuyPistol"), TEXT("PISTOL  $250"));
+
+	AddSubTitle(BuyWeaponsColumn, TEXT("Armour"));
+	BtnBuyArmourLight = AddBuyButton(BuyWeaponsColumn, TEXT("BtnBuyArmourLight"), TEXT("LIGHT   $650"));
+	BtnBuyArmourHeavy = AddBuyButton(BuyWeaponsColumn, TEXT("BtnBuyArmourHeavy"), TEXT("HEAVY   $1000"));
+
+	BtnBuyPistol->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyPistol);
+	BtnBuySMG->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuySMG);
+	BtnBuyRifle->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyRifle);
+	BtnBuyArmourLight->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyArmourLight);
+	BtnBuyArmourHeavy->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyArmourHeavy);
+
+	// ---- Grenades column: 4 grenade types -------------------------------
+	BtnBuyFlash = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyFlash"), TEXT("FLASH   $300"));
+	BtnBuyInfo  = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyInfo"),  TEXT("INFO    $300"));
+	BtnBuyVuln  = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyVuln"),  TEXT("VULN    $300"));
+	BtnBuySound = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuySound"), TEXT("SOUND   $300"));
+
+	BtnBuyFlash->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyFlash);
+	BtnBuyInfo->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyInfo);
+	BtnBuyVuln->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyVuln);
+	BtnBuySound->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuySound);
+
+	// ---- Loom column: 9-cell ability matrix laid out as a single horizontal
+	// row of buttons (instead of a tall vertical list — looks cleaner with
+	// short 2-letter labels). Row sits beneath the column title inside the
+	// BuyLoomColumn VBox.
+	UHorizontalBox* LoomButtonsRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("LoomButtonsRow"));
+	UVerticalBoxSlot* LoomRowSlot = BuyLoomColumn->AddChildToVerticalBox(LoomButtonsRow);
+	LoomRowSlot->SetHorizontalAlignment(HAlign_Center);
+	LoomRowSlot->SetPadding(FMargin(0.0f, 4.0f));
+
+	auto AddLoomButton = [&](const TCHAR* WidgetName, const FString& Label) -> UButton*
+	{
+		UButton* Btn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), WidgetName);
+		UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),
+			FName(*(FString(WidgetName) + TEXT("_Txt"))));
+		T->SetText(FText::FromString(Label));
+		T->SetFont(MakeFont(14));
+		T->SetColorAndOpacity(PrimaryTextColor);
+		T->SetJustification(ETextJustify::Center);
+		Btn->AddChild(T);
+		UHorizontalBoxSlot* BtnSlot = LoomButtonsRow->AddChildToHorizontalBox(Btn);
+		BtnSlot->SetPadding(FMargin(3.0f, 0.0f));
+		BtnSlot->SetVerticalAlignment(VAlign_Fill);
+		return Btn;
+	};
+
+	BtnClaimAA = AddLoomButton(TEXT("BtnClaimAA"), TEXT("AA"));
+	BtnClaimAC = AddLoomButton(TEXT("BtnClaimAC"), TEXT("AC"));
+	BtnClaimAM = AddLoomButton(TEXT("BtnClaimAM"), TEXT("AM"));
+	BtnClaimCC = AddLoomButton(TEXT("BtnClaimCC"), TEXT("CC"));
+	BtnClaimCA = AddLoomButton(TEXT("BtnClaimCA"), TEXT("CA"));
+	BtnClaimCM = AddLoomButton(TEXT("BtnClaimCM"), TEXT("CM"));
+	BtnClaimMM = AddLoomButton(TEXT("BtnClaimMM"), TEXT("MM"));
+	BtnClaimMA = AddLoomButton(TEXT("BtnClaimMA"), TEXT("MA"));
+	BtnClaimMC = AddLoomButton(TEXT("BtnClaimMC"), TEXT("MC"));
+
+	BtnClaimAA->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimAA);
+	BtnClaimAC->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimAC);
+	BtnClaimAM->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimAM);
+	BtnClaimCC->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimCC);
+	BtnClaimCA->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimCA);
+	BtnClaimCM->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimCM);
+	BtnClaimMM->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimMM);
+	BtnClaimMA->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimMA);
+	BtnClaimMC->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickClaimMC);
+}
+
+// ---- Helpers shared by RefreshBuyPanel ------------------------------
+
+namespace
+{
+	/** Tint applied to a Loom button whose ability has already been claimed by
+	 *  ANY teammate (including the local player). Brighter than the default
+	 *  button tint, so the claimed buttons clearly pop. */
+	const FLinearColor LoomClaimedTint   = FLinearColor(2.4f, 2.4f, 2.4f, 1.0f);
+	const FLinearColor LoomUnclaimedTint = FLinearColor(0.55f, 0.55f, 0.55f, 1.0f);
+
+	/** Walk the local player's team, calling Visitor(PS) for each member
+	 *  (including self). Spectators skipped. */
+	template <typename FnT>
+	void ForEachTeammate(const UWorld* World, ETeamID Team, FnT&& Visitor)
+	{
+		if (!World || Team == ETeamID::Spectator) { return; }
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			const APlayerController* PC = It->Get();
+			if (!PC) { continue; }
+			const AProjectCompPlayerState* TPS = PC->GetPlayerState<AProjectCompPlayerState>();
+			if (!TPS || TPS->GetTeamID() != Team) { continue; }
+			Visitor(TPS);
+		}
+	}
+
+	/** Update a button's child text in place — assumes the button's first
+	 *  child is the UTextBlock label. */
+	void SetButtonLabel(UButton* Btn, const FString& Label)
+	{
+		if (!Btn || Btn->GetChildrenCount() == 0) { return; }
+		if (UTextBlock* T = Cast<UTextBlock>(Btn->GetChildAt(0)))
+		{
+			T->SetText(FText::FromString(Label));
+		}
+	}
+
+	/** Build a string of N bullet characters. */
+	FString BuildDots(int32 N)
+	{
+		if (N <= 0) { return FString(); }
+		FString Out;
+		Out.Reserve(N * 2);
+		for (int32 i = 0; i < N; ++i)
+		{
+			if (i > 0) { Out.AppendChar(TEXT(' ')); }
+			Out.AppendChar(TEXT('\x2022'));  // U+2022 BULLET •
+		}
+		return Out;
+	}
+
+	/** Append " <dots>" to the base label if Count > 0. */
+	FString WithDots(const FString& BaseLabel, int32 Count)
+	{
+		if (Count <= 0) { return BaseLabel; }
+		return FString::Printf(TEXT("%s   %s"), *BaseLabel, *BuildDots(Count));
+	}
+
+	/** Short weapon abbreviation for the teammates column. */
+	const TCHAR* WeaponAbbrev(EWeaponClass W)
+	{
+		switch (W)
+		{
+		case EWeaponClass::Pistol: return TEXT("PIS");
+		case EWeaponClass::SMG:    return TEXT("SMG");
+		case EWeaponClass::Rifle:  return TEXT("RIF");
+		default:                   return TEXT("—");
+		}
+	}
+
+	const TCHAR* ArmourAbbrev(EArmourLevel A)
+	{
+		switch (A)
+		{
+		case EArmourLevel::Light: return TEXT("LA");
+		case EArmourLevel::Heavy: return TEXT("HA");
+		default:                  return TEXT("—");
+		}
+	}
+
+	TCHAR GrenadeLetter(EGrenadeType G)
+	{
+		switch (G)
+		{
+		case EGrenadeType::Flash:      return TEXT('F');
+		case EGrenadeType::Info:       return TEXT('I');
+		case EGrenadeType::Vulnerable: return TEXT('V');
+		case EGrenadeType::Sound:      return TEXT('S');
+		default:                       return TEXT('?');
+		}
+	}
+}
+
+void UProjectCompHUDWidget::RefreshBuyPanel()
+{
+	if (!BuyPanelRoot)
+	{
+		return;
+	}
+
+	RefreshBuyPanelVisibility();
+
+	const AProjectCompPlayerState* LocalPS = GetLocalPlayerState();
+	const AProjectCompGameState*   GS      = GetTypedGameState();
+	UWorld* World = GetWorld();
+	if (!LocalPS || !GS || !World)
+	{
+		return;
+	}
+
+	if (BuyHeaderCredits)
+	{
+		BuyHeaderCredits->SetText(FText::FromString(FString::Printf(TEXT("$%d"), LocalPS->GetCurrentCredits())));
+	}
+	if (BuyHeaderTimer)
+	{
+		BuyHeaderTimer->SetText(FormatTimeText(GS->GetPhaseTimeRemaining()));
+	}
+	if (BuyHeaderPhase)
+	{
+		BuyHeaderPhase->SetText(FormatPhaseText(GS->GetCurrentPhase()));
+	}
+
+	const ETeamID LocalTeam = LocalPS->GetTeamID();
+	if (LocalTeam == ETeamID::Spectator)
+	{
+		return;
+	}
+
+	// ---- Tally team-wide ownership in a single walk ---------------------
+	// One walk through teammates collects every count we need: per-loom-ability
+	// claim flag, per-weapon-class count, per-armour-level count, per-grenade-
+	// type count. Avoids re-iterating once per button.
+
+	bool LoomClaimed[static_cast<int32>(EAbilityType::MC) + 1] = {};
+	int32 PistolCount = 0, SMGCount = 0, RifleCount = 0;
+	int32 LightArmCount = 0, HeavyArmCount = 0;
+	int32 FlashCount = 0, InfoCount = 0, VulnCount = 0, SoundCount = 0;
+
+	struct FTeammateSnapshot
+	{
+		const AProjectCompPlayerState* PS;
+	};
+	TArray<FTeammateSnapshot, TInlineAllocator<5>> Teammates;
+
+	ForEachTeammate(World, LocalTeam, [&](const AProjectCompPlayerState* TPS)
+	{
+		Teammates.Add({TPS});
+
+		const EAbilityType Loom = TPS->GetChosenLoomAbility();
+		if (Loom != EAbilityType::None)
+		{
+			LoomClaimed[static_cast<int32>(Loom)] = true;
+		}
+
+		switch (TPS->GetEquippedPrimary())
+		{
+		case EWeaponClass::SMG:   ++SMGCount;   break;
+		case EWeaponClass::Rifle: ++RifleCount; break;
+		default: break;
+		}
+		if (TPS->GetEquippedSecondary() == EWeaponClass::Pistol) { ++PistolCount; }
+		switch (TPS->GetArmourLevel())
+		{
+		case EArmourLevel::Light: ++LightArmCount; break;
+		case EArmourLevel::Heavy: ++HeavyArmCount; break;
+		default: break;
+		}
+		for (EGrenadeType G : TPS->GetEquippedGrenadeTypes())
+		{
+			switch (G)
+			{
+			case EGrenadeType::Flash:      ++FlashCount; break;
+			case EGrenadeType::Info:       ++InfoCount;  break;
+			case EGrenadeType::Vulnerable: ++VulnCount;  break;
+			case EGrenadeType::Sound:      ++SoundCount; break;
+			default: break;
+			}
+		}
+	});
+
+	// ---- Loom highlights -------------------------------------------------
+	auto ApplyLoomTint = [](UButton* Btn, bool bClaimed)
+	{
+		if (Btn)
+		{
+			Btn->SetColorAndOpacity(bClaimed ? LoomClaimedTint : LoomUnclaimedTint);
+		}
+	};
+	ApplyLoomTint(BtnClaimAA, LoomClaimed[static_cast<int32>(EAbilityType::AA)]);
+	ApplyLoomTint(BtnClaimAC, LoomClaimed[static_cast<int32>(EAbilityType::AC)]);
+	ApplyLoomTint(BtnClaimAM, LoomClaimed[static_cast<int32>(EAbilityType::AM)]);
+	ApplyLoomTint(BtnClaimCC, LoomClaimed[static_cast<int32>(EAbilityType::CC)]);
+	ApplyLoomTint(BtnClaimCA, LoomClaimed[static_cast<int32>(EAbilityType::CA)]);
+	ApplyLoomTint(BtnClaimCM, LoomClaimed[static_cast<int32>(EAbilityType::CM)]);
+	ApplyLoomTint(BtnClaimMM, LoomClaimed[static_cast<int32>(EAbilityType::MM)]);
+	ApplyLoomTint(BtnClaimMA, LoomClaimed[static_cast<int32>(EAbilityType::MA)]);
+	ApplyLoomTint(BtnClaimMC, LoomClaimed[static_cast<int32>(EAbilityType::MC)]);
+
+	// ---- Buy-button labels with teammate ownership dots ------------------
+	SetButtonLabel(BtnBuyPistol,       WithDots(TEXT("PISTOL  $250"),    PistolCount));
+	SetButtonLabel(BtnBuySMG,          WithDots(TEXT("SMG     $1200"),   SMGCount));
+	SetButtonLabel(BtnBuyRifle,        WithDots(TEXT("RIFLE   $2700"),   RifleCount));
+	SetButtonLabel(BtnBuyArmourLight,  WithDots(TEXT("LIGHT   $650"),    LightArmCount));
+	SetButtonLabel(BtnBuyArmourHeavy,  WithDots(TEXT("HEAVY   $1000"),   HeavyArmCount));
+	SetButtonLabel(BtnBuyFlash,        WithDots(TEXT("FLASH   $300"),    FlashCount));
+	SetButtonLabel(BtnBuyInfo,         WithDots(TEXT("INFO    $300"),    InfoCount));
+	SetButtonLabel(BtnBuyVuln,         WithDots(TEXT("VULN    $300"),    VulnCount));
+	SetButtonLabel(BtnBuySound,        WithDots(TEXT("SOUND   $300"),    SoundCount));
+
+	// ---- Teammate loadout rows ------------------------------------------
+	// Helpers — build a fulfill button for one requested item and add it to
+	// the supplied requests row.
+	auto AddFulfillButton = [&](UHorizontalBox* Row, const AProjectCompPlayerState* RequesterPS,
+	                            EFulfillItemKind Kind, uint8 ItemId, const FString& Label)
+	{
+		if (!Row || !RequesterPS) { return; }
+		APlayerController* RequesterPC = Cast<APlayerController>(RequesterPS->GetOwner());
+		if (!RequesterPC) { return; }
+
+		UProjectCompFulfillButton* Btn = WidgetTree->ConstructWidget<UProjectCompFulfillButton>(
+			UProjectCompFulfillButton::StaticClass());
+		Btn->RequesterPC = RequesterPC;
+		Btn->Kind        = Kind;
+		Btn->ItemId      = ItemId;
+
+		UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+		T->SetText(FText::FromString(Label));
+		T->SetFont(MakeFont(12));
+		T->SetColorAndOpacity(PrimaryTextColor);
+		T->SetJustification(ETextJustify::Center);
+		Btn->AddChild(T);
+
+		Btn->OnFulfillClicked.AddDynamic(this, &UProjectCompHUDWidget::OnFulfillRequestClicked);
+
+		UHorizontalBoxSlot* S = Row->AddChildToHorizontalBox(Btn);
+		S->SetPadding(FMargin(2.0f, 0.0f));
+		S->SetVerticalAlignment(VAlign_Center);
+	};
+
+	for (int32 i = 0; i < TeammateRowContainers.Num(); ++i)
+	{
+		UVerticalBox* Container  = TeammateRowContainers[i];
+		UTextBlock*   Label      = TeammateLoadoutLabels.IsValidIndex(i) ? TeammateLoadoutLabels[i].Get()   : nullptr;
+		UHorizontalBox* RowReqs  = TeammateRequestsBoxes.IsValidIndex(i) ? TeammateRequestsBoxes[i].Get()   : nullptr;
+		if (!Container || !Label || !RowReqs) { continue; }
+
+		if (!Teammates.IsValidIndex(i))
+		{
+			Container->SetVisibility(ESlateVisibility::Collapsed);
+			continue;
+		}
+		const AProjectCompPlayerState* TPS = Teammates[i].PS;
+		if (!TPS)
+		{
+			Container->SetVisibility(ESlateVisibility::Collapsed);
+			continue;
+		}
+
+		// Loadout label.
+		FString GrenadeStr;
+		for (EGrenadeType G : TPS->GetEquippedGrenadeTypes())
+		{
+			if (!GrenadeStr.IsEmpty()) { GrenadeStr.AppendChar(TEXT(' ')); }
+			GrenadeStr.AppendChar(GrenadeLetter(G));
+		}
+		if (GrenadeStr.IsEmpty()) { GrenadeStr = TEXT("—"); }
+		Label->SetText(FText::FromString(FString::Printf(
+			TEXT("%s: %s | %s | %s | %s"),
+			*TPS->GetPlayerName(),
+			WeaponAbbrev(TPS->GetEquippedPrimary()),
+			WeaponAbbrev(TPS->GetEquippedSecondary()),
+			ArmourAbbrev(TPS->GetArmourLevel()),
+			*GrenadeStr)));
+
+		// Rebuild request buttons. Per-tick clear + rebuild — small N so OK.
+		// The old widgets become unreferenced and will be GC'd.
+		RowReqs->ClearChildren();
+		for (EWeaponClass W : TPS->GetRequestedWeapons())
+		{
+			AddFulfillButton(RowReqs, TPS, EFulfillItemKind::Weapon, static_cast<uint8>(W),
+				FString::Printf(TEXT("→ %s"), WeaponAbbrev(W)));
+		}
+		for (EArmourLevel A : TPS->GetRequestedArmour())
+		{
+			AddFulfillButton(RowReqs, TPS, EFulfillItemKind::Armour, static_cast<uint8>(A),
+				FString::Printf(TEXT("→ %s"), ArmourAbbrev(A)));
+		}
+		for (EGrenadeType G : TPS->GetRequestedGrenades())
+		{
+			AddFulfillButton(RowReqs, TPS, EFulfillItemKind::Grenade, static_cast<uint8>(G),
+				FString::Printf(TEXT("→ %c"), GrenadeLetter(G)));
+		}
+
+		Container->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+}
+
+void UProjectCompHUDWidget::RefreshBuyPanelVisibility()
+{
+	if (!BuyPanelRoot)
+	{
+		return;
+	}
+
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		BuyPanelRoot->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	const ERoundPhase Phase   = GS->GetCurrentPhase();
+	const bool bWindowOpen    = GS->IsSelectionWindowOpen();
+	const bool bIsLoom        = (Phase == ERoundPhase::LoomSelection);
+	const bool bIsPreRoundBuy = (Phase == ERoundPhase::PreRound && bWindowOpen);
+
+	// Auto-close the buy menu on every fresh entry into PreRound so each round
+	// starts unopened (the player has to press B to open it).
+	if (Phase == ERoundPhase::PreRound && LastVisibilityPhase != ERoundPhase::PreRound)
+	{
+		bBuyMenuOpen = false;
+	}
+	LastVisibilityPhase = Phase;
+
+	// LoomSelection is mandatory (mouse-locked) → ignore the toggle. PreRound
+	// buy is opt-in via B → only show while bBuyMenuOpen.
+	const bool bShowBuyContent = bIsPreRoundBuy && bBuyMenuOpen;
+
+	if (!bIsLoom && !bShowBuyContent)
+	{
+		BuyPanelRoot->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+	BuyPanelRoot->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+
+	// LoomSelection: only the Loom column. PreRound buy: Weapons + Grenades + Teammates.
+	if (BuyWeaponsColumn)
+	{
+		BuyWeaponsColumn->SetVisibility(bShowBuyContent ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+	if (BuyGrenadesColumn)
+	{
+		BuyGrenadesColumn->SetVisibility(bShowBuyContent ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+	if (BuyLoomColumn)
+	{
+		BuyLoomColumn->SetVisibility(bIsLoom ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+	if (TeammateLoadoutsColumn)
+	{
+		TeammateLoadoutsColumn->SetVisibility(bShowBuyContent ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+}
+
+// =====================================================================
+// Buy / Claim click handlers — each forwards to the PlayerController
+// =====================================================================
+
+namespace
+{
+	AProjectCompPlayerController* GetTypedPC(UUserWidget* W)
+	{
+		return W ? Cast<AProjectCompPlayerController>(W->GetOwningPlayer()) : nullptr;
+	}
+}
+
+void UProjectCompHUDWidget::OnClickBuyPistol()       { if (auto* PC = GetTypedPC(this)) PC->BuyWeapon(EWeaponClass::Pistol); }
+void UProjectCompHUDWidget::OnClickBuySMG()          { if (auto* PC = GetTypedPC(this)) PC->BuyWeapon(EWeaponClass::SMG); }
+void UProjectCompHUDWidget::OnClickBuyRifle()        { if (auto* PC = GetTypedPC(this)) PC->BuyWeapon(EWeaponClass::Rifle); }
+void UProjectCompHUDWidget::OnClickBuyArmourLight()  { if (auto* PC = GetTypedPC(this)) PC->BuyArmour(EArmourLevel::Light); }
+void UProjectCompHUDWidget::OnClickBuyArmourHeavy()  { if (auto* PC = GetTypedPC(this)) PC->BuyArmour(EArmourLevel::Heavy); }
+void UProjectCompHUDWidget::OnClickBuyFlash()        { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Flash); }
+void UProjectCompHUDWidget::OnClickBuyInfo()         { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Info); }
+void UProjectCompHUDWidget::OnClickBuyVuln()         { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Vulnerable); }
+void UProjectCompHUDWidget::OnClickBuySound()        { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Sound); }
+
+void UProjectCompHUDWidget::OnClickClaimAA() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::AA); }
+void UProjectCompHUDWidget::OnClickClaimAC() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::AC); }
+void UProjectCompHUDWidget::OnClickClaimAM() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::AM); }
+void UProjectCompHUDWidget::OnClickClaimCC() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::CC); }
+void UProjectCompHUDWidget::OnClickClaimCA() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::CA); }
+void UProjectCompHUDWidget::OnClickClaimCM() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::CM); }
+void UProjectCompHUDWidget::OnClickClaimMM() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::MM); }
+void UProjectCompHUDWidget::OnClickClaimMA() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::MA); }
+void UProjectCompHUDWidget::OnClickClaimMC() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::MC); }
+
+// =====================================================================
+// Right-click on buy buttons → Request that the team buy this for me.
+// SButton consumes left-clicks; we listen at the preview phase so the
+// right-click reaches us even though the button child is hit-test target.
+// =====================================================================
+
+FReply UProjectCompHUDWidget::NativeOnPreviewMouseButtonDown(const FGeometry& InGeometry,
+                                                             const FPointerEvent& InMouseEvent)
+{
+	if (InMouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+	{
+		if (UButton* Btn = FindBuyButtonUnderCursor(InMouseEvent.GetScreenSpacePosition()))
+		{
+			DispatchRightClickRequest(Btn);
+			return FReply::Handled();
+		}
+	}
+	return Super::NativeOnPreviewMouseButtonDown(InGeometry, InMouseEvent);
+}
+
+UButton* UProjectCompHUDWidget::FindBuyButtonUnderCursor(const FVector2D& ScreenPos) const
+{
+	// Only buy/armour/grenade buttons participate — Loom claim is left-click only.
+	UButton* const Candidates[] = {
+		BtnBuyPistol, BtnBuySMG, BtnBuyRifle,
+		BtnBuyArmourLight, BtnBuyArmourHeavy,
+		BtnBuyFlash, BtnBuyInfo, BtnBuyVuln, BtnBuySound,
+	};
+	for (UButton* B : Candidates)
+	{
+		if (!B || !B->IsVisible()) { continue; }
+		const FGeometry& G = B->GetCachedGeometry();
+		if (G.GetLocalSize().IsNearlyZero()) { continue; }
+		if (G.IsUnderLocation(ScreenPos))
+		{
+			return B;
+		}
+	}
+	return nullptr;
+}
+
+void UProjectCompHUDWidget::DispatchRightClickRequest(UButton* Btn)
+{
+	AProjectCompPlayerController* PC = GetTypedPC(this);
+	if (!PC || !Btn) { return; }
+
+	if      (Btn == BtnBuyPistol)        { PC->RequestWeapon(EWeaponClass::Pistol); }
+	else if (Btn == BtnBuySMG)           { PC->RequestWeapon(EWeaponClass::SMG); }
+	else if (Btn == BtnBuyRifle)         { PC->RequestWeapon(EWeaponClass::Rifle); }
+	else if (Btn == BtnBuyArmourLight)   { PC->RequestArmour(EArmourLevel::Light); }
+	else if (Btn == BtnBuyArmourHeavy)   { PC->RequestArmour(EArmourLevel::Heavy); }
+	else if (Btn == BtnBuyFlash)         { PC->RequestGrenade(EGrenadeType::Flash); }
+	else if (Btn == BtnBuyInfo)          { PC->RequestGrenade(EGrenadeType::Info); }
+	else if (Btn == BtnBuyVuln)          { PC->RequestGrenade(EGrenadeType::Vulnerable); }
+	else if (Btn == BtnBuySound)         { PC->RequestGrenade(EGrenadeType::Sound); }
+}
+
+void UProjectCompHUDWidget::OnFulfillRequestClicked(UProjectCompFulfillButton* Button)
+{
+	if (!Button || !Button->RequesterPC.IsValid()) { return; }
+	AProjectCompPlayerController* PC = GetTypedPC(this);
+	if (!PC) { return; }
+
+	APlayerController* RequesterPC = Button->RequesterPC.Get();
+	switch (Button->Kind)
+	{
+	case EFulfillItemKind::Weapon:
+		PC->FulfillWeaponRequest(RequesterPC, static_cast<EWeaponClass>(Button->ItemId));
+		break;
+	case EFulfillItemKind::Armour:
+		PC->FulfillArmourRequest(RequesterPC, static_cast<EArmourLevel>(Button->ItemId));
+		break;
+	case EFulfillItemKind::Grenade:
+		PC->FulfillGrenadeRequest(RequesterPC, static_cast<EGrenadeType>(Button->ItemId));
+		break;
+	default:
+		break;
+	}
 }

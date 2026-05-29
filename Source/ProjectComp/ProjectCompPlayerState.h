@@ -95,6 +95,30 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player|Grenade")
 	bool IsGrenadeOnCooldown(EGrenadeType Type) const;
 
+	// ---- Loadout accessors ---------------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	EWeaponClass GetEquippedPrimary() const { return EquippedPrimary; }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	EWeaponClass GetEquippedSecondary() const { return EquippedSecondary; }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	EArmourLevel GetArmourLevel() const { return ArmourLevel; }
+
+	const TArray<EWeaponClass>& GetRequestedWeapons()  const { return RequestedWeapons; }
+	const TArray<EArmourLevel>& GetRequestedArmour()   const { return RequestedArmour; }
+	const TArray<EGrenadeType>& GetRequestedGrenades() const { return RequestedGrenades; }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	bool IsRequestingWeapon(EWeaponClass Weapon) const { return RequestedWeapons.Contains(Weapon); }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	bool IsRequestingArmour(EArmourLevel Level) const { return RequestedArmour.Contains(Level); }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Loadout")
+	bool IsRequestingGrenade(EGrenadeType Type) const { return RequestedGrenades.Contains(Type); }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	/** Server: assign this player to a team. */
@@ -160,12 +184,46 @@ public:
 	 *  Returns true on success. Does NOT charge credits — GameMode handles purchasing. */
 	bool Server_EquipGrenade(EGrenadeType Type);
 
+	/** Server: remove a specific grenade type from the equipped kit and clear
+	 *  its cooldown end-time. Used by the buy-phase refund path. Returns true
+	 *  if the type was equipped and got removed. */
+	bool Server_UnequipGrenade(EGrenadeType Type);
+
 	/** Server: remove all equipped grenade types and reset all cooldown end-times.
 	 *  Called at PreRound start to clear last round's loadout. */
 	void Server_ClearEquippedGrenades();
 
 	/** Server: set the absolute server-time at which the given grenade's cooldown expires. */
 	void Server_SetGrenadeCooldownEndTime(EGrenadeType Type, float NewEndTime);
+
+	// ---- Server: Loadout (weapons + armour) ------------------------------
+
+	/** Server: set the primary weapon slot. */
+	void Server_SetEquippedPrimary(EWeaponClass NewWeapon);
+
+	/** Server: set the secondary weapon slot. */
+	void Server_SetEquippedSecondary(EWeaponClass NewWeapon);
+
+	/** Server: set the armour level. */
+	void Server_SetArmourLevel(EArmourLevel NewLevel);
+
+	/** Server: clear all loadout state (weapons + armour + requests) — called
+	 *  at PreRound start to reset purchases each round. */
+	void Server_ClearLoadout();
+
+	/** Server: toggle a weapon in the requests list (adds if not present,
+	 *  removes if already there). */
+	void Server_ToggleWeaponRequest(EWeaponClass Weapon);
+
+	void Server_ToggleArmourRequest(EArmourLevel Level);
+
+	void Server_ToggleGrenadeRequest(EGrenadeType Type);
+
+	/** Server: remove a specific request (called when item is bought or
+	 *  fulfilled — no longer needed in the request list). */
+	void Server_RemoveWeaponRequest(EWeaponClass Weapon);
+	void Server_RemoveArmourRequest(EArmourLevel Level);
+	void Server_RemoveGrenadeRequest(EGrenadeType Type);
 
 protected:
 
@@ -244,4 +302,32 @@ protected:
 	 *  0.0 = ready (or grenade not equipped). */
 	UPROPERTY(Replicated)
 	TArray<float> GrenadeCooldownEndTimes;
+
+	// ---- Weapons + armour (purchased each PreRound; reset by PrepareForNewRound) ----
+
+	/** Primary weapon slot — rifle or SMG. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	EWeaponClass EquippedPrimary = EWeaponClass::None;
+
+	/** Secondary weapon slot — pistol. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	EWeaponClass EquippedSecondary = EWeaponClass::None;
+
+	/** Armour level. None / Light / Heavy. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	EArmourLevel ArmourLevel = EArmourLevel::None;
+
+	// ---- Buy-phase requests (right-click on the buy panel adds; teammate
+	// fulfillment in the teammates HUD column removes). Replicated to ALL so
+	// every teammate can see + fulfill. Cleared at PreRound start and when
+	// the item gets purchased / fulfilled. ----
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	TArray<EWeaponClass> RequestedWeapons;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	TArray<EArmourLevel> RequestedArmour;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player|Loadout")
+	TArray<EGrenadeType> RequestedGrenades;
 };

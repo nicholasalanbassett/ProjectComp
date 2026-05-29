@@ -50,12 +50,20 @@ void AProjectCompGameMode::StartPlay()
 	// path. Characters register from their server-side BeginPlay.
 	LiveCharacters.Reserve(16);
 
-	// Begin the match at round 1 with a PreRound phase.
+	// Begin the match at round 1. Round 1 always opens with LoomSelection per
+	// the rotation rule, so this routes there instead of straight to PreRound.
 	if (AProjectCompGameState* GS = GetTypedGameState())
 	{
 		GS->Server_SetRound(1);
 	}
-	StartPreRound();
+	if (ShouldRunLoomSelectionForRound(1))
+	{
+		StartLoomSelection();
+	}
+	else
+	{
+		StartPreRound();
+	}
 }
 
 void AProjectCompGameMode::Tick(float DeltaSeconds)
@@ -125,7 +133,8 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	{
 		switch (GS->GetCurrentPhase())
 		{
-			case ERoundPhase::PreRound:    StartRoundActive(); break;
+			case ERoundPhase::LoomSelection: StartPreRound(); break;
+			case ERoundPhase::PreRound:      StartRoundActive(); break;
 			case ERoundPhase::RoundActive:
 				if (IsAnyBombPlanted())
 				{
@@ -158,8 +167,17 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 					{
 						Server_SwapAllPlayerTeams();
 					}
-					GS->Server_SetRound(GS->GetCurrentRound() + 1);
-					StartPreRound();
+					const int32 NextRound = GS->GetCurrentRound() + 1;
+					GS->Server_SetRound(NextRound);
+					// Route to LoomSelection on rotation rounds, PreRound otherwise.
+					if (ShouldRunLoomSelectionForRound(NextRound))
+					{
+						StartLoomSelection();
+					}
+					else
+					{
+						StartPreRound();
+					}
 				}
 				break;
 			}
@@ -397,7 +415,26 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 // Phase transitions
 // =====================================================================
 
-void AProjectCompGameMode::StartPreRound()
+bool AProjectCompGameMode::ShouldRunLoomSelectionForRound(int32 Round) const
+{
+	if (Round < 1)
+	{
+		return false;
+	}
+	// Halftime guarantee: first round of half 2 always opens with LoomSelection
+	// so post-swap players get a fresh pick window even if the rotation math
+	// wouldn't naturally place a selection there. For the default 12-round-
+	// half config this coincides with the rotation rule anyway, but it's
+	// explicit safety if HalftimeRoundNumber is later retuned.
+	if (HalftimeRoundNumber > 0 && Round == HalftimeRoundNumber + 1)
+	{
+		return true;
+	}
+	// Rotation: every 3 rounds starting from round 1 (rounds 1, 4, 7, 10, 13...).
+	return (Round - 1) % 3 == 0;
+}
+
+void AProjectCompGameMode::PrepareForNewRound()
 {
 	AProjectCompGameState* GS = GetTypedGameState();
 	if (!GS)
@@ -405,10 +442,18 @@ void AProjectCompGameMode::StartPreRound()
 		return;
 	}
 
-	GS->Server_SetPhase(ERoundPhase::PreRound);
-	SetPhaseTimer(PreRoundDuration);
+	// Idempotency guard. Both StartLoomSelection and StartPreRound call this
+	// helper, but only the FIRST phase of each round should actually prep —
+	// we don't want a second call to destroy + respawn pawns mid-flow.
+	const int32 ThisRound = GS->GetCurrentRound();
+	if (LastPreparedRound == ThisRound)
+	{
+		return;
+	}
+	LastPreparedRound = ThisRound;
 
-	// Reset per-team round state: clear locked picks, refill pool, clear votes.
+	// Reset per-team round state (deprecated AbilitySlot/Pool kept until the
+	// Loom cast-path migration deletes them, but reset for back-compat).
 	for (uint8 i = 0; i < 2; ++i)
 	{
 		FTeamLoadout Loadout = GS->GetTeamLoadout(static_cast<ETeamID>(i));
@@ -418,11 +463,10 @@ void AProjectCompGameMode::StartPreRound()
 		GS->Server_SetTeamLoadout(static_cast<ETeamID>(i), Loadout);
 	}
 
-	// Clear all player votes; reset alive state + lives for the new round.
-	// Also reset the new per-player Loom + grenade state (per grenade-system memory):
-	// Loom claim cleared so this round's draft can run fresh, Loom usage flag
-	// reset so each player gets their 1-per-round charge back, grenade loadout
-	// cleared so credits-spent-last-round don't carry items into this one.
+	// Per-player resets. NOTE: ChosenLoomAbility is deliberately NOT cleared
+	// here — it persists for the full 3-round window between LoomSelection
+	// phases, and only StartLoomSelection clears it. The Loom-usage charge
+	// (1 cast per round) DOES reset every round regardless.
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
@@ -433,35 +477,24 @@ void AProjectCompGameMode::StartPreRound()
 				PS->Server_SetIsAlive(true);
 				PS->Server_ResetLives();
 				PS->Server_SetRespawnEndTime(0.0f);
-				PS->Server_ClearChosenLoomAbility();
 				PS->Server_ResetLoomUsage();
 				PS->Server_ClearEquippedGrenades();
+				// Weapons + armour reset each round — players re-buy in PreRound.
+				// Future change (carry-weapons-on-survive CS pattern) goes here.
+				PS->Server_ClearLoadout();
 			}
 		}
 	}
 
-	// Open the selection window for the first SelectionWindowDuration seconds of
-	// this PreRound. Tick() will flip it closed when elapsed crosses the threshold.
-	GS->Server_SetSelectionWindowOpen(true);
-
-	// Fresh round = fresh spawn allocation. Clear sticky assignments so the
-	// next ChoosePlayerStart for each player picks a new (teammate-avoiding)
-	// random start; mid-round respawns then reuse that pick. Destroy +
-	// respawn every player's pawn so anyone who was in a frozen-corpse state
-	// from last round (died, didn't respawn before round ended) gets a fresh
-	// fully-functional pawn — otherwise input/collision/movement stay disabled.
+	// Fresh round = fresh spawn allocation. Destroy + respawn every player's
+	// pawn so anyone in a frozen-corpse state from last round gets a fresh
+	// fully-functional pawn back.
 	AssignedStarts.Empty();
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
 		{
 			RespawnPlayerAtAssignedStart(PC);
-
-			// Refill ammo to full on the freshly-spawned weapon. The respawn
-			// already creates a new weapon (which BeginPlay-inits to full),
-			// so this is belt-and-braces — keeps the intent visible and
-			// survives any future change that swaps "destroy+respawn" for
-			// "teleport existing pawn".
 			if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(PC->GetPawn()))
 			{
 				if (AProjectCompHitscanWeapon* Weapon = Char->GetCurrentWeapon())
@@ -472,11 +505,72 @@ void AProjectCompGameMode::StartPreRound()
 		}
 	}
 
+	// Reset bomb sites for the new round.
+	Server_ResetAllBombSites();
+}
+
+void AProjectCompGameMode::StartLoomSelection()
+{
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	// LoomSelection is always the FIRST phase of any round it runs in, so
+	// per-round prep (player respawn, bomb reset, etc.) happens here.
+	PrepareForNewRound();
+
+	// Wipe the per-player Loom claim so this LoomSelection's draft is fresh.
+	// (PrepareForNewRound deliberately leaves ChosenLoomAbility alone so that
+	// non-LoomSelection rounds preserve the 3-round commitment.)
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			if (AProjectCompPlayerState* PS = PC->GetPlayerState<AProjectCompPlayerState>())
+			{
+				PS->Server_ClearChosenLoomAbility();
+			}
+		}
+	}
+
+	GS->Server_SetPhase(ERoundPhase::LoomSelection);
+	SetPhaseTimer(LoomSelectionDuration);
+	// Selection window is meaningless during LoomSelection (the gate is the
+	// phase itself); make sure it's closed so a stale flag from last round
+	// doesn't accidentally re-open a buy panel.
+	GS->Server_SetSelectionWindowOpen(false);
+	// Barriers behave the same as PreRound — players locked in spawn.
+	Server_SetAllBarriersForPhase(ERoundPhase::LoomSelection);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("Round %d: LoomSelection started (%.1fs)."),
+		GS->GetCurrentRound(), LoomSelectionDuration);
+}
+
+void AProjectCompGameMode::StartPreRound()
+{
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	// If LoomSelection didn't run for this round, this is the first phase
+	// and we still need the per-round prep. PrepareForNewRound is idempotent
+	// — if LoomSelection already ran it, this call no-ops.
+	PrepareForNewRound();
+
+	GS->Server_SetPhase(ERoundPhase::PreRound);
+	SetPhaseTimer(PreRoundDuration);
+
+	// Open the selection window for the first SelectionWindowDuration seconds
+	// of this PreRound. Tick() flips it closed when elapsed crosses the threshold.
+	GS->Server_SetSelectionWindowOpen(true);
+
 	// Engage each barrier per its Kind's PreRound rule.
 	Server_SetAllBarriersForPhase(ERoundPhase::PreRound);
-
-	// Reset bomb sites: clear plant/defuse/detonate state from last round.
-	Server_ResetAllBombSites();
 
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: PreRound started (%.1fs)."), GS->GetCurrentRound(), PreRoundDuration);
 }
@@ -750,15 +844,16 @@ void AProjectCompGameMode::Server_SetAllBarriersForPhase(ERoundPhase NewPhase)
 {
 	// Per-Kind activation table — see EBarrierKind doc for the rationale:
 	//
-	//                          PreRound    RoundActive    PostRound
-	//   AttackerSpawnLock      true        false          false
-	//   DefenderSpawnLock      false       true           true
-	//   DefenderPreRoundLock   true        false          false
+	//                          LoomSel    PreRound    RoundActive    PostRound
+	//   AttackerSpawnLock      true       true        false          false
+	//   DefenderSpawnLock      false      false       true           true
+	//   DefenderPreRoundLock   true       true        false          false
 	//
-	// "Active" means different things per Kind (block-all vs DeadPawn-only vs
-	// fully off) — the bool is just an engagement flag the barrier's
-	// RefreshAppearance reads alongside Kind to pick the right collision +
-	// visibility setup.
+	// LoomSelection mirrors PreRound for barriers: players are locked into
+	// spawn rooms during the mouse-locked Loom claim window, same as the
+	// hover-free buy phase that follows.
+	const bool bIsPrePlayPhase = (NewPhase == ERoundPhase::LoomSelection
+	                           || NewPhase == ERoundPhase::PreRound);
 	for (TActorIterator<AProjectCompBarrier> It(GetWorld()); It; ++It)
 	{
 		AProjectCompBarrier* B = *It;
@@ -770,14 +865,14 @@ void AProjectCompGameMode::Server_SetAllBarriersForPhase(ERoundPhase NewPhase)
 		switch (B->Kind)
 		{
 			case EBarrierKind::AttackerSpawnLock:
-				bShouldBeActive = (NewPhase == ERoundPhase::PreRound);
+				bShouldBeActive = bIsPrePlayPhase;
 				break;
 			case EBarrierKind::DefenderSpawnLock:
 				bShouldBeActive = (NewPhase == ERoundPhase::RoundActive
 				                || NewPhase == ERoundPhase::PostRound);
 				break;
 			case EBarrierKind::DefenderPreRoundLock:
-				bShouldBeActive = (NewPhase == ERoundPhase::PreRound);
+				bShouldBeActive = bIsPrePlayPhase;
 				break;
 		}
 		B->Server_SetActive(bShouldBeActive);
@@ -818,21 +913,27 @@ void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
 		return;
 	}
 
+	// Per design: plant detonation = 1 point, defuse = 1 point. Hardcoded to
+	// override any per-site BP overrides on PointValue / DefusePointValue —
+	// keep scoring uniform across sites so the match score reads as a count
+	// of rounds won, not a weighted sum.
+	constexpr int32 BombResolutionPoints = 1;
+
 	ETeamID WinningTeam = ETeamID::Spectator;
 	if (Site->bIsDetonated)
 	{
-		GS->Server_AddTeamScore(ETeamID::Attackers, Site->PointValue);
+		GS->Server_AddTeamScore(ETeamID::Attackers, BombResolutionPoints);
 		WinningTeam = ETeamID::Attackers;
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DETONATED at %s. Attackers +%d (now %d)."),
-			GS->GetCurrentRound(), *Site->Label.ToString(), Site->PointValue,
+			GS->GetCurrentRound(), *Site->Label.ToString(), BombResolutionPoints,
 			GS->GetTeamLoadout(ETeamID::Attackers).Score);
 	}
 	else if (Site->bIsDefused)
 	{
-		GS->Server_AddTeamScore(ETeamID::Defenders, Site->DefusePointValue);
+		GS->Server_AddTeamScore(ETeamID::Defenders, BombResolutionPoints);
 		WinningTeam = ETeamID::Defenders;
 		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DEFUSED at %s. Defenders +%d (now %d)."),
-			GS->GetCurrentRound(), *Site->Label.ToString(), Site->DefusePointValue,
+			GS->GetCurrentRound(), *Site->Label.ToString(), BombResolutionPoints,
 			GS->GetTeamLoadout(ETeamID::Defenders).Score);
 	}
 
@@ -934,17 +1035,19 @@ void AProjectCompGameMode::CheckRoundEndCondition()
 		// attackers does NOT end the round — they must still defuse or lose to the timer.
 		if (bAllDefendersDead)
 		{
-			// Score as if the bomb detonated — find the planted site for PointValue.
+			// Score as if the bomb detonated. Hardcoded 1 point — matches the
+			// uniform plant/defuse scoring rule (see HandleBombResolution).
+			constexpr int32 BombResolutionPoints = 1;
 			for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 			{
 				AProjectCompBombSite* Site = WeakSite.Get();
 				if (Site && Site->bIsPlanted && !Site->IsTerminal())
 				{
-					GS->Server_AddTeamScore(ETeamID::Attackers, Site->PointValue);
+					GS->Server_AddTeamScore(ETeamID::Attackers, BombResolutionPoints);
 					UE_LOG(LogProjectComp, Log,
 						TEXT("Round %d: Defenders eliminated with bomb planted at %s. Attackers +%d (now %d)."),
 						GS->GetCurrentRound(), *Site->Label.ToString(),
-						Site->PointValue, GS->GetTeamLoadout(ETeamID::Attackers).Score);
+						BombResolutionPoints, GS->GetTeamLoadout(ETeamID::Attackers).Score);
 					AwardRoundEndCredits(ETeamID::Attackers);
 					StartPostRound();
 					return;
@@ -1232,6 +1335,27 @@ int32 AProjectCompGameMode::GetGrenadeCost(EGrenadeType Type) const
 	}
 }
 
+int32 AProjectCompGameMode::GetWeaponCost(EWeaponClass Weapon) const
+{
+	switch (Weapon)
+	{
+	case EWeaponClass::Pistol: return PistolCost;
+	case EWeaponClass::SMG:    return SMGCost;
+	case EWeaponClass::Rifle:  return RifleCost;
+	default:                   return 0;
+	}
+}
+
+int32 AProjectCompGameMode::GetArmourCost(EArmourLevel Level) const
+{
+	switch (Level)
+	{
+	case EArmourLevel::Light: return ArmourLightCost;
+	case EArmourLevel::Heavy: return ArmourHeavyCost;
+	default:                  return 0;
+	}
+}
+
 void AProjectCompGameMode::Server_CheatEndRound(ETeamID WinningTeam)
 {
 	if (!HasAuthority())
@@ -1311,11 +1435,13 @@ bool AProjectCompGameMode::Server_ClaimLoomAbility(APlayerController* Claimer, E
 		return false;
 	}
 
-	// Phase + selection-window gate. Claims only land while the buy UI is open.
-	if (GS->GetCurrentPhase() != ERoundPhase::PreRound || !GS->IsSelectionWindowOpen())
+	// Phase gate: Loom claims only land during the dedicated LoomSelection
+	// phase (10s mouse-locked window between PostRound and PreRound). The
+	// per-team no-duplicates check happens below — this is the phase guard.
+	if (GS->GetCurrentPhase() != ERoundPhase::LoomSelection)
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom claim] Rejected: phase=%d window=%d."),
-			static_cast<int32>(GS->GetCurrentPhase()), GS->IsSelectionWindowOpen() ? 1 : 0);
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom claim] Rejected: phase=%d (must be LoomSelection)."),
+			static_cast<int32>(GS->GetCurrentPhase()));
 		return false;
 	}
 
@@ -1393,12 +1519,27 @@ bool AProjectCompGameMode::Server_BuyGrenade(APlayerController* Buyer, EGrenadeT
 		return false;
 	}
 
-	// Up-front gating so we can mutate atomically below without rollback paths.
-	if (BuyerPS->HasGrenadeEquipped(Type))
+	const int32 Cost = GetGrenadeCost(Type);
+	if (Cost <= 0)
 	{
-		return false;  // no same-type stacking
+		return false;
 	}
 
+	// Refund toggle: clicking a grenade you ALREADY own refunds the credits
+	// and removes it from your kit. This is the same RPC used by the buy
+	// path — the HUD has no "sell" button; left-click on an owned item
+	// just inverts the buy.
+	if (BuyerPS->HasGrenadeEquipped(Type))
+	{
+		BuyerPS->Server_UnequipGrenade(Type);
+		BuyerPS->Server_AddCredits(Cost);
+		UE_LOG(LogProjectComp, Log,
+			TEXT("[Grenade buy] '%s' REFUNDED grenade %d for %d credits (now %d)."),
+			*BuyerPS->GetPlayerName(), static_cast<int32>(Type), Cost, BuyerPS->GetCurrentCredits());
+		return true;
+	}
+
+	// Up-front gating so we can mutate atomically below without rollback paths.
 	constexpr int32 MaxEquippedGrenadeTypes = 2;
 	if (BuyerPS->GetEquippedGrenadeTypes().Num() >= MaxEquippedGrenadeTypes)
 	{
@@ -1439,12 +1580,7 @@ bool AProjectCompGameMode::Server_BuyGrenade(APlayerController* Buyer, EGrenadeT
 		}
 	}
 
-	const int32 Cost = GetGrenadeCost(Type);
-	if (Cost <= 0)
-	{
-		return false;
-	}
-
+	// Cost was computed above (used by the refund path); just check affordability.
 	if (BuyerPS->GetCurrentCredits() < Cost)
 	{
 		return false;
@@ -1454,9 +1590,328 @@ bool AProjectCompGameMode::Server_BuyGrenade(APlayerController* Buyer, EGrenadeT
 	// neither can fail here given the checks above.
 	BuyerPS->Server_SpendCredits(Cost);
 	BuyerPS->Server_EquipGrenade(Type);
+	// If the buyer had this on their wishlist, drop the request — they own it
+	// now, no need to keep asking teammates.
+	BuyerPS->Server_RemoveGrenadeRequest(Type);
 
 	UE_LOG(LogProjectComp, Log,
 		TEXT("[Grenade buy] '%s' bought grenade %d for %d credits (remaining %d)."),
 		*BuyerPS->GetPlayerName(), static_cast<int32>(Type), Cost, BuyerPS->GetCurrentCredits());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_BuyWeapon(APlayerController* Buyer, EWeaponClass Weapon)
+{
+	if (!HasAuthority()) { return false; }
+
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS) { return false; }
+
+	if (GS->GetCurrentPhase() != ERoundPhase::PreRound || !GS->IsSelectionWindowOpen())
+	{
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Weapon buy] Rejected: phase=%d window=%d."),
+			static_cast<int32>(GS->GetCurrentPhase()), GS->IsSelectionWindowOpen() ? 1 : 0);
+		return false;
+	}
+
+	if (Weapon == EWeaponClass::None) { return false; }
+
+	AProjectCompPlayerState* BuyerPS = Buyer ? Buyer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!BuyerPS || BuyerPS->GetTeamID() == ETeamID::Spectator) { return false; }
+
+	// Slot routing: Pistol → Secondary, SMG/Rifle → Primary. Reject any
+	// mismatched future class to keep the buy contract simple.
+	const bool bIsSecondary = (Weapon == EWeaponClass::Pistol);
+	const bool bIsPrimary   = (Weapon == EWeaponClass::SMG || Weapon == EWeaponClass::Rifle);
+	if (!bIsPrimary && !bIsSecondary)
+	{
+		return false;
+	}
+
+	const int32 Cost = GetWeaponCost(Weapon);
+	if (Cost <= 0)
+	{
+		return false;
+	}
+
+	// Refund toggle: clicking the weapon you already own in this slot returns
+	// the credits and clears the slot. Slot-mismatched clicks (e.g. click SMG
+	// while owning Rifle) fall through to the standard buy path, which
+	// overwrites the existing slot WITHOUT refunding the old weapon — buy
+	// deliberately.
+	const EWeaponClass CurrentInSlot = bIsPrimary
+		? BuyerPS->GetEquippedPrimary()
+		: BuyerPS->GetEquippedSecondary();
+	if (CurrentInSlot == Weapon)
+	{
+		BuyerPS->Server_AddCredits(Cost);
+		if (bIsPrimary)
+		{
+			BuyerPS->Server_SetEquippedPrimary(EWeaponClass::None);
+		}
+		else
+		{
+			BuyerPS->Server_SetEquippedSecondary(EWeaponClass::None);
+		}
+		UE_LOG(LogProjectComp, Log,
+			TEXT("[Weapon buy] '%s' REFUNDED %s weapon %d for %d credits (now %d)."),
+			*BuyerPS->GetPlayerName(),
+			bIsPrimary ? TEXT("PRIMARY") : TEXT("SECONDARY"),
+			static_cast<int32>(Weapon), Cost, BuyerPS->GetCurrentCredits());
+		return true;
+	}
+
+	if (BuyerPS->GetCurrentCredits() < Cost)
+	{
+		return false;
+	}
+
+	// Spend + assign. Buying a slot overwrites whatever was in it — re-buying
+	// the same class at the same cost is harmless (refund parity above).
+	BuyerPS->Server_SpendCredits(Cost);
+	if (bIsPrimary)
+	{
+		BuyerPS->Server_SetEquippedPrimary(Weapon);
+	}
+	else
+	{
+		BuyerPS->Server_SetEquippedSecondary(Weapon);
+	}
+	BuyerPS->Server_RemoveWeaponRequest(Weapon);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Weapon buy] '%s' bought %s weapon %d for %d credits (remaining %d)."),
+		*BuyerPS->GetPlayerName(),
+		bIsPrimary ? TEXT("PRIMARY") : TEXT("SECONDARY"),
+		static_cast<int32>(Weapon), Cost, BuyerPS->GetCurrentCredits());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_BuyArmour(APlayerController* Buyer, EArmourLevel Level)
+{
+	if (!HasAuthority()) { return false; }
+
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS) { return false; }
+
+	if (GS->GetCurrentPhase() != ERoundPhase::PreRound || !GS->IsSelectionWindowOpen())
+	{
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Armour buy] Rejected: phase=%d window=%d."),
+			static_cast<int32>(GS->GetCurrentPhase()), GS->IsSelectionWindowOpen() ? 1 : 0);
+		return false;
+	}
+
+	if (Level == EArmourLevel::None) { return false; }
+
+	AProjectCompPlayerState* BuyerPS = Buyer ? Buyer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!BuyerPS || BuyerPS->GetTeamID() == ETeamID::Spectator) { return false; }
+
+	const int32 Cost = GetArmourCost(Level);
+	if (Cost <= 0)
+	{
+		return false;
+	}
+
+	// Refund toggle: clicking the armour level you already own returns the
+	// credits and clears the slot. Click-different-level falls through to
+	// the buy path which still rejects downgrades.
+	if (BuyerPS->GetArmourLevel() == Level)
+	{
+		BuyerPS->Server_AddCredits(Cost);
+		BuyerPS->Server_SetArmourLevel(EArmourLevel::None);
+		UE_LOG(LogProjectComp, Log,
+			TEXT("[Armour buy] '%s' REFUNDED armour level %d for %d credits (now %d)."),
+			*BuyerPS->GetPlayerName(), static_cast<int32>(Level), Cost, BuyerPS->GetCurrentCredits());
+		return true;
+	}
+
+	// Downgrade attempts: reject if the player already has better armour.
+	// Players can upgrade Light → Heavy by paying the Heavy cost (no Light refund).
+	if (static_cast<uint8>(Level) < static_cast<uint8>(BuyerPS->GetArmourLevel()))
+	{
+		return false;
+	}
+
+	if (BuyerPS->GetCurrentCredits() < Cost)
+	{
+		return false;
+	}
+
+	BuyerPS->Server_SpendCredits(Cost);
+	BuyerPS->Server_SetArmourLevel(Level);
+	BuyerPS->Server_RemoveArmourRequest(Level);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Armour buy] '%s' bought armour level %d for %d credits (remaining %d)."),
+		*BuyerPS->GetPlayerName(), static_cast<int32>(Level), Cost, BuyerPS->GetCurrentCredits());
+	return true;
+}
+
+// =====================================================================
+// Request + Fulfill (right-click in buy panel + teammate fulfill button)
+// =====================================================================
+
+namespace
+{
+	/** Phase gate shared by every Request/Fulfill RPC. */
+	bool IsBuyPhase(const AProjectCompGameState* GS)
+	{
+		return GS && GS->GetCurrentPhase() == ERoundPhase::PreRound && GS->IsSelectionWindowOpen();
+	}
+
+	bool ValidRequester(APlayerController* Requester, AProjectCompPlayerState*& OutPS)
+	{
+		OutPS = Requester ? Requester->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+		return OutPS && OutPS->GetTeamID() != ETeamID::Spectator;
+	}
+}
+
+bool AProjectCompGameMode::Server_RequestWeapon(APlayerController* Requester, EWeaponClass Weapon)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Weapon == EWeaponClass::None) { return false; }
+	AProjectCompPlayerState* PS = nullptr;
+	if (!ValidRequester(Requester, PS)) { return false; }
+	PS->Server_ToggleWeaponRequest(Weapon);
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Request] '%s' toggled weapon %d (now %d on list)."),
+		*PS->GetPlayerName(), static_cast<int32>(Weapon), PS->GetRequestedWeapons().Num());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_RequestArmour(APlayerController* Requester, EArmourLevel Level)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Level == EArmourLevel::None) { return false; }
+	AProjectCompPlayerState* PS = nullptr;
+	if (!ValidRequester(Requester, PS)) { return false; }
+	PS->Server_ToggleArmourRequest(Level);
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Request] '%s' toggled armour %d (now %d on list)."),
+		*PS->GetPlayerName(), static_cast<int32>(Level), PS->GetRequestedArmour().Num());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_RequestGrenade(APlayerController* Requester, EGrenadeType Type)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Type == EGrenadeType::None) { return false; }
+	AProjectCompPlayerState* PS = nullptr;
+	if (!ValidRequester(Requester, PS)) { return false; }
+	PS->Server_ToggleGrenadeRequest(Type);
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Request] '%s' toggled grenade %d (now %d on list)."),
+		*PS->GetPlayerName(), static_cast<int32>(Type), PS->GetRequestedGrenades().Num());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_FulfillWeaponRequest(APlayerController* Fulfiller, APlayerController* Requester, EWeaponClass Weapon)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Weapon == EWeaponClass::None) { return false; }
+
+	AProjectCompPlayerState* FulfillerPS = Fulfiller ? Fulfiller->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	AProjectCompPlayerState* RequesterPS = Requester ? Requester->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!FulfillerPS || !RequesterPS) { return false; }
+	if (FulfillerPS == RequesterPS) { return false; }
+	if (FulfillerPS->GetTeamID() != RequesterPS->GetTeamID()) { return false; }
+	if (!RequesterPS->IsRequestingWeapon(Weapon)) { return false; }
+
+	const bool bIsSecondary = (Weapon == EWeaponClass::Pistol);
+	const bool bIsPrimary   = (Weapon == EWeaponClass::SMG || Weapon == EWeaponClass::Rifle);
+	if (!bIsPrimary && !bIsSecondary) { return false; }
+
+	const int32 Cost = GetWeaponCost(Weapon);
+	if (Cost <= 0 || FulfillerPS->GetCurrentCredits() < Cost) { return false; }
+
+	FulfillerPS->Server_SpendCredits(Cost);
+	if (bIsPrimary) { RequesterPS->Server_SetEquippedPrimary(Weapon); }
+	else            { RequesterPS->Server_SetEquippedSecondary(Weapon); }
+	RequesterPS->Server_RemoveWeaponRequest(Weapon);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Fulfill] '%s' fulfilled weapon %d for '%s' — paid %d (remaining %d)."),
+		*FulfillerPS->GetPlayerName(), static_cast<int32>(Weapon),
+		*RequesterPS->GetPlayerName(), Cost, FulfillerPS->GetCurrentCredits());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_FulfillArmourRequest(APlayerController* Fulfiller, APlayerController* Requester, EArmourLevel Level)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Level == EArmourLevel::None) { return false; }
+
+	AProjectCompPlayerState* FulfillerPS = Fulfiller ? Fulfiller->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	AProjectCompPlayerState* RequesterPS = Requester ? Requester->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!FulfillerPS || !RequesterPS) { return false; }
+	if (FulfillerPS == RequesterPS) { return false; }
+	if (FulfillerPS->GetTeamID() != RequesterPS->GetTeamID()) { return false; }
+	if (!RequesterPS->IsRequestingArmour(Level)) { return false; }
+
+	// Downgrade guard: don't fulfill Light if Requester already has Heavy.
+	if (static_cast<uint8>(Level) < static_cast<uint8>(RequesterPS->GetArmourLevel()))
+	{
+		return false;
+	}
+
+	const int32 Cost = GetArmourCost(Level);
+	if (Cost <= 0 || FulfillerPS->GetCurrentCredits() < Cost) { return false; }
+
+	FulfillerPS->Server_SpendCredits(Cost);
+	RequesterPS->Server_SetArmourLevel(Level);
+	RequesterPS->Server_RemoveArmourRequest(Level);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Fulfill] '%s' fulfilled armour %d for '%s' — paid %d (remaining %d)."),
+		*FulfillerPS->GetPlayerName(), static_cast<int32>(Level),
+		*RequesterPS->GetPlayerName(), Cost, FulfillerPS->GetCurrentCredits());
+	return true;
+}
+
+bool AProjectCompGameMode::Server_FulfillGrenadeRequest(APlayerController* Fulfiller, APlayerController* Requester, EGrenadeType Type)
+{
+	if (!HasAuthority()) { return false; }
+	if (!IsBuyPhase(GetTypedGameState())) { return false; }
+	if (Type == EGrenadeType::None) { return false; }
+
+	AProjectCompPlayerState* FulfillerPS = Fulfiller ? Fulfiller->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	AProjectCompPlayerState* RequesterPS = Requester ? Requester->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!FulfillerPS || !RequesterPS) { return false; }
+	if (FulfillerPS == RequesterPS) { return false; }
+	if (FulfillerPS->GetTeamID() != RequesterPS->GetTeamID()) { return false; }
+	if (!RequesterPS->IsRequestingGrenade(Type)) { return false; }
+
+	if (RequesterPS->HasGrenadeEquipped(Type)) { return false; }  // already has
+	constexpr int32 MaxEquippedGrenadeTypes = 2;
+	if (RequesterPS->GetEquippedGrenadeTypes().Num() >= MaxEquippedGrenadeTypes) { return false; }
+
+	// Per-team holder cap: fulfilling counts the requester as a holder. Check
+	// that the team isn't already maxed for this type.
+	constexpr int32 MaxHoldersPerTypePerTeam = 2;
+	int32 TeamHolders = 0;
+	const ETeamID Team = RequesterPS->GetTeamID();
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* OtherPC = It->Get();
+		if (!OtherPC || OtherPC == Requester) { continue; }
+		const AProjectCompPlayerState* OtherPS = OtherPC->GetPlayerState<AProjectCompPlayerState>();
+		if (!OtherPS || OtherPS->GetTeamID() != Team) { continue; }
+		if (OtherPS->HasGrenadeEquipped(Type)) { ++TeamHolders; }
+	}
+	if (TeamHolders >= MaxHoldersPerTypePerTeam) { return false; }
+
+	const int32 Cost = GetGrenadeCost(Type);
+	if (Cost <= 0 || FulfillerPS->GetCurrentCredits() < Cost) { return false; }
+
+	FulfillerPS->Server_SpendCredits(Cost);
+	RequesterPS->Server_EquipGrenade(Type);
+	RequesterPS->Server_RemoveGrenadeRequest(Type);
+
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Fulfill] '%s' fulfilled grenade %d for '%s' — paid %d (remaining %d)."),
+		*FulfillerPS->GetPlayerName(), static_cast<int32>(Type),
+		*RequesterPS->GetPlayerName(), Cost, FulfillerPS->GetCurrentCredits());
 	return true;
 }

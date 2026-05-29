@@ -11,6 +11,7 @@ class AProjectCompCharacter;
 class AProjectCompGameState;
 class AProjectCompPlayerState;
 class AProjectCompBombSite;
+class UButton;
 class UCanvasPanel;
 class UHorizontalBox;
 class UImage;
@@ -171,6 +172,129 @@ protected:
 	/** Per-grenade brand color used for the equipped-state glow. Matches the
 	 *  design palette: FLASH=YELLOW, INFO=CYAN, VULN=NEON CORAL, SOUND=GREY. */
 	static FLinearColor GetGrenadeBrandColor(EGrenadeType Type);
+
+	// =====================================================================
+	// PreRound buy panel (centered overlay during LoomSelection + PreRound
+	// buy window). 3 columns: Weapons | Grenades | Loom abilities. Header
+	// shows live credits, phase timer, and phase label.
+	// =====================================================================
+
+	/** Root container for the whole buy panel. Visibility is driven by
+	 *  RefreshBuyPanelVisibility based on the current ERoundPhase. */
+	UPROPERTY() TObjectPtr<UVerticalBox> BuyPanelRoot;
+
+	/** Header texts. */
+	UPROPERTY() TObjectPtr<UTextBlock> BuyHeaderCredits;
+	UPROPERTY() TObjectPtr<UTextBlock> BuyHeaderTimer;
+	UPROPERTY() TObjectPtr<UTextBlock> BuyHeaderPhase;
+
+	/** Column containers — visibility per phase: Weapons + Grenades visible
+	 *  during PreRound buy window; Loom visible during LoomSelection. */
+	UPROPERTY() TObjectPtr<UVerticalBox> BuyWeaponsColumn;
+	UPROPERTY() TObjectPtr<UVerticalBox> BuyGrenadesColumn;
+	UPROPERTY() TObjectPtr<UVerticalBox> BuyLoomColumn;
+
+	/** Weapon buttons (primary, secondary, armour). */
+	UPROPERTY() TObjectPtr<UButton> BtnBuyPistol;
+	UPROPERTY() TObjectPtr<UButton> BtnBuySMG;
+	UPROPERTY() TObjectPtr<UButton> BtnBuyRifle;
+	UPROPERTY() TObjectPtr<UButton> BtnBuyArmourLight;
+	UPROPERTY() TObjectPtr<UButton> BtnBuyArmourHeavy;
+
+	/** Grenade buttons. */
+	UPROPERTY() TObjectPtr<UButton> BtnBuyFlash;
+	UPROPERTY() TObjectPtr<UButton> BtnBuyInfo;
+	UPROPERTY() TObjectPtr<UButton> BtnBuyVuln;
+	UPROPERTY() TObjectPtr<UButton> BtnBuySound;
+
+	/** Loom ability buttons (9-cell matrix). */
+	UPROPERTY() TObjectPtr<UButton> BtnClaimAA;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimAC;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimAM;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimCC;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimCA;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimCM;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimMM;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimMA;
+	UPROPERTY() TObjectPtr<UButton> BtnClaimMC;
+
+	/** Teammate loadouts column — shown next to the buy table during the
+	 *  PreRound buy window. Each row is a VBox containing a loadout label
+	 *  text plus a horizontal row of fulfill buttons (rebuilt per tick from
+	 *  the teammate's RequestedWeapons/Armour/Grenades arrays). */
+	UPROPERTY() TObjectPtr<UVerticalBox> TeammateLoadoutsColumn;
+	UPROPERTY() TArray<TObjectPtr<UVerticalBox>>   TeammateRowContainers;
+	UPROPERTY() TArray<TObjectPtr<UTextBlock>>     TeammateLoadoutLabels;
+	UPROPERTY() TArray<TObjectPtr<UHorizontalBox>> TeammateRequestsBoxes;
+
+	/** Build the buy panel widget tree (called once in BuildLayout). */
+	void BuildBuyPanel(UCanvasPanel* RootCanvas);
+
+	/** Per-tick: update credits / timer / phase label + button enable states. */
+	void RefreshBuyPanel();
+
+	/** Set per-column + root visibility based on current phase. */
+	void RefreshBuyPanelVisibility();
+
+public:
+
+	/** Toggle the buy menu's open state. During PreRound the panel only renders
+	 *  while open; LoomSelection ignores this flag (selection is mandatory). */
+	void ToggleBuyMenu() { SetBuyMenuOpen(!bBuyMenuOpen); }
+
+	/** Set the buy menu's open state explicitly. Phase entry into PreRound
+	 *  also force-resets this to false so each new round starts unopened. */
+	void SetBuyMenuOpen(bool bOpen) { bBuyMenuOpen = bOpen; }
+
+	bool IsBuyMenuOpen() const { return bBuyMenuOpen; }
+
+protected:
+
+	/** Tracks toggle state for the PreRound buy panel. LoomSelection bypasses this. */
+	bool bBuyMenuOpen = false;
+
+	/** Last phase observed by RefreshBuyPanelVisibility. Used to detect entry
+	 *  into PreRound so the menu auto-resets to closed each round. */
+	ERoundPhase LastVisibilityPhase = ERoundPhase::PostRound;
+
+	// ---- Button click handlers (one per buy/claim target) ---------------
+
+	UFUNCTION() void OnClickBuyPistol();
+	UFUNCTION() void OnClickBuySMG();
+	UFUNCTION() void OnClickBuyRifle();
+	UFUNCTION() void OnClickBuyArmourLight();
+	UFUNCTION() void OnClickBuyArmourHeavy();
+	UFUNCTION() void OnClickBuyFlash();
+	UFUNCTION() void OnClickBuyInfo();
+	UFUNCTION() void OnClickBuyVuln();
+	UFUNCTION() void OnClickBuySound();
+	UFUNCTION() void OnClickClaimAA();
+	UFUNCTION() void OnClickClaimAC();
+	UFUNCTION() void OnClickClaimAM();
+	UFUNCTION() void OnClickClaimCC();
+	UFUNCTION() void OnClickClaimCA();
+	UFUNCTION() void OnClickClaimCM();
+	UFUNCTION() void OnClickClaimMM();
+	UFUNCTION() void OnClickClaimMA();
+	UFUNCTION() void OnClickClaimMC();
+
+	// ---- Right-click on buy buttons (request item) ----------------------
+	// Right-click is captured by NativeOnPreviewMouseButtonDown on the HUD
+	// widget itself — UButton's SButton consumes left-clicks but not right-
+	// clicks, so preview-level interception is the cleanest path.
+
+	virtual FReply NativeOnPreviewMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+
+	/** Identify which (if any) buy button is under the cursor at right-click. */
+	class UButton* FindBuyButtonUnderCursor(const FVector2D& ScreenPos) const;
+
+	/** Map a right-clicked buy button to its Request* RPC. */
+	void DispatchRightClickRequest(class UButton* Btn);
+
+	/** Bound to each spawned fulfill button's OnFulfillClicked — reads the
+	 *  button's payload (RequesterPC + Kind + ItemId) and forwards to the
+	 *  matching Server_FulfillX RPC on the local PC. */
+	UFUNCTION() void OnFulfillRequestClicked(class UProjectCompFulfillButton* Button);
 
 	/** Update FlashOverlay alpha + visibility from local PlayerState's flash times.
 	 *  Returns the alpha that was applied (mainly useful for testing). */
