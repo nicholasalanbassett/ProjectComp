@@ -973,7 +973,11 @@ void AProjectCompPlayerController::PerfCheck()
 		++NumStaticMeshes;
 		if (UStaticMesh* SM = It->GetStaticMesh())
 		{
+#if WITH_EDITORONLY_DATA
+			// IsNaniteEnabled() lives behind WITH_EDITORONLY_DATA in 5.7; in
+			// packaged builds the Nanite count simply stays 0.
 			if (SM->IsNaniteEnabled()) { ++NaniteEnabledMeshes; }
+#endif
 			if (SM->GetRenderData() && SM->GetRenderData()->LODResources.Num() > 0)
 			{
 				TotalStaticTris += SM->GetRenderData()->LODResources[0].GetNumTriangles();
