@@ -282,6 +282,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
 	TSubclassOf<class AProjectCompFlashDome> FlashDomeClass;
 
+	/** Class spawned for the MC (Midrange/Control) sound-dome ability — the
+	 *  re-homed audio-dampen field (formerly the Sound grenade). */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompSoundDome> SoundDomeClass;
+
 	// ---- Economy tuning (CS-style; all playtest-tunable in BP defaults) ----
 
 	/** Credits granted on PostLogin (i.e. when a player joins). */
@@ -312,7 +317,7 @@ protected:
 	int32 VulnerableGrenadeCost = 300;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Economy", meta = (ClampMin = "0"))
-	int32 SoundGrenadeCost = 300;
+	int32 SmokeGrenadeCost = 300;
 
 	// ---- Weapon + armour pricing (CS-style ballpark; tune in playtest) ---
 

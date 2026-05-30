@@ -74,7 +74,8 @@ void AProjectCompThrowableGrenadeBase::Server_InitializeExtra(bool bAltFire, con
 	{
 	case EThrowableFireMode::PhaseOneWall: ModeLabel = TEXT("PhaseOneWall"); break;
 	case EThrowableFireMode::BounceOnce:   ModeLabel = TEXT("BounceOnce");   break;
-	case EThrowableFireMode::GravityLob:   ModeLabel = TEXT("GravityLob");   break;
+	case EThrowableFireMode::DirectImpact: ModeLabel = TEXT("DirectImpact"); break;
+	case EThrowableFireMode::StrongThrow:  ModeLabel = TEXT("StrongThrow");  break;
 	}
 
 	UE_LOG(LogProjectComp, Log,
@@ -82,6 +83,21 @@ void AProjectCompThrowableGrenadeBase::Server_InitializeExtra(bool bAltFire, con
 		*GetName(),
 		bIsAltFire ? TEXT("RMB") : TEXT("LMB"),
 		ModeLabel, Speed, GetActiveGravity(), MaxProjectileLifetime, FuseAfterImpact);
+}
+
+void AProjectCompThrowableGrenadeBase::Server_DeployInPlace(const FVector& Location)
+{
+	if (!HasAuthority() || Phase != EThrowablePhase::Projectile)
+	{
+		return;
+	}
+	// No flight — treat the drop point as an immediate landing. HandleImpact
+	// stamps location, stops motion, and runs the fuse → Active transition, so
+	// the utility deploys exactly as a thrown one would on landing.
+	Velocity = FVector::ZeroVector;
+	UE_LOG(LogProjectComp, Log, TEXT("[Throwable] %s global-dropped (deploy-in-place) at %s."),
+		*GetName(), *Location.ToCompactString());
+	HandleImpact(Location);
 }
 
 void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
@@ -117,8 +133,8 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 		return;
 	}
 
-	// Apply gravity per the active mode. GravityLob uses non-zero; PhaseOneWall
-	// and BounceOnce default to 0 (designers can override per-grenade in BP).
+	// Apply gravity per the active mode. The standardized LMB arc uses non-zero
+	// gravity; the RMB straight throw uses 0 (designers can override in BP).
 	// Acceleration on -Z; Velocity is updated BEFORE the trace so this frame's
 	// step already reflects the new vector — keeps integration tight at the
 	// scale UE tickrates run at.
@@ -253,9 +269,42 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 		return;
 	}
 
-	case EThrowableFireMode::GravityLob:
+	case EThrowableFireMode::StrongThrow:
+	{
+		// CS-style bounce-and-settle. Reflect velocity about the surface normal,
+		// scaling the normal component by Restitution (bounciness) and shaving
+		// the tangential component by TangentialFriction (scuff). Settle when the
+		// throw is slow enough or has bounced too many times.
+		const FVector N = Hit.ImpactNormal;
+		const float VdotN = FVector::DotProduct(Velocity, N);
+		const FVector VNormal = VdotN * N;          // into-surface component
+		const FVector VTangent = Velocity - VNormal; // along-surface component
+		// Outgoing: keep (scuffed) tangent, flip + scale the normal part.
+		Velocity = VTangent * (1.0f - TangentialFriction) - VNormal * Restitution;
+
+		++BounceCount;
+
+		// Step off the surface so the next trace doesn't immediately re-hit it.
+		const FVector StepOff = Hit.ImpactPoint + N * 1.0f;
+		SetActorLocation(StepOff, false, nullptr, ETeleportType::TeleportPhysics);
+
+		Multicast_DrawBounceEvent(Hit.ImpactPoint, N);
+
+		// Settle test — too slow to matter, or bounced its budget out.
+		if (Velocity.Size() <= RestSpeed || BounceCount >= MaxBounces)
+		{
+			UE_LOG(LogProjectComp, Verbose,
+				TEXT("[Throwable] %s settled after %d bounce(s) at %s (speed=%.0f)."),
+				*GetName(), BounceCount, *StepOff.ToCompactString(), Velocity.Size());
+			HandleImpact(StepOff);
+		}
+		return;
+	}
+
+	case EThrowableFireMode::DirectImpact:
 	default:
-		// No phase, no bounce — first contact is the impact.
+		// No phase, no bounce — first contact is the impact. Arc-vs-flat is
+		// decided by the active gravity, not the mode.
 		HandleImpact(Hit.ImpactPoint);
 		return;
 	}

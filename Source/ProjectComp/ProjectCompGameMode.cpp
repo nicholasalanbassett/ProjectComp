@@ -9,6 +9,7 @@
 #include "ProjectCompBombSite.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompFlashDome.h"
+#include "ProjectCompSoundDome.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompHUD.h"
@@ -350,9 +351,9 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 	// (e.g. unset FlashDomeClass with a null CDO, or a spawn-collision reject)
 	// drain the pool without producing a dome.
 	//
-	// Inline switch is intentional — we only have one implemented ability so
-	// far. Refactor to an IAbilityHandler dispatch table when the second one
-	// lands; abstracting now would over-fit to a single example.
+	// Inline switch is intentional — only CA (FlashDome) and MC (SoundDome) are
+	// implemented so far. Refactor to an IAbilityHandler dispatch table once a
+	// few more land; abstracting now would over-fit to two near-identical cases.
 	UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
 		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
 
@@ -392,6 +393,40 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		else
 		{
 			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] FlashDome SpawnActor returned null — pool not deducted."));
+		}
+		break;
+	}
+	case EAbilityType::MC:
+	{
+		// Re-homed Sound grenade: spawn an audio-dampen dome at the cast target.
+		const TSubclassOf<AProjectCompSoundDome> SpawnClass =
+			SoundDomeClass ? SoundDomeClass : TSubclassOf<AProjectCompSoundDome>(AProjectCompSoundDome::StaticClass());
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = Caster;
+		SpawnParams.Instigator = Caster->GetPawn();
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		// Lift the zone center off the floor (same rationale as FlashDome). Read
+		// the per-class lift off the CDO so BP variants can tune independently.
+		const AProjectCompSoundDome* DomeCDO = SpawnClass
+			? SpawnClass->GetDefaultObject<AProjectCompSoundDome>()
+			: nullptr;
+		const float DomeZLift = DomeCDO ? DomeCDO->SpawnZLift : 100.0f;
+		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, DomeZLift);
+
+		AProjectCompSoundDome* Dome = GetWorld()->SpawnActor<AProjectCompSoundDome>(
+			SpawnClass, DomeSpawn, FRotator::ZeroRotator, SpawnParams);
+		if (Dome)
+		{
+			Dome->Server_Initialize(Team);
+			bSpawnSucceeded = true;
+			UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] SoundDome spawned at %s (target=%s + lift) for team %d."),
+				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
+		}
+		else
+		{
+			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] SoundDome SpawnActor returned null — pool not deducted."));
 		}
 		break;
 	}
@@ -1330,7 +1365,7 @@ int32 AProjectCompGameMode::GetGrenadeCost(EGrenadeType Type) const
 	case EGrenadeType::Flash:      return FlashGrenadeCost;
 	case EGrenadeType::Info:       return InfoGrenadeCost;
 	case EGrenadeType::Vulnerable: return VulnerableGrenadeCost;
-	case EGrenadeType::Sound:      return SoundGrenadeCost;
+	case EGrenadeType::Smoke:      return SmokeGrenadeCost;
 	default:                       return 0;
 	}
 }

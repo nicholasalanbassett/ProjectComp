@@ -17,7 +17,6 @@
 #include "ProjectCompMinimapWidget.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompSettingsWidget.h"
-#include "ProjectCompSoundGrenade.h"
 #include "Camera/CameraComponent.h"
 #include "EngineUtils.h"
 #include "Blueprint/UserWidget.h"
@@ -389,6 +388,64 @@ void AProjectCompPlayerController::UseGrenadeInSlot(int32 SlotIndex, bool bAltFi
 	Server_UseGrenade(Type, bAltFire, Origin, Direction);
 }
 
+void AProjectCompPlayerController::RequestGlobalDrop(int32 SlotIndex, FVector Target)
+{
+	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+	if (!PS)
+	{
+		return;
+	}
+	const TArray<EGrenadeType>& Kit = PS->GetEquippedGrenadeTypes();
+	if (!Kit.IsValidIndex(SlotIndex))
+	{
+		return;
+	}
+	const EGrenadeType Type = Kit[SlotIndex];
+	if (Type == EGrenadeType::None)
+	{
+		return;
+	}
+	Server_GlobalDropGrenade(Type, Target);
+}
+
+void AProjectCompPlayerController::OpenGrenadePlacement(int32 SlotIndex)
+{
+	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+	if (!PS || PS->IsPermanentlyDead())
+	{
+		return;
+	}
+	// Must actually own a grenade in this slot.
+	if (!PS->GetEquippedGrenadeTypes().IsValidIndex(SlotIndex))
+	{
+		return;
+	}
+	UProjectCompMinimapWidget* Widget = EnsureMinimapWidget();
+	if (!Widget)
+	{
+		return;
+	}
+	Widget->SetGrenadePlacementMode(SlotIndex);
+	bGrenadePlacementMode = true;
+	SetMinimapOpen(true);
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Placement minimap opened for slot %d."), SlotIndex);
+}
+
+void AProjectCompPlayerController::CloseGrenadePlacement()
+{
+	if (!bGrenadePlacementMode)
+	{
+		return;
+	}
+	bGrenadePlacementMode = false;
+	SetMinimapOpen(false);
+	if (MinimapInstance)
+	{
+		MinimapInstance->SetLoomCastMode();  // restore default for the Loom path
+	}
+	UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Placement minimap closed."));
+}
+
 // =====================================================================
 // Server RPCs — _Validate runs first (drop the connection on cheating),
 // then _Implementation forwards to the GameMode for authoritative logic.
@@ -463,7 +520,7 @@ void AProjectCompPlayerController::Server_ClaimLoomAbility_Implementation(EAbili
 bool AProjectCompPlayerController::Server_BuyGrenade_Validate(EGrenadeType Type)
 {
 	const uint8 Byte = static_cast<uint8>(Type);
-	const uint8 MaxValid = static_cast<uint8>(EGrenadeType::Sound);
+	const uint8 MaxValid = static_cast<uint8>(EGrenadeType::Smoke);
 	return Byte != 0 && Byte <= MaxValid;
 }
 
@@ -532,7 +589,7 @@ void AProjectCompPlayerController::Server_RequestArmour_Implementation(EArmourLe
 bool AProjectCompPlayerController::Server_RequestGrenade_Validate(EGrenadeType Type)
 {
 	const uint8 B = static_cast<uint8>(Type);
-	return B != 0 && B <= static_cast<uint8>(EGrenadeType::Sound);
+	return B != 0 && B <= static_cast<uint8>(EGrenadeType::Smoke);
 }
 void AProjectCompPlayerController::Server_RequestGrenade_Implementation(EGrenadeType Type)
 {
@@ -565,7 +622,7 @@ void AProjectCompPlayerController::Server_FulfillArmourRequest_Implementation(AP
 bool AProjectCompPlayerController::Server_FulfillGrenadeRequest_Validate(APlayerController* Requester, EGrenadeType Type)
 {
 	const uint8 B = static_cast<uint8>(Type);
-	return Requester != nullptr && B != 0 && B <= static_cast<uint8>(EGrenadeType::Sound);
+	return Requester != nullptr && B != 0 && B <= static_cast<uint8>(EGrenadeType::Smoke);
 }
 void AProjectCompPlayerController::Server_FulfillGrenadeRequest_Implementation(APlayerController* Requester, EGrenadeType Type)
 {
@@ -624,7 +681,7 @@ void AProjectCompPlayerController::Server_CheatEndRound_Implementation(ETeamID W
 bool AProjectCompPlayerController::Server_UseGrenade_Validate(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction)
 {
 	const uint8 Byte = static_cast<uint8>(Type);
-	const uint8 MaxValid = static_cast<uint8>(EGrenadeType::Sound);
+	const uint8 MaxValid = static_cast<uint8>(EGrenadeType::Smoke);
 	if (Byte == 0 || Byte > MaxValid)
 	{
 		return false;
@@ -656,93 +713,31 @@ void AProjectCompPlayerController::Server_UseGrenade_Implementation(EGrenadeType
 	GrenadeComp->Server_UseGrenade(Type, bAltFire, Origin, Direction);
 }
 
-// =====================================================================
-// SOUND grenade toggle + reposition
-// =====================================================================
-
-void AProjectCompPlayerController::Server_ToggleSoundGrenade_Implementation()
+bool AProjectCompPlayerController::Server_GlobalDropGrenade_Validate(EGrenadeType Type, FVector Target)
 {
-	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
-	if (!PS)
-	{
-		return;
-	}
-	// Find the caller's SOUND grenade. Walks live actors — bounded (10 players
-	// × max 1 SOUND grenade each), so trivial cost. No registry needed.
-	for (TActorIterator<AProjectCompSoundGrenade> It(GetWorld()); It; ++It)
-	{
-		AProjectCompSoundGrenade* SG = *It;
-		if (SG && SG->IsPlacedBy(PS))
-		{
-			SG->Server_ToggleActive();
-			return;
-		}
-	}
-	UE_LOG(LogProjectComp, Verbose, TEXT("[SoundToggle] No SOUND grenade owned by '%s'."),
-		*PS->GetPlayerName());
-}
-
-bool AProjectCompPlayerController::Server_RepositionSoundGrenade_Validate(FVector NewOrigin)
-{
-	if (NewOrigin.ContainsNaN())
+	const uint8 Byte = static_cast<uint8>(Type);
+	if (Byte == 0 || Byte > static_cast<uint8>(EGrenadeType::Smoke))
 	{
 		return false;
 	}
-	if (NewOrigin.SizeSquared() > FMath::Square(1000000.0f))
+	if (Target.ContainsNaN() || Target.SizeSquared() > FMath::Square(1000000.0f))
 	{
 		return false;
 	}
 	return true;
 }
 
-void AProjectCompPlayerController::Server_RepositionSoundGrenade_Implementation(FVector NewOrigin)
+void AProjectCompPlayerController::Server_GlobalDropGrenade_Implementation(EGrenadeType Type, FVector Target)
 {
-	AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
-	if (!PS || PS->IsPermanentlyDead())
+	AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(GetPawn());
+	if (!Char)
 	{
 		return;
 	}
-	for (TActorIterator<AProjectCompSoundGrenade> It(GetWorld()); It; ++It)
+	if (UProjectCompGrenadeComponent* GrenadeComp = Char->GetGrenadeComponent())
 	{
-		AProjectCompSoundGrenade* SG = *It;
-		if (SG && SG->IsPlacedBy(PS))
-		{
-			SG->Server_Reposition(NewOrigin);
-			return;
-		}
+		GrenadeComp->Server_GlobalDropGrenade(Type, Target);
 	}
-	UE_LOG(LogProjectComp, Verbose, TEXT("[SoundReposition] No SOUND grenade owned by '%s'."),
-		*PS->GetPlayerName());
-}
-
-// ---- Exec wrappers for the SOUND RPCs --------------------------------
-
-void AProjectCompPlayerController::ToggleSound()
-{
-	UE_LOG(LogProjectComp, Log, TEXT("[Exec] ToggleSound → Server_ToggleSoundGrenade."));
-	Server_ToggleSoundGrenade();
-}
-
-void AProjectCompPlayerController::ReposSound()
-{
-	APawn* MyPawn = GetPawn();
-	if (!MyPawn)
-	{
-		UE_LOG(LogProjectComp, Warning, TEXT("[Exec] ReposSound: no pawn possessed."));
-		return;
-	}
-	// Target = where the camera is looking. Mirrors UseNade's origin pick.
-	FVector Origin = MyPawn->GetActorLocation();
-	if (const AProjectCompCharacter* PCChar = Cast<AProjectCompCharacter>(MyPawn))
-	{
-		if (const UCameraComponent* Cam = PCChar->GetFirstPersonCameraComponent())
-		{
-			Origin = Cam->GetComponentLocation();
-		}
-	}
-	UE_LOG(LogProjectComp, Log, TEXT("[Exec] ReposSound → Server_RepositionSoundGrenade @ %s."),
-		*Origin.ToCompactString());
-	Server_RepositionSoundGrenade(Origin);
 }
 
 // =====================================================================
@@ -751,11 +746,11 @@ void AProjectCompPlayerController::ReposSound()
 
 void AProjectCompPlayerController::BuyNade(int32 TypeIndex)
 {
-	const int32 MaxValid = static_cast<int32>(EGrenadeType::Sound);
+	const int32 MaxValid = static_cast<int32>(EGrenadeType::Smoke);
 	if (TypeIndex <= 0 || TypeIndex > MaxValid)
 	{
 		UE_LOG(LogProjectComp, Warning,
-			TEXT("[Exec] BuyNade: invalid index %d. Use 1=Flash 2=Info 3=Vulnerable 4=Sound."),
+			TEXT("[Exec] BuyNade: invalid index %d. Use 1=Flash 2=Info 3=Vulnerable 4=Smoke."),
 			TypeIndex);
 		return;
 	}
@@ -796,11 +791,11 @@ void AProjectCompPlayerController::GiveCredits(int32 Amount)
 
 void AProjectCompPlayerController::UseNade(int32 TypeIndex, int32 AltFire)
 {
-	const int32 MaxValid = static_cast<int32>(EGrenadeType::Sound);
+	const int32 MaxValid = static_cast<int32>(EGrenadeType::Smoke);
 	if (TypeIndex <= 0 || TypeIndex > MaxValid)
 	{
 		UE_LOG(LogProjectComp, Warning,
-			TEXT("[Exec] UseNade: invalid index %d. Use 1=Flash 2=Info 3=Vulnerable 4=Sound."),
+			TEXT("[Exec] UseNade: invalid index %d. Use 1=Flash 2=Info 3=Vulnerable 4=Smoke."),
 			TypeIndex);
 		return;
 	}

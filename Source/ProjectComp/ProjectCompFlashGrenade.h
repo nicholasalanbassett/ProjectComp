@@ -7,17 +7,14 @@
 #include "ProjectCompFlashGrenade.generated.h"
 
 /**
- * Flash grenade (Aggro Midrange). Two modes selected at use-time via bAltFire:
+ * Flash grenade (Aggro Midrange). Uses the standardized base throw (no
+ * trajectory overrides), so it flies identically to INFO / VULN / SMOKE: a
+ * strong CS-style tap-throw that arcs, bounces, settles, then flashes on
+ * settle (FuseAfterImpact = 0).
  *
- *  - Primary (bAltFire=false, "LMB"): PhaseOneWall mode (inherited from base).
- *    Straight-line projectile that phases one wall and detonates on the next
- *    surface contact. Standard FLASH primary throw.
- *
- *  - Alt (bAltFire=true, "RMB"): GravityLob mode. Underarm toss — slower
- *    initial speed plus Earth-like gravity makes the projectile arc forward
- *    and land within a short distance. Detonates on first impact. No phase,
- *    no bounce. Self-flash is emergent (the lob lands near you, you're in
- *    the radius, you get flashed).
+ * Self-flash is emergent (a throw that settles near you catches you in the
+ * radius) — there's no longer a dedicated self-flash mode. bAltFire is reserved
+ * for the future global-drop and currently throws identically.
  *
  * Flash effect applies to ALL players (teammates and enemies) within radius
  * with LOS — no team filter. CS-style realism: a poorly-thrown flash can

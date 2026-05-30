@@ -191,15 +191,22 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoReload();
 
-	/** Input handler: equip the grenade in PlayerState slot 0. No-op if that
-	 *  slot is empty or already equipped. */
+	/** Input handler (slot-key PRESS): equip the grenade in PlayerState slot 0
+	 *  and start the hold-to-global-place timer. */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoEquipGrenadeSlot1();
 
-	/** Input handler: equip the grenade in PlayerState slot 1. No-op rules
-	 *  same as slot 0. */
+	/** Input handler (slot-key PRESS): equip the grenade in PlayerState slot 1. */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoEquipGrenadeSlot2();
+
+	/** Input handler (slot-key RELEASE): cancels the hold timer; if the global
+	 *  placement overlay opened during the hold, confirms the drop at the cursor. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoReleaseGrenadeSlot1();
+
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoReleaseGrenadeSlot2();
 
 	/** Input handler: un-equip any held grenade, return to primary weapon. */
 	UFUNCTION(BlueprintCallable, Category="Input")
@@ -421,6 +428,29 @@ protected:
 	 *  spawn (the only server-authoritative event) goes through the existing
 	 *  Server_UseGrenade path which does its own validation. */
 	int32 EquippedGrenadeSlot = -1;
+
+	/** Owning-client-local: true while LMB is held down with a grenade equipped,
+	 *  i.e. a throw is "wound up" and waiting for release. Set on fire-press
+	 *  (DoFireStart) while EquippedGrenadeSlot >= 0; the actual throw fires on
+	 *  release (DoFireEnd). Cleared on throw or any equip change so a stale
+	 *  wind-up can't fire. Not replicated — pure input timing. */
+	bool bGrenadeThrowArmed = false;
+
+	/** Hold a grenade slot key past this many seconds to open the global-drop
+	 *  minimap overlay (vs a quick tap, which just equips). Delegated tuning —
+	 *  0.5s reads as a deliberate hold while staying snappy. */
+	UPROPERTY(EditDefaultsOnly, Category = "Grenade", meta = (ClampMin = "0.1"))
+	float GrenadeGlobalHoldThreshold = 0.5f;
+
+	/** Owning-client-local hold state for the tap-vs-hold slot keys. The held
+	 *  slot tracks which key's timer is live; placement-open state itself lives
+	 *  on the PlayerController (single source of truth). */
+	int32 HeldGrenadeSlot = -1;
+	FTimerHandle GrenadeHoldTimer;
+
+	/** Shared press/release logic for the two grenade slot keys. */
+	void HandleGrenadeSlotPressed(int32 Slot);
+	void HandleGrenadeSlotReleased(int32 Slot);
 
 	/** Walk speed defaults cached in BeginPlay. Restored when Use is released. */
 	float DefaultMaxWalkSpeed = 560.0f;

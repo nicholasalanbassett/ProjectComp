@@ -47,6 +47,15 @@ public:
 	 */
 	AProjectCompGrenadeBase* Server_UseGrenade(EGrenadeType Type, bool bAltFire, const FVector& Origin, const FVector& Direction);
 
+	/**
+	 * Server-only: GLOBAL DROP. Same validation as Server_UseGrenade, but instead
+	 * of throwing, the grenade is deployed directly at TargetXY — its Z is resolved
+	 * to the floor beneath that column (downward trace) and the actor skips flight
+	 * (Server_DeployInPlace). This is the hold-key minimap placement path. Returns
+	 * null on any rejection.
+	 */
+	AProjectCompGrenadeBase* Server_GlobalDropGrenade(EGrenadeType Type, const FVector& TargetXY);
+
 	/** Returns the configured cooldown seconds for the given type. None = 0. */
 	float GetCooldownForType(EGrenadeType Type) const;
 
@@ -71,7 +80,7 @@ protected:
 	float VulnerableCooldown = 15.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Grenade|Cooldowns", meta = (ClampMin = "0.0"))
-	float SoundCooldown = 15.0f;
+	float SmokeCooldown = 15.0f;
 
 private:
 	/** Cached pointer to owning character. Resolved in BeginPlay. */

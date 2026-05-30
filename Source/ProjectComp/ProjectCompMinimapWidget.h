@@ -14,6 +14,16 @@ class UBorder;
 class UTextBlock;
 class AProjectCompPlayerController;
 
+/** What a click/placement on the minimap does. */
+UENUM()
+enum class EMinimapMode : uint8
+{
+	/** Dead-player Loom cast — click places the team's Loom ability. */
+	LoomCast,
+	/** Living-player global util drop — release places the held grenade slot. */
+	GrenadePlacement,
+};
+
 /**
  * Loom cast UI — tactical-map widget shown only to looming (dead) players.
  *
@@ -78,6 +88,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Minimap|Teammates")
 	FVector2D TeammateMarkerSize = FVector2D(14.0f, 22.0f);
 
+	// ---- Mode control (Loom cast vs grenade global drop) -----------------
+
+	/** Switch to grenade-placement mode for the given equipped slot. Called by
+	 *  the PC when a slot key is held into the minimap. */
+	void SetGrenadePlacementMode(int32 SlotIndex);
+
+	/** Restore the default Loom-cast mode (called when placement closes). */
+	void SetLoomCastMode();
+
 protected:
 
 	virtual void NativeOnInitialized() override;
@@ -120,4 +139,14 @@ protected:
 	 *  thrash the widget tree on each tick. */
 	UPROPERTY()
 	TArray<TObjectPtr<UImage>> TeammateMarkers;
+
+	/** Current interaction mode — Loom cast (default) or grenade global drop. */
+	EMinimapMode Mode = EMinimapMode::LoomCast;
+
+	/** In GrenadePlacement mode, the equipped grenade slot being placed. */
+	int32 PendingGrenadeSlot = -1;
+
+	/** Convert an absolute screen position (e.g. a click) to a world XY on the
+	 *  map. Returns false if the position is outside the map content area. */
+	bool ProjectScreenPosToWorld(const FVector2D& AbsScreenPos, FVector& OutWorld) const;
 };

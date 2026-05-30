@@ -131,7 +131,37 @@ void UProjectCompMinimapWidget::NativeTick(const FGeometry& MyGeometry, float In
 
 FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
 {
-	if (InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+	const FKey Button = InMouseEvent.GetEffectingButton();
+
+	// ---- Grenade global-drop placement: left-click drops at that spot, right-
+	// click cancels. The overlay stays open until one of those happens.
+	if (Mode == EMinimapMode::GrenadePlacement)
+	{
+		AProjectCompPlayerController* PC = GetOwningPlayer<AProjectCompPlayerController>();
+		if (Button == EKeys::RightMouseButton)
+		{
+			if (PC)
+			{
+				PC->CloseGrenadePlacement();
+			}
+			return FReply::Handled();
+		}
+		if (Button == EKeys::LeftMouseButton && PC && PendingGrenadeSlot >= 0)
+		{
+			FVector World;
+			if (ProjectScreenPosToWorld(InMouseEvent.GetScreenSpacePosition(), World))
+			{
+				UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Click-placing slot %d at world %s."),
+					PendingGrenadeSlot, *World.ToCompactString());
+				PC->RequestGlobalDrop(PendingGrenadeSlot, World);
+				PC->CloseGrenadePlacement();
+			}
+			// Off-map click: ignore and leave the overlay open to try again.
+		}
+		return FReply::Handled();
+	}
+
+	if (Button != EKeys::LeftMouseButton)
 	{
 		return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
 	}
@@ -307,8 +337,10 @@ void UProjectCompMinimapWidget::UpdateHintText()
 	{
 		return;
 	}
-	HintText->SetText(FText::FromString(
-		TEXT("LOOM CAST — click on the map to place your Loom ability. M to close.")));
+	const FString Hint = (Mode == EMinimapMode::GrenadePlacement)
+		? TEXT("GLOBAL DROP — move the cursor over the map, release the util key to place.")
+		: TEXT("LOOM CAST — click on the map to place your Loom ability. M to close.");
+	HintText->SetText(FText::FromString(Hint));
 }
 
 FVector2D UProjectCompMinimapWidget::MinimapLocalToWorldXY(const FVector2D& LocalPixel, const FVector2D& WidgetSize) const
@@ -336,4 +368,42 @@ FVector2D UProjectCompMinimapWidget::WorldXYToMinimapLocal(const FVector& WorldL
 	const float Nx = FMath::Clamp((MapWorldMax.X - WorldLocation.X) / SpanX, 0.0f, 1.0f);
 	const float Ny = FMath::Clamp((MapWorldMax.Y - WorldLocation.Y) / SpanY, 0.0f, 1.0f);
 	return FVector2D(Nx * AreaSize.X, Ny * AreaSize.Y);
+}
+
+// =====================================================================
+// Grenade global-drop placement mode
+// =====================================================================
+
+void UProjectCompMinimapWidget::SetGrenadePlacementMode(int32 SlotIndex)
+{
+	Mode = EMinimapMode::GrenadePlacement;
+	PendingGrenadeSlot = SlotIndex;
+	UpdateHintText();
+}
+
+void UProjectCompMinimapWidget::SetLoomCastMode()
+{
+	Mode = EMinimapMode::LoomCast;
+	PendingGrenadeSlot = -1;
+	UpdateHintText();
+}
+
+bool UProjectCompMinimapWidget::ProjectScreenPosToWorld(const FVector2D& AbsScreenPos, FVector& OutWorld) const
+{
+	if (!MapContent)
+	{
+		return false;
+	}
+	const FGeometry& AreaGeom = MapContent->GetCachedGeometry();
+	const FVector2D LocalPixel = AreaGeom.AbsoluteToLocal(AbsScreenPos);
+	const FVector2D AreaSize = AreaGeom.GetLocalSize();
+	if (LocalPixel.X < 0.0f || LocalPixel.Y < 0.0f
+		|| LocalPixel.X > AreaSize.X || LocalPixel.Y > AreaSize.Y
+		|| AreaSize.X <= KINDA_SMALL_NUMBER || AreaSize.Y <= KINDA_SMALL_NUMBER)
+	{
+		return false;
+	}
+	const FVector2D WorldXY = MinimapLocalToWorldXY(LocalPixel, AreaSize);
+	OutWorld = FVector(WorldXY.X, WorldXY.Y, MapTargetZ);
+	return true;
 }

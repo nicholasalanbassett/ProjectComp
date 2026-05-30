@@ -71,10 +71,23 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 
 			const ETeamID Team = PS->GetTeamID();
 			const bool bIsEnemy = (Team != ETeamID::Spectator && Team != PlacerTeam);
-			const float DistSq = (Char->GetActorLocation() - ScanCenter).SizeSquared();
+			const FVector TargetLoc = Char->GetActorLocation();
+			const float DistSq = (TargetLoc - ScanCenter).SizeSquared();
 			const bool bInRange = DistSq <= RadiusSq;
 
+			// Smoke occlusion: an active smoke volume between the scan origin and
+			// the enemy hides them from the scan. Traces only ECC_VisionBlock, so
+			// walls don't block the scan (unchanged behavior) — only smoke does.
+			bool bSmokeOccluded = false;
 			if (bIsEnemy && bInRange)
+			{
+				FCollisionQueryParams SmokeParams(SCENE_QUERY_STAT(InfoScanSmoke), /*bTraceComplex*/ false, this);
+				FHitResult SmokeHit;
+				bSmokeOccluded = World->LineTraceSingleByChannel(
+					SmokeHit, ScanCenter, TargetLoc, ECC_VisionBlock, SmokeParams);
+			}
+
+			if (bIsEnemy && bInRange && !bSmokeOccluded)
 			{
 				++EnemyCount;
 			}
@@ -82,14 +95,14 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 #if !UE_BUILD_SHIPPING
 			if (bDrawDebug)
 			{
-				// green = enemy counted; gray = enemy out of range;
-				// blue = teammate / spectator (observation only).
+				// green = enemy counted; magenta = enemy hidden by smoke;
+				// gray = enemy out of range; blue = teammate / spectator.
 				FColor RayColor = FColor::Blue;
 				if (bIsEnemy)
 				{
-					RayColor = bInRange ? FColor::Green : FColor(140, 140, 140);
+					RayColor = !bInRange ? FColor(140, 140, 140)
+						: (bSmokeOccluded ? FColor(255, 60, 200) : FColor::Green);
 				}
-				const FVector TargetLoc = Char->GetActorLocation();
 				DrawDebugLine(World, ScanCenter, TargetLoc, RayColor,
 					false, DebugDrawDuration, 0, 2.0f);
 				DrawDebugSphere(World, TargetLoc, 14.0f, 8, RayColor,

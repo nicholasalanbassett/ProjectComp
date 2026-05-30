@@ -102,10 +102,13 @@ enum class EArmourLevel : uint8
  * Grenade type identity. Four utility grenades on the Aggro/Control/Midrange matrix.
  * Players equip up to two distinct types per round (bought during PreRound).
  *
- *  - Flash:      Aggro Midrange. Hand-thrown straight-line projectile; phases one wall.
- *  - Info:       Midrange Control. Map-placed; snapshots enemy count after delay.
- *  - Vulnerable: Aggro Control. Map-placed; 2x damage zone, breakable at 1 HP.
- *  - Sound:      Midrange Control. Map-placed; dampens enemy audio, toggleable by placer.
+ *  - Flash:      Aggro Midrange. Thrown projectile; flashes players in radius.
+ *  - Info:       Midrange Control. Thrown; snapshots enemy count after delay.
+ *  - Vulnerable: Aggro Control. Thrown; 2x damage zone, breakable at 1 HP.
+ *  - Smoke:      Control. Thrown; blooms a vision-blocking cloud for a duration.
+ *
+ * All four share the standardized throw (LMB gravity arc / RMB straight line).
+ * (Audio-dampening, formerly the "Sound" grenade, is now the MC Loom ability.)
  *
  * Indexed numerically by (uint8) cast for TArray lookups (e.g. cooldown end times).
  * GrenadeType_MAX is the array-size sentinel; do not use as a valid type.
@@ -117,7 +120,7 @@ enum class EGrenadeType : uint8
 	Flash,
 	Info,
 	Vulnerable,
-	Sound,
+	Smoke,
 	GrenadeType_MAX UMETA(Hidden)
 };
 

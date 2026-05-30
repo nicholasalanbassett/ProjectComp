@@ -761,7 +761,7 @@ FLinearColor UProjectCompHUDWidget::GetGrenadeBrandColor(EGrenadeType Type)
 	case EGrenadeType::Flash:      return FLinearColor(1.00f, 0.85f, 0.00f);
 	case EGrenadeType::Info:       return FLinearColor(0.00f, 0.85f, 1.00f);
 	case EGrenadeType::Vulnerable: return FLinearColor(1.00f, 0.376f, 0.251f);
-	case EGrenadeType::Sound:      return FLinearColor(0.85f, 0.85f, 0.90f);
+	case EGrenadeType::Smoke:      return FLinearColor(0.85f, 0.85f, 0.90f);
 	default:                       return FLinearColor::White;
 	}
 }
@@ -820,7 +820,7 @@ void UProjectCompHUDWidget::RefreshEquipIndicator()
 		case EGrenadeType::Flash:      return TEXT("FLASH");
 		case EGrenadeType::Info:       return TEXT("INFO");
 		case EGrenadeType::Vulnerable: return TEXT("VULN");
-		case EGrenadeType::Sound:      return TEXT("SOUND");
+		case EGrenadeType::Smoke:      return TEXT("SMOKE");
 		default:                       return TEXT("---");
 		}
 	};
@@ -1241,12 +1241,12 @@ void UProjectCompHUDWidget::BuildBuyPanel(UCanvasPanel* RootCanvas)
 	BtnBuyFlash = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyFlash"), TEXT("FLASH   $300"));
 	BtnBuyInfo  = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyInfo"),  TEXT("INFO    $300"));
 	BtnBuyVuln  = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuyVuln"),  TEXT("VULN    $300"));
-	BtnBuySound = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuySound"), TEXT("SOUND   $300"));
+	BtnBuySmoke = AddBuyButton(BuyGrenadesColumn, TEXT("BtnBuySmoke"), TEXT("SMOKE   $300"));
 
 	BtnBuyFlash->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyFlash);
 	BtnBuyInfo->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyInfo);
 	BtnBuyVuln->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuyVuln);
-	BtnBuySound->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuySound);
+	BtnBuySmoke->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickBuySmoke);
 
 	// ---- Loom column: 9-cell ability matrix laid out as a single horizontal
 	// row of buttons (instead of a tall vertical list — looks cleaner with
@@ -1381,7 +1381,7 @@ namespace
 		case EGrenadeType::Flash:      return TEXT('F');
 		case EGrenadeType::Info:       return TEXT('I');
 		case EGrenadeType::Vulnerable: return TEXT('V');
-		case EGrenadeType::Sound:      return TEXT('S');
+		case EGrenadeType::Smoke:      return TEXT('S');
 		default:                       return TEXT('?');
 		}
 	}
@@ -1431,7 +1431,7 @@ void UProjectCompHUDWidget::RefreshBuyPanel()
 	bool LoomClaimed[static_cast<int32>(EAbilityType::MC) + 1] = {};
 	int32 PistolCount = 0, SMGCount = 0, RifleCount = 0;
 	int32 LightArmCount = 0, HeavyArmCount = 0;
-	int32 FlashCount = 0, InfoCount = 0, VulnCount = 0, SoundCount = 0;
+	int32 FlashCount = 0, InfoCount = 0, VulnCount = 0, SmokeCount = 0;
 
 	struct FTeammateSnapshot
 	{
@@ -1469,7 +1469,7 @@ void UProjectCompHUDWidget::RefreshBuyPanel()
 			case EGrenadeType::Flash:      ++FlashCount; break;
 			case EGrenadeType::Info:       ++InfoCount;  break;
 			case EGrenadeType::Vulnerable: ++VulnCount;  break;
-			case EGrenadeType::Sound:      ++SoundCount; break;
+			case EGrenadeType::Smoke:      ++SmokeCount; break;
 			default: break;
 			}
 		}
@@ -1502,7 +1502,7 @@ void UProjectCompHUDWidget::RefreshBuyPanel()
 	SetButtonLabel(BtnBuyFlash,        WithDots(TEXT("FLASH   $300"),    FlashCount));
 	SetButtonLabel(BtnBuyInfo,         WithDots(TEXT("INFO    $300"),    InfoCount));
 	SetButtonLabel(BtnBuyVuln,         WithDots(TEXT("VULN    $300"),    VulnCount));
-	SetButtonLabel(BtnBuySound,        WithDots(TEXT("SOUND   $300"),    SoundCount));
+	SetButtonLabel(BtnBuySmoke,        WithDots(TEXT("SMOKE   $300"),    SmokeCount));
 
 	// ---- Teammate loadout rows ------------------------------------------
 	// Helpers — build a fulfill button for one requested item and add it to
@@ -1669,7 +1669,7 @@ void UProjectCompHUDWidget::OnClickBuyArmourHeavy()  { if (auto* PC = GetTypedPC
 void UProjectCompHUDWidget::OnClickBuyFlash()        { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Flash); }
 void UProjectCompHUDWidget::OnClickBuyInfo()         { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Info); }
 void UProjectCompHUDWidget::OnClickBuyVuln()         { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Vulnerable); }
-void UProjectCompHUDWidget::OnClickBuySound()        { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Sound); }
+void UProjectCompHUDWidget::OnClickBuySmoke()        { if (auto* PC = GetTypedPC(this)) PC->BuyGrenade(EGrenadeType::Smoke); }
 
 void UProjectCompHUDWidget::OnClickClaimAA() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::AA); }
 void UProjectCompHUDWidget::OnClickClaimAC() { if (auto* PC = GetTypedPC(this)) PC->ClaimLoomAbility(EAbilityType::AC); }
@@ -1707,7 +1707,7 @@ UButton* UProjectCompHUDWidget::FindBuyButtonUnderCursor(const FVector2D& Screen
 	UButton* const Candidates[] = {
 		BtnBuyPistol, BtnBuySMG, BtnBuyRifle,
 		BtnBuyArmourLight, BtnBuyArmourHeavy,
-		BtnBuyFlash, BtnBuyInfo, BtnBuyVuln, BtnBuySound,
+		BtnBuyFlash, BtnBuyInfo, BtnBuyVuln, BtnBuySmoke,
 	};
 	for (UButton* B : Candidates)
 	{
@@ -1735,7 +1735,7 @@ void UProjectCompHUDWidget::DispatchRightClickRequest(UButton* Btn)
 	else if (Btn == BtnBuyFlash)         { PC->RequestGrenade(EGrenadeType::Flash); }
 	else if (Btn == BtnBuyInfo)          { PC->RequestGrenade(EGrenadeType::Info); }
 	else if (Btn == BtnBuyVuln)          { PC->RequestGrenade(EGrenadeType::Vulnerable); }
-	else if (Btn == BtnBuySound)         { PC->RequestGrenade(EGrenadeType::Sound); }
+	else if (Btn == BtnBuySmoke)         { PC->RequestGrenade(EGrenadeType::Smoke); }
 }
 
 void UProjectCompHUDWidget::OnFulfillRequestClicked(UProjectCompFulfillButton* Button)

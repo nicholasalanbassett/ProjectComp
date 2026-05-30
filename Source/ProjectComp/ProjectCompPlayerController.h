@@ -87,9 +87,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Grenade")
 	void UseGrenadeInSlot(int32 SlotIndex, bool bAltFire = false);
 
+	/** Owning-client entry: GLOBAL DROP the grenade in slot SlotIndex at world
+	 *  Target (resolved from the minimap cursor). Forwards to the server RPC. */
+	UFUNCTION(BlueprintCallable, Category = "Grenade")
+	void RequestGlobalDrop(int32 SlotIndex, FVector Target);
+
+	/** Open the minimap overlay in grenade-placement mode for SlotIndex (called
+	 *  from the character when the slot key is held past the threshold). Unlike
+	 *  the Loom minimap this is allowed while alive. */
+	void OpenGrenadePlacement(int32 SlotIndex);
+
+	/** Close the grenade-placement overlay (the util is placed by the map click
+	 *  itself, or this is a right-click/cancel). Idempotent. */
+	void CloseGrenadePlacement();
+
+	/** True while the grenade global-placement overlay is up. */
+	bool IsGrenadePlacementOpen() const { return bGrenadePlacementMode; }
+
 	// ---- Dev/test console hooks (PIE listen-server convenience) -----------
 	// Use the UE console (~) and call e.g. `BuyNade 1` to buy a Flash.
-	// Indices for BuyNade: 1=Flash 2=Info 3=Vulnerable 4=Sound.
+	// Indices for BuyNade: 1=Flash 2=Info 3=Vulnerable 4=Smoke.
 	// Indices for ClaimLoom: 1=AA 2=AC 3=AM 4=CC 5=CA 6=CM 7=MM 8=MA 9=MC.
 
 	UFUNCTION(Exec)
@@ -138,23 +155,12 @@ public:
 	UFUNCTION(Exec)
 	void EndRound(int32 TeamIndex);
 
-	/** Throw / place the equipped grenade of the given type from the caller's
-	 *  pawn (origin = pawn location, direction = camera forward). Indices:
-	 *  1=Flash 2=Info 3=Vulnerable 4=Sound. RoundActive only.
-	 *  AltFire (0/1, default 0): FLASH right-click self-flash, others ignore. */
+	/** Throw the equipped grenade of the given type from the caller's pawn
+	 *  (origin = camera location, direction = camera forward). Indices:
+	 *  1=Flash 2=Info 3=Vulnerable 4=Smoke. RoundActive only.
+	 *  AltFire (0/1, default 0): right-click straight throw vs left-click arc. */
 	UFUNCTION(Exec)
 	void UseNade(int32 TypeIndex, int32 AltFire = 0);
-
-	/** Toggle the caller's active SOUND grenade on/off. Only works while
-	 *  the caller is the original placer and the grenade still exists. */
-	UFUNCTION(Exec)
-	void ToggleSound();
-
-	/** Reposition the caller's active SOUND grenade to where their camera
-	 *  is currently looking (or pawn location if no camera). Valid once per
-	 *  round; rejected if used previously or if not the original placer. */
-	UFUNCTION(Exec)
-	void ReposSound();
 
 	/** Owning-client entry point: toggle the Loom cast minimap. Only effective
 	 *  while looming — alive callers are silently ignored. Bound to the
@@ -280,16 +286,10 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_UseGrenade(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction);
 
-	/** Server RPC: toggle the caller's placed SOUND grenade on/off. Server
-	 *  finds the caller's grenade via IsPlacedBy() ownership check. */
-	UFUNCTION(Server, Reliable)
-	void Server_ToggleSoundGrenade();
-
-	/** Server RPC: reposition the caller's placed SOUND grenade to NewOrigin.
-	 *  Validates: caller is the placer, grenade still has reposition uses
-	 *  remaining, caller is not permanently dead. */
+	/** Server RPC: GLOBAL DROP — deploy the grenade at world Target via the
+	 *  pawn's GrenadeComponent (floor-resolved, no flight). Re-validated server-side. */
 	UFUNCTION(Server, Reliable, WithValidation)
-	void Server_RepositionSoundGrenade(FVector NewOrigin);
+	void Server_GlobalDropGrenade(EGrenadeType Type, FVector Target);
 
 private:
 
@@ -300,6 +300,11 @@ private:
 
 	/** True while MinimapInstance is on the viewport. */
 	bool bMinimapOpen = false;
+
+	/** True while the minimap is open specifically for grenade GLOBAL placement
+	 *  (vs the dead-only Loom cast). Allowed while alive; close routes through
+	 *  CloseGrenadePlacement. */
+	bool bGrenadePlacementMode = false;
 
 	/** Lazily-created instance of the perf settings overlay. */
 	UPROPERTY()

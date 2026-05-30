@@ -25,19 +25,10 @@ static TAutoConsoleVariable<int32> CVarFlashGrenadeDebugDraw(
 AProjectCompFlashGrenade::AProjectCompFlashGrenade()
 {
 	// FLASH wants instant detonation on impact — no fuse window.
+	// Trajectory is intentionally NOT overridden: FLASH uses the standardized
+	// base throw (LMB gravity arc / RMB straight, both detonate on first
+	// contact) so it flies identically to INFO / VULN / SMOKE.
 	FuseAfterImpact = 0.0f;
-
-	// LMB: standard phase-one-wall throw (inherited default — explicit for clarity).
-	PrimaryFireMode = EThrowableFireMode::PhaseOneWall;
-	PrimaryProjectileSpeed = 3500.0f;
-	PrimaryGravity = 0.0f;
-
-	// RMB: underarm lob. Slower initial speed + Earth-like gravity gives a
-	// short forward arc that drops in front of the player. Flash effect at
-	// landing — anyone close (including the thrower) gets caught in the radius.
-	AltFireMode = EThrowableFireMode::GravityLob;
-	AltProjectileSpeed = 1500.0f;
-	AltGravity = 980.0f;
 }
 
 void AProjectCompFlashGrenade::BeginPlay()
@@ -243,7 +234,17 @@ bool AProjectCompFlashGrenade::HasClearLineOfSight(const FVector& PawnCameraLoc,
 	Params.AddIgnoredActors(IgnoreActors);
 
 	FHitResult Hit;
-	const bool bBlocked = World->LineTraceSingleByChannel(
+	// Geometry occlusion — walls block the flash.
+	const bool bWallBlocked = World->LineTraceSingleByChannel(
 		Hit, PawnCameraLoc, BlastCenter, ECC_Visibility, Params);
-	return !bBlocked;
+	if (bWallBlocked)
+	{
+		return false;
+	}
+	// Smoke occlusion — an active smoke volume between the player and the blast
+	// also blocks the flash. Separate channel so this doesn't double-count walls
+	// (smoke volumes ignore ECC_Visibility) and bullets remain unaffected.
+	const bool bSmokeBlocked = World->LineTraceSingleByChannel(
+		Hit, PawnCameraLoc, BlastCenter, ECC_VisionBlock, Params);
+	return !bSmokeBlocked;
 }

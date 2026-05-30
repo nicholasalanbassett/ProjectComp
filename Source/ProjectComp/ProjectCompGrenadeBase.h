@@ -11,7 +11,7 @@ class AProjectCompPlayerState;
 class APlayerController;
 
 /**
- * Base class for all server-spawned grenade actors (Flash / Info / Vulnerable / Sound).
+ * Base class for all server-spawned grenade actors (Flash / Info / Vulnerable / Smoke).
  *
  * Identity (type + owner team) is stamped via Server_Initialize immediately after
  * SpawnActor by the GrenadeComponent. Subclasses divergently implement throw vs

@@ -12,6 +12,13 @@ DECLARE_LOG_CATEGORY_EXTERN(LogProjectComp, Log, All);
 /** Object channel reserved for looming (dead) pawns. Configured in DefaultEngine.ini. */
 #define ECC_DeadPawn ECC_GameTraceChannel2
 
+/** Trace channel that ONLY smoke volumes block (DefaultResponse=Ignore in
+ *  DefaultEngine.ini). Vision/scan checks (Flash LOS, Info scan) trace against
+ *  this to be occluded by smoke WITHOUT affecting bullets, which trace on
+ *  ECC_Visibility — so smoke blocks sight but not gunfire. Configured in
+ *  DefaultEngine.ini as ECC_GameTraceChannel3 ("VisionBlock"). */
+#define ECC_VisionBlock ECC_GameTraceChannel3
+
 /**
  * Stats group + cycle counters for the gameplay hot paths flagged by the
  * Principal-Engineer audit. SCOPE_CYCLE_COUNTER compiles to nothing in

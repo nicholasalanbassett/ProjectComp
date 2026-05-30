@@ -205,7 +205,7 @@ protected:
 	UPROPERTY() TObjectPtr<UButton> BtnBuyFlash;
 	UPROPERTY() TObjectPtr<UButton> BtnBuyInfo;
 	UPROPERTY() TObjectPtr<UButton> BtnBuyVuln;
-	UPROPERTY() TObjectPtr<UButton> BtnBuySound;
+	UPROPERTY() TObjectPtr<UButton> BtnBuySmoke;
 
 	/** Loom ability buttons (9-cell matrix). */
 	UPROPERTY() TObjectPtr<UButton> BtnClaimAA;
@@ -267,7 +267,7 @@ protected:
 	UFUNCTION() void OnClickBuyFlash();
 	UFUNCTION() void OnClickBuyInfo();
 	UFUNCTION() void OnClickBuyVuln();
-	UFUNCTION() void OnClickBuySound();
+	UFUNCTION() void OnClickBuySmoke();
 	UFUNCTION() void OnClickClaimAA();
 	UFUNCTION() void OnClickClaimAC();
 	UFUNCTION() void OnClickClaimAM();

@@ -186,10 +186,12 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         if (GrenadeSlot1Action)
         {
             EnhancedInputComponent->BindAction(GrenadeSlot1Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoEquipGrenadeSlot1);
+            EnhancedInputComponent->BindAction(GrenadeSlot1Action, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoReleaseGrenadeSlot1);
         }
         if (GrenadeSlot2Action)
         {
             EnhancedInputComponent->BindAction(GrenadeSlot2Action, ETriggerEvent::Started, this, &AProjectCompCharacter::DoEquipGrenadeSlot2);
+            EnhancedInputComponent->BindAction(GrenadeSlot2Action, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoReleaseGrenadeSlot2);
         }
         if (SwitchToWeaponAction)
         {
@@ -525,15 +527,22 @@ void AProjectCompCharacter::DoCrouchEnd()
 // suppressed entirely.
 void AProjectCompCharacter::DoFireStart()
 {
+    // While the global-drop minimap is open, LMB belongs to the overlay (it
+    // places the util), not a throw.
+    if (const AProjectCompPlayerController* PCC = Cast<AProjectCompPlayerController>(GetController()))
+    {
+        if (PCC->IsGrenadePlacementOpen())
+        {
+            return;
+        }
+    }
+
     if (EquippedGrenadeSlot >= 0)
     {
-        // Throw the equipped grenade in primary (LMB) mode, then auto-switch
-        // back to the weapon. Server validates phase/cooldown/kit ownership.
-        if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
-        {
-            PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ false);
-        }
-        EquippedGrenadeSlot = -1;
+        // Grenade equipped: hold-to-wind-up, throw on release. Don't throw or
+        // fire the weapon now — just arm. The actual throw happens in DoFireEnd
+        // when LMB is released. (A wind-up cosmetic could hook in here later.)
+        bGrenadeThrowArmed = true;
         return;
     }
 
@@ -551,6 +560,23 @@ void AProjectCompCharacter::DoFireStart()
 
 void AProjectCompCharacter::DoFireEnd()
 {
+    // Release while a grenade throw is wound up: throw now, then auto-switch
+    // back to the weapon. Guarded on still-equipped so an unequip mid-hold
+    // (slot swap / switch-to-weapon) cleanly cancels rather than throws.
+    if (bGrenadeThrowArmed)
+    {
+        bGrenadeThrowArmed = false;
+        if (EquippedGrenadeSlot >= 0)
+        {
+            if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+            {
+                PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ false);
+            }
+            EquippedGrenadeSlot = -1;
+        }
+        return;
+    }
+
     bIsFiring = false;
     Server_SetTriggerHeld(false);
 }
@@ -817,41 +843,88 @@ void AProjectCompCharacter::DoReload()
 
 void AProjectCompCharacter::DoEquipGrenadeSlot1()
 {
-    // No-op if already equipped to slot 0 (per design). Cross-slot press
-    // (e.g. Q while holding slot 0) DOES swap — that's standard inventory
-    // behavior and the user's "doesn't do anything" rule was for re-pressing
-    // the same slot key.
-    if (EquippedGrenadeSlot == 0)
-    {
-        return;
-    }
-    // Verify the player actually owns a grenade in slot 0 — empty slot = no-op.
-    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
-    if (!PS || !PS->GetEquippedGrenadeTypes().IsValidIndex(0))
-    {
-        return;
-    }
-    EquippedGrenadeSlot = 0;
-    // Release the weapon trigger if it was held — you can't fire while holding
-    // a grenade, and we don't want a stuck server-side trigger flag.
-    Server_SetTriggerHeld(false);
-    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot 0 grenade equipped."));
+    HandleGrenadeSlotPressed(0);
 }
 
 void AProjectCompCharacter::DoEquipGrenadeSlot2()
 {
-    if (EquippedGrenadeSlot == 1)
+    HandleGrenadeSlotPressed(1);
+}
+
+void AProjectCompCharacter::DoReleaseGrenadeSlot1()
+{
+    HandleGrenadeSlotReleased(0);
+}
+
+void AProjectCompCharacter::DoReleaseGrenadeSlot2()
+{
+    HandleGrenadeSlotReleased(1);
+}
+
+void AProjectCompCharacter::HandleGrenadeSlotPressed(int32 Slot)
+{
+    // Ignore slot-key presses while the global-placement overlay is already up
+    // (left-click places, right-click cancels — handled by the map widget).
+    if (const AProjectCompPlayerController* PCC = Cast<AProjectCompPlayerController>(GetController()))
     {
-        return;
+        if (PCC->IsGrenadePlacementOpen())
+        {
+            return;
+        }
     }
+
+    // Verify the player actually owns a grenade in this slot — empty = no-op.
     const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
-    if (!PS || !PS->GetEquippedGrenadeTypes().IsValidIndex(1))
+    if (!PS || !PS->GetEquippedGrenadeTypes().IsValidIndex(Slot))
     {
         return;
     }
-    EquippedGrenadeSlot = 1;
-    Server_SetTriggerHeld(false);
-    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot 1 grenade equipped."));
+
+    // Equip on press (instant, as before) unless already on this slot. Cross-slot
+    // press swaps; re-pressing the same slot just (re)arms the hold timer below.
+    if (EquippedGrenadeSlot != Slot)
+    {
+        EquippedGrenadeSlot = Slot;
+        // Cancel any wound-up LMB throw from a previously-held slot.
+        bGrenadeThrowArmed = false;
+        // Release the weapon trigger — can't fire while holding a grenade.
+        Server_SetTriggerHeld(false);
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot %d grenade equipped."), Slot);
+    }
+
+    // Start (or restart) the hold-to-global-place timer. Holding the key past
+    // GrenadeGlobalHoldThreshold opens the minimap overlay, which then STAYS
+    // open (left-click to place / right-click to cancel). A quick tap-and-
+    // release just leaves the grenade equipped for an LMB throw.
+    HeldGrenadeSlot = Slot;
+    GetWorldTimerManager().ClearTimer(GrenadeHoldTimer);
+    GetWorldTimerManager().SetTimer(GrenadeHoldTimer,
+        [this, Slot]()
+        {
+            if (HeldGrenadeSlot != Slot)
+            {
+                return;
+            }
+            if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+            {
+                PC->OpenGrenadePlacement(Slot);
+            }
+        },
+        GrenadeGlobalHoldThreshold, /*bLoop*/ false);
+}
+
+void AProjectCompCharacter::HandleGrenadeSlotReleased(int32 Slot)
+{
+    if (HeldGrenadeSlot != Slot)
+    {
+        // A different slot is the active hold (e.g. swapped mid-hold) — ignore.
+        return;
+    }
+    // Releasing only cancels a not-yet-fired open timer (a tap, or a hold let go
+    // before the threshold). If the overlay already opened it STAYS open — the
+    // player places with left-click or cancels with right-click.
+    GetWorldTimerManager().ClearTimer(GrenadeHoldTimer);
+    HeldGrenadeSlot = -1;
 }
 
 void AProjectCompCharacter::DoSwitchToWeapon()
@@ -861,6 +934,7 @@ void AProjectCompCharacter::DoSwitchToWeapon()
         return;  // already on weapon
     }
     EquippedGrenadeSlot = -1;
+    bGrenadeThrowArmed = false;
     UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Switched back to primary weapon."));
 }
 
@@ -878,6 +952,7 @@ void AProjectCompCharacter::DoAltFireStart()
     // Auto-switch back to weapon after the throw — design says one throw
     // returns the player to gunplay. The server-side cooldown gates re-use.
     EquippedGrenadeSlot = -1;
+    bGrenadeThrowArmed = false;
 }
 
 void AProjectCompCharacter::Server_RequestReload_Implementation()
