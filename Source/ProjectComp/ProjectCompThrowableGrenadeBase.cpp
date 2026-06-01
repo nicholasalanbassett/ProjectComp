@@ -60,9 +60,59 @@ void AProjectCompThrowableGrenadeBase::Server_InitializeExtra(bool bAltFire, con
 	{
 		Dir = GetActorForwardVector();
 	}
+	// Horizontal facing axis (taken pre-pitch) used to filter velocity inheritance
+	// below: only movement along this axis (forward/back) plus vertical (jump)
+	// should affect the throw — sideways strafing must not.
+	FVector ForwardH(Dir.X, Dir.Y, 0.0f);
+	if (!ForwardH.Normalize())
+	{
+		ForwardH = FVector::ZeroVector;
+	}
+	// CS2-style upward release: pitch the launch direction UP from the player's
+	// aim so the throw arcs (even when aiming level) then falls under gravity.
+	// Both throws use it — the primary's smaller bias gives the long overhand
+	// arc; the alt's larger bias + lower speed gives the short self-toss.
+	const float PitchBias = bIsAltFire ? AltLaunchPitchBias : PrimaryLaunchPitchBias;
+	if (PitchBias > 0.0f)
+	{
+		FRotator LaunchRot = Dir.Rotation();
+		LaunchRot.Pitch = FMath::Clamp(LaunchRot.Pitch + PitchBias, -89.0f, 89.0f);
+		Dir = LaunchRot.Vector();
+	}
 	const float Speed = bIsAltFire ? AltProjectileSpeed : PrimaryProjectileSpeed;
 	Velocity = Dir * Speed;
-	SetActorRotation(Dir.Rotation());
+
+	// CS2-style velocity inheritance: add the thrower's movement velocity so a
+	// run-throw carries farther, a jump-throw gains height, and a back-pedal throw
+	// falls short. Scaled by MovementInheritScalar (1.0 = full carry). We use the
+	// PEAK velocity over a short window (MovementInheritWindow) instead of the
+	// exact release-frame velocity, so jump/strafe/lineup throws are forgiving on
+	// timing — see AProjectCompCharacter::Server_GetWindowedThrowVelocity.
+	const float InheritScalar = bIsAltFire ? AltMovementInheritScalar : MovementInheritScalar;
+	if (InheritScalar > 0.0f)
+	{
+		if (const APawn* ThrowerPawn = GetInstigator())
+		{
+			FVector ThrowerVel = ThrowerPawn->GetVelocity();
+			if (const AProjectCompCharacter* ThrowerChar = Cast<AProjectCompCharacter>(ThrowerPawn))
+			{
+				ThrowerVel = ThrowerChar->Server_GetWindowedThrowVelocity(MovementInheritWindow);
+			}
+			// Keep ONLY forward/back (movement along the horizontal aim) + vertical
+			// (jump) velocity. Discard the sideways/strafe component so strafing
+			// doesn't skew the trajectory or add boost.
+			FVector FilteredVel(0.0f, 0.0f, ThrowerVel.Z);
+			FilteredVel += ForwardH * FVector::DotProduct(ThrowerVel, ForwardH);
+			Velocity += FilteredVel * InheritScalar;
+		}
+	}
+
+	// Face the actual travel direction (post-inheritance) so the mesh points along
+	// the real trajectory rather than just the aim.
+	if (!Velocity.IsNearlyZero())
+	{
+		SetActorRotation(Velocity.GetSafeNormal().Rotation());
+	}
 
 	Phase = EThrowablePhase::Projectile;
 	SetActorTickEnabled(true);
@@ -133,8 +183,8 @@ void AProjectCompThrowableGrenadeBase::Tick(float DeltaSeconds)
 		return;
 	}
 
-	// Apply gravity per the active mode. The standardized LMB arc uses non-zero
-	// gravity; the RMB straight throw uses 0 (designers can override in BP).
+	// Apply gravity per the active mode. Both LMB and the RMB soft lob use
+	// non-zero gravity for their arc (the lob just launches slower + pitched up).
 	// Acceleration on -Z; Velocity is updated BEFORE the trace so this frame's
 	// step already reflects the new vector — keeps integration tight at the
 	// scale UE tickrates run at.

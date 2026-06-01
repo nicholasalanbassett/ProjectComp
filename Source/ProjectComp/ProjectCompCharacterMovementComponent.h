@@ -38,16 +38,48 @@ public:
      * CS bhop. 0 = no airstrafe, 0.2 = light curve, 1.0 = CS-style.
      */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0"))
-    float AirSteerStrength = 0.2f;
+    float AirSteerStrength = 1.0f;
 
     /**
      * Floor for the in-air horizontal speed cap (cm/s). Even on a standstill
-     * jump, the player can still reach this speed laterally — useful for
-     * letting a stationary jumper nudge sideways to clear a ledge.
-     * Set to 0 for fully committed standstill jumps (no lateral movement).
+     * jump, the player can still reach this speed laterally via WASD air control
+     * — this is what lets a stationary jumper drift sideways to jump-peek a
+     * corner with just WASD (no mouse airstrafe needed). Running jumps are
+     * unaffected (their cap = launch speed). Set to 0 for fully committed
+     * standstill jumps (no lateral movement).
      */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0"))
-    float StandstillAirSpeedCap = 50.0f;
+    float StandstillAirSpeedCap = 250.0f;
+
+    /**
+     * WASD air-control authority scales LINEARLY with how fast you were moving
+     * when you jumped (JumpedGroundSpeed). A standstill jump gets MinAirControl
+     * (very little WASD steering); a jump at/above AirControlFullMovementSpeed
+     * gets MaxAirControl (lots). So fast movers can redirect hard mid-air while a
+     * standstill jump stays mostly committed. Driven each falling frame in
+     * CalcVelocity (overrides the base AirControl).
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float MinAirControl = 0.1f;
+
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float MaxAirControl = 1.0f;
+
+    /** Launch ground speed (cm/s) at which air control reaches MaxAirControl;
+     *  below this it lerps down toward MinAirControl. Roughly run speed. */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "1.0", UIMin = "1.0"))
+    float AirControlFullMovementSpeed = 500.0f;
+
+    /**
+     * Inertia decay: air control is at FULL (the speed-scaled value above) right
+     * after launch while you're still rising hard, then fades to this fraction of
+     * it once the upward jump impulse is spent (apex + descent). Models inertia —
+     * you can adjust your launch, but commit as the jump carries on. Driven by
+     * remaining vertical velocity (replay-safe, no synced timer). 1.0 = no decay
+     * (control constant through the jump); lower = more committed mid-air.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float ApexAirControlFraction = 0.7f;
 
     /**
      * Scale applied to JumpZVelocity when jumping from a crouched state.
@@ -58,6 +90,7 @@ public:
 
     virtual float GetMaxSpeed() const override;
     virtual bool DoJump(bool bReplayingMoves, float DeltaTime) override;
+    virtual bool CanCrouchInCurrentState() const override;
     virtual void UpdateFromCompressedFlags(uint8 Flags) override;
     virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
     virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;
@@ -76,6 +109,16 @@ private:
      * so FSavedMove can record the pre-state needed for deterministic replay.
      */
     float LastMoveStartPreviousControlYaw = 0.0f;
+
+    /** Cached typed GameState, lazily resolved, so the per-move phase check in
+     *  GetMaxSpeed / DoJump doesn't Cast<> every call. */
+    mutable TWeakObjectPtr<class AProjectCompGameState> CachedGameState;
+
+    /** True while the round is in the LoomSelection phase — players are frozen in
+     *  place (no walk, no jump) so they commit to the mouse-locked Loom draft.
+     *  Driven by the replicated phase, so server + owning client agree and
+     *  movement prediction stays consistent. */
+    bool IsLoomSelectionPhase() const;
 
     friend class FSavedMove_ProjectComp;
 };

@@ -91,8 +91,11 @@ public:
 	// ---- Mode control (Loom cast vs grenade global drop) -----------------
 
 	/** Switch to grenade-placement mode for the given equipped slot. Called by
-	 *  the PC when a slot key is held into the minimap. */
-	void SetGrenadePlacementMode(int32 SlotIndex);
+	 *  the PC when a slot key is held into the minimap. CloseKeys are the physical
+	 *  key(s) bound to that slot — releasing one closes the map (the held key's
+	 *  Enhanced Input release is eaten by the input-mode switch, but Slate still
+	 *  routes the raw key-up here while the widget has focus). */
+	void SetGrenadePlacementMode(int32 SlotIndex, const TArray<FKey>& CloseKeys);
 
 	/** Restore the default Loom-cast mode (called when placement closes). */
 	void SetLoomCastMode();
@@ -102,6 +105,7 @@ protected:
 	virtual void NativeOnInitialized() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnKeyUp(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
 	/** Build the widget tree programmatically. */
 	void BuildLayout();
@@ -145,6 +149,10 @@ protected:
 
 	/** In GrenadePlacement mode, the equipped grenade slot being placed. */
 	int32 PendingGrenadeSlot = -1;
+
+	/** In GrenadePlacement mode, the physical key(s) bound to the slot that opened
+	 *  the map. Releasing any of them closes the overlay (see NativeOnKeyUp). */
+	TArray<FKey> PlacementCloseKeys;
 
 	/** Convert an absolute screen position (e.g. a click) to a world XY on the
 	 *  map. Returns false if the position is outside the map content area. */

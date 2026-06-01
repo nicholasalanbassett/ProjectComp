@@ -42,8 +42,8 @@ public:
 	 * PlayerState cooldown end-time, returns the new grenade. Returns null on
 	 * any rejection (logged at Verbose).
 	 *
-	 * bAltFire: subclass-specific secondary mode. FLASH uses this for its
-	 *   right-click self-flash; other grenades currently ignore it.
+	 * bAltFire: false = LMB overhand throw; true = the standardized underhand
+	 *   soft lob (shared by all throwables, handled in the throwable base).
 	 */
 	AProjectCompGrenadeBase* Server_UseGrenade(EGrenadeType Type, bool bAltFire, const FVector& Origin, const FVector& Direction);
 

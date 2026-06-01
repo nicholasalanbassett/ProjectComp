@@ -118,7 +118,7 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     // Engine-driven crouch: bIsCrouched is replicated, ceiling-aware on uncrouch.
     GetCharacterMovement()->NavAgentProps.bCanCrouch = true;
     GetCharacterMovement()->SetCrouchedHalfHeight(48.0f);       // 96 -> 48 = capsule drops 48 cm.
-    GetCharacterMovement()->MaxWalkSpeedCrouched = 250.0f;
+    GetCharacterMovement()->MaxWalkSpeedCrouched = 200.0f;
 
     MovementState = EMovementState::Walking;
     CrouchEyeHeight = 40.0f;
@@ -200,6 +200,7 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
         if (AltFireAction)
         {
             EnhancedInputComponent->BindAction(AltFireAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoAltFireStart);
+            EnhancedInputComponent->BindAction(AltFireAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoAltFireEnd);
         }
 
         // Re-emit held input on possession (fixes the "held F/Mouse1 across
@@ -543,6 +544,7 @@ void AProjectCompCharacter::DoFireStart()
         // fire the weapon now — just arm. The actual throw happens in DoFireEnd
         // when LMB is released. (A wind-up cosmetic could hook in here later.)
         bGrenadeThrowArmed = true;
+        bArmedThrowIsAlt = false;  // LMB = long overhand throw
         return;
     }
 
@@ -560,10 +562,11 @@ void AProjectCompCharacter::DoFireStart()
 
 void AProjectCompCharacter::DoFireEnd()
 {
-    // Release while a grenade throw is wound up: throw now, then auto-switch
-    // back to the weapon. Guarded on still-equipped so an unequip mid-hold
-    // (slot swap / switch-to-weapon) cleanly cancels rather than throws.
-    if (bGrenadeThrowArmed)
+    // Release while an LMB throw is wound up: throw now, then auto-switch back
+    // to the weapon. Guarded on still-equipped so an unequip mid-hold (slot
+    // swap / switch-to-weapon) cleanly cancels rather than throws. The !alt
+    // guard means a release here ignores a wind-up that was armed by RMB.
+    if (bGrenadeThrowArmed && !bArmedThrowIsAlt)
     {
         bGrenadeThrowArmed = false;
         if (EquippedGrenadeSlot >= 0)
@@ -596,6 +599,7 @@ void AProjectCompCharacter::Server_RecordTransformSnapshot(float ServerTime)
     Slot.ServerTime = ServerTime;
     Slot.Location = GetActorLocation();
     Slot.Rotation = GetActorRotation();
+    Slot.Velocity = GetVelocity();
     if (const UCapsuleComponent* Capsule = GetCapsuleComponent())
     {
         Slot.CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
@@ -603,6 +607,36 @@ void AProjectCompCharacter::Server_RecordTransformSnapshot(float ServerTime)
 
     HistoryHead = (HistoryHead + 1) % kHistorySize;
     HistoryCount = FMath::Min(HistoryCount + 1, kHistorySize);
+}
+
+FVector AProjectCompCharacter::Server_GetWindowedThrowVelocity(float WindowSeconds) const
+{
+    // Start from the live velocity so a throw is never weaker than the exact
+    // release frame; then look for a stronger one within the recent window.
+    FVector Best = GetVelocity();
+    float BestSizeSq = Best.SizeSquared();
+
+    const UWorld* World = GetWorld();
+    if (!World || WindowSeconds <= 0.0f || HistoryCount <= 0)
+    {
+        return Best;
+    }
+
+    const float Now = World->GetTimeSeconds();
+    for (int32 i = 0; i < HistoryCount; ++i)
+    {
+        const FCharacterTransformSnapshot& S = HistoryBuf[i];
+        if (Now - S.ServerTime <= WindowSeconds)
+        {
+            const float SizeSq = S.Velocity.SizeSquared();
+            if (SizeSq > BestSizeSq)
+            {
+                BestSizeSq = SizeSq;
+                Best = S.Velocity;
+            }
+        }
+    }
+    return Best;
 }
 
 bool AProjectCompCharacter::Server_GetHistoricalSnapshot(float TargetServerTime, FCharacterTransformSnapshot& Out) const
@@ -885,8 +919,9 @@ void AProjectCompCharacter::HandleGrenadeSlotPressed(int32 Slot)
     if (EquippedGrenadeSlot != Slot)
     {
         EquippedGrenadeSlot = Slot;
-        // Cancel any wound-up LMB throw from a previously-held slot.
+        // Cancel any wound-up throw (LMB or RMB) from a previously-held slot.
         bGrenadeThrowArmed = false;
+        bArmedThrowIsAlt = false;
         // Release the weapon trigger — can't fire while holding a grenade.
         Server_SetTriggerHeld(false);
         UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Slot %d grenade equipped."), Slot);
@@ -905,10 +940,30 @@ void AProjectCompCharacter::HandleGrenadeSlotPressed(int32 Slot)
             {
                 return;
             }
-            if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+            AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController());
+            if (!PC)
             {
-                PC->OpenGrenadePlacement(Slot);
+                return;
             }
+            // Resolve the physical key(s) bound to this slot NOW — before opening
+            // flips the input mode and flushes key state — so the minimap can
+            // close itself on the matching key-up (Slate still delivers key-up to
+            // the focused widget even though the input flush eats the action's
+            // release event).
+            TArray<FKey> SlotKeys;
+            const UInputAction* Action = (Slot == 0) ? GrenadeSlot1Action
+                                       : (Slot == 1) ? GrenadeSlot2Action : nullptr;
+            if (const ULocalPlayer* LP = PC->GetLocalPlayer())
+            {
+                if (const UEnhancedInputLocalPlayerSubsystem* Subsys = LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+                {
+                    if (Action)
+                    {
+                        SlotKeys = Subsys->QueryKeysMappedToAction(Action);
+                    }
+                }
+            }
+            PC->OpenGrenadePlacement(Slot, SlotKeys);
         },
         GrenadeGlobalHoldThreshold, /*bLoop*/ false);
 }
@@ -920,11 +975,22 @@ void AProjectCompCharacter::HandleGrenadeSlotReleased(int32 Slot)
         // A different slot is the active hold (e.g. swapped mid-hold) — ignore.
         return;
     }
-    // Releasing only cancels a not-yet-fired open timer (a tap, or a hold let go
-    // before the threshold). If the overlay already opened it STAYS open — the
-    // player places with left-click or cancels with right-click.
+    // Releasing cancels a not-yet-fired open timer (a tap, or a hold let go
+    // before the threshold).
     GetWorldTimerManager().ClearTimer(GrenadeHoldTimer);
     HeldGrenadeSlot = -1;
+
+    // Hold-to-keep-open: if the placement map opened, releasing the slot key
+    // closes it. This release event is reliable now because the grenade map
+    // doesn't steal keyboard focus (no key flush), unlike the focus-stealing
+    // Loom map. The util is still placed by a left-click on the map while held.
+    if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+    {
+        if (PC->IsGrenadePlacementOpen())
+        {
+            PC->CloseGrenadePlacement();
+        }
+    }
 }
 
 void AProjectCompCharacter::DoSwitchToWeapon()
@@ -935,24 +1001,52 @@ void AProjectCompCharacter::DoSwitchToWeapon()
     }
     EquippedGrenadeSlot = -1;
     bGrenadeThrowArmed = false;
+    bArmedThrowIsAlt = false;
     UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Switched back to primary weapon."));
 }
 
 void AProjectCompCharacter::DoAltFireStart()
 {
+    // While the global-drop minimap is open, RMB belongs to the overlay (cancel
+    // placement), not a throw — mirror DoFireStart's overlay guard.
+    if (const AProjectCompPlayerController* PCC = Cast<AProjectCompPlayerController>(GetController()))
+    {
+        if (PCC->IsGrenadePlacementOpen())
+        {
+            return;
+        }
+    }
+
     if (EquippedGrenadeSlot < 0)
     {
         // Weapon equipped — RMB is unbound for now. Future: ADS / scope.
         return;
     }
-    if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+
+    // Grenade equipped: arm the self-toss and wait for release — same hold-to-
+    // wind-up / throw-on-release flow as LMB, just the close-range alt arc. The
+    // actual throw happens in DoAltFireEnd.
+    bGrenadeThrowArmed = true;
+    bArmedThrowIsAlt = true;
+}
+
+void AProjectCompCharacter::DoAltFireEnd()
+{
+    // Release while an RMB self-toss is wound up: throw it, then auto-switch back
+    // to the weapon. The alt guard means this ignores a wind-up armed by LMB.
+    if (bGrenadeThrowArmed && bArmedThrowIsAlt)
     {
-        PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ true);
+        bGrenadeThrowArmed = false;
+        bArmedThrowIsAlt = false;
+        if (EquippedGrenadeSlot >= 0)
+        {
+            if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetController()))
+            {
+                PC->UseGrenadeInSlot(EquippedGrenadeSlot, /*bAltFire*/ true);
+            }
+            EquippedGrenadeSlot = -1;
+        }
     }
-    // Auto-switch back to weapon after the throw — design says one throw
-    // returns the player to gunplay. The server-side cooldown gates re-use.
-    EquippedGrenadeSlot = -1;
-    bGrenadeThrowArmed = false;
 }
 
 void AProjectCompCharacter::Server_RequestReload_Implementation()

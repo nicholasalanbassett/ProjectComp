@@ -113,6 +113,15 @@ public:
 	 *  RoundActive. Dev/test only — strip or gate before production. */
 	void Server_CheatEndRound(ETeamID WinningTeam);
 
+	/** CHEAT/testing: toggle freezing the phase-timer countdown so the current
+	 *  round never advances while you test. Returns the new frozen state. Server-
+	 *  only; the flag stays false in shipping because nothing toggles it there. */
+	bool Server_CheatToggleFreezeTimer();
+
+	/** When true, Tick() skips the phase-timer decrement so the round clock holds.
+	 *  Toggled by the PauseTimer cheat exec. Server-only, never replicated. */
+	bool bCheatFreezeTimer = false;
+
 	/** Public so the HealthComponent (or other damage source) can drive the death cascade. */
 	void HandlePlayerDeath(APlayerController* Victim, AController* Killer);
 

@@ -38,6 +38,10 @@ struct FCharacterTransformSnapshot
 	FVector Location = FVector::ZeroVector;
 	FRotator Rotation = FRotator::ZeroRotator;
 	float CapsuleHalfHeight = 96.0f;
+	/** Pawn velocity at snapshot time. Used (separately from lag-comp) to give
+	 *  grenade throws a forgiving "peak velocity over a recent window" for
+	 *  jump/strafe/lineup throws — see GetWindowedThrowVelocity. */
+	FVector Velocity = FVector::ZeroVector;
 };
 
 /**
@@ -212,10 +216,16 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoSwitchToWeapon();
 
-	/** Input handler: RMB. Routes to grenade alt-fire if equipped; otherwise
-	 *  no-op (reserved for ADS / scope when that lands). */
+	/** Input handler: RMB press. If a grenade is equipped, ARMS the self-toss
+	 *  (hold-to-wind-up); the throw fires on release in DoAltFireEnd — mirrors the
+	 *  LMB throw. No grenade equipped → no-op (reserved for ADS / scope). */
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoAltFireStart();
+
+	/** Input handler: RMB release. Throws the wound-up self-toss (alt-fire) if one
+	 *  was armed by DoAltFireStart, then returns to the weapon. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoAltFireEnd();
 
 	/** Common ability-cast plumbing: resolve the slot to the team's drafted
 	 *  ability via GameState, aim-trace from the camera to compute a world
@@ -388,6 +398,14 @@ public:
 	 *  tick by the GameMode so the ring stays aligned to the server tick rate. */
 	void Server_RecordTransformSnapshot(float ServerTime);
 
+	/** Server-only: the highest-magnitude velocity this pawn had within the last
+	 *  WindowSeconds (falls back to the current velocity). Grenade throws use this
+	 *  instead of the instantaneous release-frame velocity so jump / strafe /
+	 *  lineup throws are forgiving — your peak movement still counts even if the
+	 *  release is a few frames off the exact peak. Reads the lag-comp ring, which
+	 *  the GameMode fills every server tick regardless of this actor's own Tick. */
+	FVector Server_GetWindowedThrowVelocity(float WindowSeconds) const;
+
 	/** Interpolate within the ring to the requested server time. Returns false
 	 *  if the requested time is older than what the ring holds. */
 	bool Server_GetHistoricalSnapshot(float TargetServerTime, FCharacterTransformSnapshot& Out) const;
@@ -436,6 +454,12 @@ protected:
 	 *  wind-up can't fire. Not replicated — pure input timing. */
 	bool bGrenadeThrowArmed = false;
 
+	/** Owning-client-local: when a throw is wound up (bGrenadeThrowArmed), which
+	 *  button armed it — true = RMB self-toss (alt-fire), false = LMB throw. Lets
+	 *  each release handler throw only its own mode, so holding one button then
+	 *  pressing the other can't cross-fire. Not replicated. */
+	bool bArmedThrowIsAlt = false;
+
 	/** Hold a grenade slot key past this many seconds to open the global-drop
 	 *  minimap overlay (vs a quick tap, which just equips). Delegated tuning —
 	 *  0.5s reads as a deliberate hold while staying snappy. */
@@ -454,7 +478,7 @@ protected:
 
 	/** Walk speed defaults cached in BeginPlay. Restored when Use is released. */
 	float DefaultMaxWalkSpeed = 560.0f;
-	float DefaultMaxWalkSpeedCrouched = 250.0f;
+	float DefaultMaxWalkSpeedCrouched = 200.0f;
 
 	// ---- Recoil (owning client only) ---------------------------------------
 	// Tracks outstanding kick degrees for intra-spray smooth recovery.

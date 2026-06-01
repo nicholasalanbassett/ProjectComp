@@ -58,10 +58,12 @@ public:
 	 *  fine because there's only one legitimate caller. */
 	void Server_Initialize(ETeamID InTeam, EGrenadeType InType);
 
-	/** Server: subclass-specific configuration hook called by the GrenadeComponent
-	 *  right after Server_Initialize. Subclasses interpret bAltFire/AimDirection
-	 *  per their own semantics (e.g. FLASH: bAltFire=true → self-flash; INFO/
-	 *  VULNERABLE/SOUND ignore bAltFire). Base no-op. */
+	/** Server: configuration hook called by the GrenadeComponent right after
+	 *  Server_Initialize. For throwables, the base implementation launches the
+	 *  projectile: bAltFire=false is the LMB overhand throw, bAltFire=true is the
+	 *  standardized underhand soft lob (same flight, softer/upward launch) —
+	 *  uniform across all four grenades, no per-subclass interpretation. Base
+	 *  no-op for non-throwables. */
 	virtual void Server_InitializeExtra(bool bAltFire, const FVector& AimDirection) {}
 
 	/** Server: latch detonation, run gameplay + cosmetic effect, schedule

@@ -95,7 +95,7 @@ public:
 	/** Open the minimap overlay in grenade-placement mode for SlotIndex (called
 	 *  from the character when the slot key is held past the threshold). Unlike
 	 *  the Loom minimap this is allowed while alive. */
-	void OpenGrenadePlacement(int32 SlotIndex);
+	void OpenGrenadePlacement(int32 SlotIndex, const TArray<FKey>& CloseKeys);
 
 	/** Close the grenade-placement overlay (the util is placed by the map click
 	 *  itself, or this is a right-click/cancel). Idempotent. */
@@ -154,6 +154,11 @@ public:
 	 *  TeamIndex: 0=Attackers 1=Defenders. */
 	UFUNCTION(Exec)
 	void EndRound(int32 TeamIndex);
+
+	/** CHEAT: toggle pausing the match/phase timer so the current round never
+	 *  advances — handy for testing. Type PauseTimer again to resume. */
+	UFUNCTION(Exec)
+	void PauseTimer();
 
 	/** Throw the equipped grenade of the given type from the caller's pawn
 	 *  (origin = camera location, direction = camera forward). Indices:
@@ -226,8 +231,12 @@ protected:
 	EAppliedInputMode LastAppliedInputMode = EAppliedInputMode::Unknown;
 
 	/** Show/hide the minimap. Stricter version of ToggleMinimap that doesn't
-	 *  toggle — used by lifecycle events (death/respawn) to force a state. */
-	void SetMinimapOpen(bool bOpen);
+	 *  toggle — used by lifecycle events (death/respawn) to force a state.
+	 *  bFocusWidget: give the widget keyboard focus (needed for the Loom 1/2 slot
+	 *  keys). Pass false for the grenade global-drop map so the game keeps focus —
+	 *  focusing the widget flushes held keys (the player stops moving) and is only
+	 *  needed for keyboard-driven map UI, which global drop isn't. */
+	void SetMinimapOpen(bool bOpen, bool bFocusWidget = true);
 
 	/** Lazily create the widget instance on first open. Returns null on failure. */
 	UProjectCompMinimapWidget* EnsureMinimapWidget();
@@ -279,10 +288,14 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_CheatEndRound(ETeamID WinningTeam);
 
+	/** CHEAT path: toggle the GameMode phase-timer freeze (PauseTimer exec). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_CheatToggleFreezeTimer();
+
 	/** Server RPC: forward a grenade-use request to the pawn's GrenadeComponent.
 	 *  Origin and Direction are computed client-side from the pawn pose, then
 	 *  re-validated server-side inside the component.
-	 *  bAltFire: subclass-specific secondary mode (FLASH right-click = self-flash). */
+	 *  bAltFire: false = LMB overhand throw; true = the standardized underhand soft lob. */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_UseGrenade(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction);
 

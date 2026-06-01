@@ -181,6 +181,18 @@ void AProjectCompPlayerController::UpdateInputModeForPhase()
 		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 		Mode.SetHideCursorDuringCapture(false);
 		SetInputMode(Mode);
+		// Center the cursor when the buy menu opens (same as the grenade map) so
+		// it always starts mid-screen rather than wherever it was left. This case
+		// only runs on the transition INTO hover-free (LastAppliedInputMode guard
+		// above), i.e. once per buy-menu open.
+		{
+			int32 ViewX = 0, ViewY = 0;
+			GetViewportSize(ViewX, ViewY);
+			if (ViewX > 0 && ViewY > 0)
+			{
+				SetMouseLocation(ViewX / 2, ViewY / 2);
+			}
+		}
 		break;
 	}
 	default:
@@ -256,7 +268,7 @@ void AProjectCompPlayerController::ToggleSettings()
 	LastAppliedInputMode = EAppliedInputMode::Unknown;
 }
 
-void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
+void AProjectCompPlayerController::SetMinimapOpen(bool bOpen, bool bFocusWidget)
 {
 	UProjectCompMinimapWidget* Widget = EnsureMinimapWidget();
 	if (!Widget)
@@ -276,7 +288,15 @@ void AProjectCompPlayerController::SetMinimapOpen(bool bOpen)
 		FInputModeGameAndUI InputMode;
 		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 		InputMode.SetHideCursorDuringCapture(false);
-		InputMode.SetWidgetToFocus(Widget->TakeWidget());
+		// Only grab keyboard focus when asked (Loom map needs 1/2 keys). For the
+		// grenade global-drop map we skip focus so the game keeps keyboard input —
+		// otherwise the focus change flushes held movement keys and the player
+		// stops dead while the map is open. Mouse clicks still reach the widget
+		// in GameAndUI without focus, so map placement is unaffected.
+		if (bFocusWidget)
+		{
+			InputMode.SetWidgetToFocus(Widget->TakeWidget());
+		}
 		SetInputMode(InputMode);
 		bMinimapOpen = true;
 		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Minimap opened."));
@@ -408,7 +428,7 @@ void AProjectCompPlayerController::RequestGlobalDrop(int32 SlotIndex, FVector Ta
 	Server_GlobalDropGrenade(Type, Target);
 }
 
-void AProjectCompPlayerController::OpenGrenadePlacement(int32 SlotIndex)
+void AProjectCompPlayerController::OpenGrenadePlacement(int32 SlotIndex, const TArray<FKey>& CloseKeys)
 {
 	const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
 	if (!PS || PS->IsPermanentlyDead())
@@ -425,9 +445,23 @@ void AProjectCompPlayerController::OpenGrenadePlacement(int32 SlotIndex)
 	{
 		return;
 	}
-	Widget->SetGrenadePlacementMode(SlotIndex);
+	Widget->SetGrenadePlacementMode(SlotIndex, CloseKeys);
 	bGrenadePlacementMode = true;
-	SetMinimapOpen(true);
+	// No keyboard focus — keep the player moving while the map is open. The
+	// slot-key release that closes the map comes through the gameplay input path
+	// (HandleGrenadeSlotReleased), which now works because we don't flush keys.
+	SetMinimapOpen(true, /*bFocusWidget*/ false);
+
+	// Snap the cursor to screen center on open so the player always starts
+	// aiming from the middle of the map (and the map's center = roughly their
+	// own position), instead of wherever the cursor happened to be left.
+	int32 ViewX = 0, ViewY = 0;
+	GetViewportSize(ViewX, ViewY);
+	if (ViewX > 0 && ViewY > 0)
+	{
+		SetMouseLocation(ViewX / 2, ViewY / 2);
+	}
+
 	UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Placement minimap opened for slot %d."), SlotIndex);
 }
 
@@ -678,6 +712,25 @@ void AProjectCompPlayerController::Server_CheatEndRound_Implementation(ETeamID W
 #endif
 }
 
+bool AProjectCompPlayerController::Server_CheatToggleFreezeTimer_Validate()
+{
+#if !UE_BUILD_SHIPPING
+	return true;
+#else
+	return false;
+#endif
+}
+
+void AProjectCompPlayerController::Server_CheatToggleFreezeTimer_Implementation()
+{
+#if !UE_BUILD_SHIPPING
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_CheatToggleFreezeTimer();
+	}
+#endif
+}
+
 bool AProjectCompPlayerController::Server_UseGrenade_Validate(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction)
 {
 	const uint8 Byte = static_cast<uint8>(Type);
@@ -872,6 +925,14 @@ void AProjectCompPlayerController::EndRound(int32 TeamIndex)
 	Server_CheatEndRound(Team);
 #else
 	(void)TeamIndex;
+#endif
+}
+
+void AProjectCompPlayerController::PauseTimer()
+{
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogProjectComp, Log, TEXT("[Exec] PauseTimer → Server_CheatToggleFreezeTimer."));
+	Server_CheatToggleFreezeTimer();
 #endif
 }
 

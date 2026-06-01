@@ -2,10 +2,29 @@
 
 #include "ProjectCompCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
+#include "ProjectCompGameState.h"
+
+bool UProjectCompCharacterMovementComponent::IsLoomSelectionPhase() const
+{
+    if (!CachedGameState.IsValid())
+    {
+        if (const UWorld* World = GetWorld())
+        {
+            CachedGameState = World->GetGameState<AProjectCompGameState>();
+        }
+    }
+    const AProjectCompGameState* GS = CachedGameState.Get();
+    return GS && GS->GetCurrentPhase() == ERoundPhase::LoomSelection;
+}
 
 UProjectCompCharacterMovementComponent::UProjectCompCharacterMovementComponent()
 {
     bWantsToWalk = 0;
+
+    // AirControl is NOT a fixed value — CalcVelocity drives it each falling frame,
+    // scaling WASD air authority linearly with launch speed (Min/MaxAirControl).
+    // This initial value only matters before the first falling frame.
+    AirControl = MaxAirControl;
 }
 
 // Clamp the engine's MaxSpeed down to TacticalWalkSpeed while the walk
@@ -13,6 +32,12 @@ UProjectCompCharacterMovementComponent::UProjectCompCharacterMovementComponent()
 // is owned by MaxWalkSpeedCrouched on the base class and naturally caps below.
 float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
 {
+    // Frozen in place during the LoomSelection draft — no walking.
+    if (IsLoomSelectionPhase())
+    {
+        return 0.0f;
+    }
+
     const float BaseMax = Super::GetMaxSpeed();
 
     if (bWantsToWalk && MovementMode == MOVE_Walking && !IsCrouching())
@@ -29,6 +54,12 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
 // client, server, and replay with no extra state to sync.
 bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float DeltaTime)
 {
+    // No jumping during the LoomSelection draft — players are frozen in place.
+    if (IsLoomSelectionPhase())
+    {
+        return false;
+    }
+
     if (CharacterOwner && CharacterOwner->bIsCrouched && CrouchJumpZScale < 1.0f)
     {
         const float SavedZ = JumpZVelocity;
@@ -38,6 +69,18 @@ bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float 
         return bJumped;
     }
     return Super::DoJump(bReplayingMoves, DeltaTime);
+}
+
+// No crouching during the LoomSelection draft — players must be completely still.
+// Gating here (rather than the input handler) keeps it prediction-safe: server and
+// owning client both deny the crouch from the same replicated phase.
+bool UProjectCompCharacterMovementComponent::CanCrouchInCurrentState() const
+{
+    if (IsLoomSelectionPhase())
+    {
+        return false;
+    }
+    return Super::CanCrouchInCurrentState();
 }
 
 // Server replay: rebuild bWantsToWalk from the compressed flag the client sent.
@@ -80,6 +123,30 @@ void UProjectCompCharacterMovementComponent::CalcVelocity(float DeltaTime, float
         }
 
         PreviousControlYaw = CurrentYaw;
+    }
+
+    // WASD air-control authority = launch-speed ceiling × inertia decay. Set
+    // before Super, which consumes AirControl for the falling lateral accel.
+    // Both inputs (JumpedGroundSpeed, Velocity.Z) are replay-restored, so this is
+    // deterministic for network prediction with no extra saved state.
+    if (IsFalling() && AirControlFullMovementSpeed > 0.0f)
+    {
+        // (1) Launch-speed ceiling: standstill jump → MinAirControl (little
+        //     steering); full-run jump → MaxAirControl (lots).
+        const float SpeedAlpha = FMath::Clamp(JumpedGroundSpeed / AirControlFullMovementSpeed, 0.0f, 1.0f);
+        const float SpeedScaled = FMath::Lerp(MinAirControl, MaxAirControl, SpeedAlpha);
+
+        // (2) Inertia decay: full authority right after launch (still rising
+        //     hard), fading to ApexAirControlFraction once the upward impulse is
+        //     spent (apex + descent). RiseFrac = remaining fraction of the launch
+        //     up-velocity; it falls ~linearly with time during the ascent, so
+        //     control "decays as time passes" but stays physically grounded and
+        //     prediction-safe (reads Velocity.Z, not a synced timer).
+        const float RiseFrac = (JumpZVelocity > KINDA_SMALL_NUMBER)
+            ? FMath::Clamp(Velocity.Z / JumpZVelocity, 0.0f, 1.0f) : 0.0f;
+        const float InertiaDecay = FMath::Lerp(ApexAirControlFraction, 1.0f, RiseFrac);
+
+        AirControl = SpeedScaled * InertiaDecay;
     }
 
     Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);

@@ -16,6 +16,31 @@
 #include "Engine/World.h"
 #include "Fonts/SlateFontInfo.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "Widgets/SViewport.h"
+
+namespace
+{
+	// A "Handled" reply that explicitly KEEPS keyboard focus on the game viewport.
+	// Clicking the placement map must not move focus to the widget (or clear it):
+	// the resulting viewport focus-loss makes the engine flush the player's held
+	// movement keys, so they stop dead until re-pressing. Forcing focus to stay on
+	// the viewport prevents that flush.
+	FReply HandledKeepGameFocus()
+	{
+		FReply Reply = FReply::Handled();
+		if (GEngine && GEngine->GameViewport)
+		{
+			const TSharedPtr<SViewport> Viewport = GEngine->GameViewport->GetGameViewportWidget();
+			if (Viewport.IsValid())
+			{
+				Reply.SetUserFocus(Viewport.ToSharedRef(), EFocusCause::SetDirectly);
+			}
+		}
+		return Reply;
+	}
+}
 
 void UProjectCompMinimapWidget::NativeOnInitialized()
 {
@@ -144,7 +169,7 @@ FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeo
 			{
 				PC->CloseGrenadePlacement();
 			}
-			return FReply::Handled();
+			return HandledKeepGameFocus();
 		}
 		if (Button == EKeys::LeftMouseButton && PC && PendingGrenadeSlot >= 0)
 		{
@@ -158,7 +183,7 @@ FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeo
 			}
 			// Off-map click: ignore and leave the overlay open to try again.
 		}
-		return FReply::Handled();
+		return HandledKeepGameFocus();
 	}
 
 	if (Button != EKeys::LeftMouseButton)
@@ -338,7 +363,7 @@ void UProjectCompMinimapWidget::UpdateHintText()
 		return;
 	}
 	const FString Hint = (Mode == EMinimapMode::GrenadePlacement)
-		? TEXT("GLOBAL DROP — move the cursor over the map, release the util key to place.")
+		? TEXT("GLOBAL DROP — left-click the map to place • release the util key to close.")
 		: TEXT("LOOM CAST — click on the map to place your Loom ability. M to close.");
 	HintText->SetText(FText::FromString(Hint));
 }
@@ -374,10 +399,17 @@ FVector2D UProjectCompMinimapWidget::WorldXYToMinimapLocal(const FVector& WorldL
 // Grenade global-drop placement mode
 // =====================================================================
 
-void UProjectCompMinimapWidget::SetGrenadePlacementMode(int32 SlotIndex)
+void UProjectCompMinimapWidget::SetGrenadePlacementMode(int32 SlotIndex, const TArray<FKey>& CloseKeys)
 {
 	Mode = EMinimapMode::GrenadePlacement;
 	PendingGrenadeSlot = SlotIndex;
+	PlacementCloseKeys = CloseKeys;
+	// Placement is mouse-only and must NOT steal keyboard focus: a click on a
+	// focusable widget grabs focus from the game viewport, which flushes the
+	// player's held movement keys (they stop dead until re-pressing). The map
+	// closes via the gameplay-side slot-key release, not widget keys, so it
+	// doesn't need focus here.
+	SetIsFocusable(false);
 	UpdateHintText();
 }
 
@@ -385,7 +417,28 @@ void UProjectCompMinimapWidget::SetLoomCastMode()
 {
 	Mode = EMinimapMode::LoomCast;
 	PendingGrenadeSlot = -1;
+	PlacementCloseKeys.Reset();
+	// Loom cast needs keyboard focus for the 1/2 slot-selection keys.
+	SetIsFocusable(true);
 	UpdateHintText();
+}
+
+FReply UProjectCompMinimapWidget::NativeOnKeyUp(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	// Hold-to-keep-open: releasing the slot key that opened the placement map
+	// closes it. We match the raw Slate key-up here (the Enhanced Input release
+	// is swallowed by the input-mode switch that opened the map, so the
+	// character-side handler can't see it — but Slate still routes key-up to the
+	// focused widget).
+	if (Mode == EMinimapMode::GrenadePlacement && PlacementCloseKeys.Contains(InKeyEvent.GetKey()))
+	{
+		if (AProjectCompPlayerController* PC = GetOwningPlayer<AProjectCompPlayerController>())
+		{
+			PC->CloseGrenadePlacement();
+		}
+		return FReply::Handled();
+	}
+	return Super::NativeOnKeyUp(InGeometry, InKeyEvent);
 }
 
 bool UProjectCompMinimapWidget::ProjectScreenPosToWorld(const FVector2D& AbsScreenPos, FVector& OutWorld) const

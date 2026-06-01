@@ -13,8 +13,9 @@
  * settle (FuseAfterImpact = 0).
  *
  * Self-flash is emergent (a throw that settles near you catches you in the
- * radius) — there's no longer a dedicated self-flash mode. bAltFire is reserved
- * for the future global-drop and currently throws identically.
+ * radius) — there's no longer a dedicated self-flash mode. Right-click (alt-fire)
+ * is the standardized underhand soft lob shared by all grenades, not a
+ * flash-specific behavior.
  *
  * Flash effect applies to ALL players (teammates and enemies) within radius
  * with LOS — no team filter. CS-style realism: a poorly-thrown flash can

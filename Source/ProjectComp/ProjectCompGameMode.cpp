@@ -97,9 +97,14 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 		}
 	}
 
-	// Countdown active phase.
-	const float Remaining = GS->GetPhaseTimeRemaining() - DeltaSeconds;
-	GS->Server_SetPhaseTimeRemaining(FMath::Max(Remaining, 0.0f));
+	// Countdown active phase. The PauseTimer cheat freezes the decrement (the
+	// clock holds at its current value) so a round can be held open for testing.
+	float Remaining = GS->GetPhaseTimeRemaining();
+	if (!bCheatFreezeTimer)
+	{
+		Remaining = FMath::Max(Remaining - DeltaSeconds, 0.0f);
+		GS->Server_SetPhaseTimeRemaining(Remaining);
+	}
 
 	// Close the selection window once SelectionWindowDuration has elapsed within
 	// PreRound. Cheap test — single bool flip — runs at most once per round.
@@ -1426,6 +1431,22 @@ void AProjectCompGameMode::Server_CheatEndRound(ETeamID WinningTeam)
 		GS->GetTeamLoadout(WinningTeam).Score);
 	AwardRoundEndCredits(WinningTeam);
 	StartPostRound();
+}
+
+bool AProjectCompGameMode::Server_CheatToggleFreezeTimer()
+{
+	if (!HasAuthority())
+	{
+		return bCheatFreezeTimer;
+	}
+	bCheatFreezeTimer = !bCheatFreezeTimer;
+	const AProjectCompGameState* GS = GetTypedGameState();
+	UE_LOG(LogProjectComp, Log,
+		TEXT("[Cheat] Phase timer %s (phase=%d, %.1fs on the clock)."),
+		bCheatFreezeTimer ? TEXT("FROZEN") : TEXT("resumed"),
+		GS ? static_cast<int32>(GS->GetCurrentPhase()) : -1,
+		GS ? GS->GetPhaseTimeRemaining() : -1.0f);
+	return bCheatFreezeTimer;
 }
 
 void AProjectCompGameMode::AwardRoundEndCredits(ETeamID WinningTeam)

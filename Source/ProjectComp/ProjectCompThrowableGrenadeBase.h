@@ -42,10 +42,13 @@ enum class EThrowablePhase : uint8
  *  - BounceOnce:   straight-line, reflects ONCE off the first surface, then
  *    detonates on the next contact. Retained for BP overrides.
  *
- * NOTE: the Alt (bAltFire) path no longer selects a different flight — both
- * tap-throws use StrongThrow. bAltFire is reserved for the future "global
- * drop" mechanic (hold the utility key → minimap overlay → place at a 2D point
- * resolved to the nearest floor), which is NOT a projectile throw at all.
+ * NOTE: both the primary (LMB) and alt (bAltFire / RMB) paths use StrongThrow,
+ * but with different launch tuning — LMB is a hard long overhand throw; RMB is
+ * a standardized underhand SOFT LOB (lower speed + an upward launch-pitch bias)
+ * that drops the utility short/close. Same bounce-and-settle physics, softer
+ * launch. The "global drop" mechanic (hold the utility key → minimap overlay →
+ * place at a 2D point resolved to the nearest floor) is a SEPARATE hold-key
+ * path — it is NOT bAltFire and NOT a projectile throw at all.
  */
 UENUM(BlueprintType)
 enum class EThrowableFireMode : uint8
@@ -61,10 +64,14 @@ enum class EThrowableFireMode : uint8
  * one standardized throw (Flash / Info / Vulnerable / Smoke fly identically —
  * only their activation effect differs):
  *
- *  - Tap-throw (both LMB and the bAltFire path, for now): a strong CS-style
- *    throw — arcs under gravity, bounces off geometry with energy loss, settles,
- *    then "impacts" (activates) once it comes to rest. Tune via the StrongThrow
- *    knobs (Restitution / TangentialFriction / RestSpeed) below.
+ *  - LMB tap-throw: a hard CS-style overhand throw — arcs under gravity, bounces
+ *    off geometry with energy loss, settles, then "impacts" (activates) once it
+ *    comes to rest. Tune via the StrongThrow knobs (Restitution /
+ *    TangentialFriction / RestSpeed) below.
+ *  - RMB alt-throw: the SAME bounce-and-settle flight, but launched as a
+ *    standardized underhand SOFT LOB — lower AltProjectileSpeed plus an upward
+ *    AltLaunchPitchBias so it arcs gently and lands short/close. The classic
+ *    FPS right-click toss, shared identically by all four utilities.
  *
  * The throw shares projectile flight + lifetime cap + character-hit early-
  * detonate. Subclasses override OnEnterActivePhase to apply their gameplay
@@ -72,10 +79,10 @@ enum class EThrowableFireMode : uint8
  * smoke-volume bloom). They should NOT override the trajectory tunables — the
  * standardized base defaults below are the single source of truth.
  *
- * FUTURE: bAltFire will drive the "global drop" mechanic (hold the utility key
- * → transparent minimap overlay → place at a 2D point resolved to the nearest
- * floor, reduced effect). That path bypasses projectile flight entirely; until
- * it's built, bAltFire throws identically to the primary.
+ * FUTURE: a separate "global drop" mechanic (hold the utility key → transparent
+ * minimap overlay → place at a 2D point resolved to the nearest floor, reduced
+ * effect) deploys via Server_DeployInPlace and bypasses projectile flight
+ * entirely. It is NOT driven by bAltFire — alt-fire is the soft lob above.
  *
  * FuseAfterImpact > 0 inserts a delay between impact and OnEnterActivePhase
  * — INFO/VULN use this for the design-mandated 1s warning window. FLASH leaves
@@ -128,43 +135,84 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Primary")
 	EThrowableFireMode PrimaryFireMode = EThrowableFireMode::StrongThrow;
 
-	/** Launch speed for the strong throw (cm/s). High = a hard overhand throw. */
+	/** Launch speed for the strong throw (cm/s). High = a hard overhand throw.
+	 *  CS2-baseline full throw. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Primary", meta = (ClampMin = "100.0"))
-	float PrimaryProjectileSpeed = 2200.0f;
+	float PrimaryProjectileSpeed = 2100.0f;
 
 	/** Per-second downward acceleration in cm/s^2. Earth-like (~980) gives the
 	 *  CS-style throwing arc. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Primary", meta = (ClampMin = "0.0"))
 	float PrimaryGravity = 980.0f;
 
-	/** Alt flight behavior. Currently identical to primary (StrongThrow) — the
-	 *  bAltFire path is reserved for the future global-drop and doesn't change
-	 *  flight yet. */
+	/** Degrees to pitch the primary launch direction UP from the player's aim.
+	 *  CS2 releases grenades slightly upward so a level aim still arcs — ~10°
+	 *  matches that feel. 0 = throw flat along aim. Clamped so the result stays
+	 *  sane. (The alt has its own, larger bias for the short self-toss.) */
+	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Primary", meta = (ClampMin = "0.0", ClampMax = "80.0"))
+	float PrimaryLaunchPitchBias = 10.0f;
+
+	/** Alt (RMB) flight behavior. Standardized short SELF-USE toss: same
+	 *  StrongThrow bounce-and-settle physics as the primary, but launched slow
+	 *  and steeply upward (low AltProjectileSpeed + high AltLaunchPitchBias) so it
+	 *  drops close to the thrower — for self-flash, smoking your own position,
+	 *  or dropping a zone where you stand. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Alt")
 	EThrowableFireMode AltFireMode = EThrowableFireMode::StrongThrow;
 
+	/** Launch speed for the alt self-toss (cm/s). Deliberately low so the throw
+	 *  lands a couple of metres away at most — a "use it on yourself" toss, not a
+	 *  ranged throw. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Alt", meta = (ClampMin = "100.0"))
-	float AltProjectileSpeed = 2200.0f;
+	float AltProjectileSpeed = 630.0f;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Alt", meta = (ClampMin = "0.0"))
 	float AltGravity = 980.0f;
+
+	/** Degrees to pitch the alt launch direction UP from the player's aim. Higher
+	 *  = a steeper lob that comes straight back down close to the thrower (the
+	 *  self-use feel); 0 = throw exactly along aim. Clamped so the resulting
+	 *  pitch stays sane. */
+	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Alt", meta = (ClampMin = "0.0", ClampMax = "80.0"))
+	float AltLaunchPitchBias = 25.0f;
+
+	/** CS2-style velocity inheritance for the PRIMARY (LMB) throw: fraction of the
+	 *  thrower's movement velocity added to the launch. 1.0 = full carry like CS2 —
+	 *  run-throws go farther, jump-throws gain height, back-pedal throws fall short.
+	 *  0 = ignore movement entirely. Tune down if lineups feel too twitchy. */
+	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Throw", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float MovementInheritScalar = 1.0f;
+
+	/** Same as MovementInheritScalar but for the ALT (RMB) self-toss. Lower than
+	 *  primary so a running/jumping right-click doesn't fling the close-range toss
+	 *  way out — the self-toss should stay roughly self-range even while moving. */
+	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Throw", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float AltMovementInheritScalar = 0.6f;
+
+	/** Forgiveness window (seconds): the throw inherits the PEAK movement velocity
+	 *  the thrower had within this many seconds before release, not just the exact
+	 *  release-frame velocity. Makes jump / strafe / lineup throws lenient on
+	 *  timing — your best movement in the window counts. ~0.15 is a few frames of
+	 *  slack; 0 = strict release-frame only. */
+	UPROPERTY(EditDefaultsOnly, Category = "Throwable|Throw", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float MovementInheritWindow = 0.20f;
 
 	// ---- StrongThrow bounce-and-settle tunables --------------------------
 
 	/** Bounciness on the surface-normal component of a bounce [0..1]. 0 = no
 	 *  bounce (lands and pops on first contact); ~0.45 = CS-ish; higher = bouncy. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|StrongThrow", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float Restitution = 0.45f;
+	float Restitution = 0.18f;
 
 	/** Tangential energy lost per bounce [0..1] (surface friction/scuff). Higher
 	 *  = the grenade "grips" and stops sliding sooner. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|StrongThrow", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float TangentialFriction = 0.30f;
+	float TangentialFriction = 0.45f;
 
 	/** Speed (cm/s) below which, on a bounce, the throw is considered settled and
 	 *  impacts at the current point. Stops the projectile from micro-bouncing. */
 	UPROPERTY(EditDefaultsOnly, Category = "Throwable|StrongThrow", meta = (ClampMin = "1.0"))
-	float RestSpeed = 130.0f;
+	float RestSpeed = 200.0f;
 
 	/** Hard cap on bounces before a forced settle, regardless of speed — a safety
 	 *  net against pathological geometry. */
