@@ -21,7 +21,9 @@
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompGameState.h"
 #include "ProjectCompGameMode.h"
+#include "ProjectCompBomb.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "TimerManager.h"
 
@@ -156,12 +158,9 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(FireAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoFireEnd);
         }
 
-        // Hold E (default): plant / defuse the bomb while inside a site.
-        if (UseAction)
-        {
-            EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoUseStart);
-            EnhancedInputComponent->BindAction(UseAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoUseEnd);
-        }
+        // NOTE: plant/defuse moved to raw key 4 and interact/pickup to raw key F
+        // (see the raw-key binds below). UseAction is left in place as a legacy
+        // IMC entry but is no longer bound to plant/defuse.
 
         // Slot 1 (Loom) is cast via the minimap UI, not a character input —
         // see UProjectCompMinimapWidget. Slot 2 (mid-round) is still pending
@@ -202,6 +201,17 @@ void AProjectCompCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInp
             EnhancedInputComponent->BindAction(AltFireAction, ETriggerEvent::Started, this, &AProjectCompCharacter::DoAltFireStart);
             EnhancedInputComponent->BindAction(AltFireAction, ETriggerEvent::Completed, this, &AProjectCompCharacter::DoAltFireEnd);
         }
+
+        // Raw-key binds (no IMC entry needed):
+        //   3 = equip carried bomb
+        //   G = drop the currently-equipped item (bomb or weapon)
+        //   4 = plant / defuse (held) while in a site / near a planted bomb
+        //   F = interact: pick up a weapon or bomb you're looking at (close range)
+        PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AProjectCompCharacter::DoEquipBomb);
+        PlayerInputComponent->BindKey(EKeys::G, IE_Pressed, this, &AProjectCompCharacter::DoDropEquipped);
+        PlayerInputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AProjectCompCharacter::DoUseStart);
+        PlayerInputComponent->BindKey(EKeys::Four, IE_Released, this, &AProjectCompCharacter::DoUseEnd);
+        PlayerInputComponent->BindKey(EKeys::F, IE_Pressed, this, &AProjectCompCharacter::DoInteract);
 
         // Re-emit held input on possession (fixes the "held F/Mouse1 across
         // respawn never re-engages" bug). Deferred one tick so Enhanced Input
@@ -919,6 +929,7 @@ void AProjectCompCharacter::HandleGrenadeSlotPressed(int32 Slot)
     if (EquippedGrenadeSlot != Slot)
     {
         EquippedGrenadeSlot = Slot;
+        bBombEquipped = false;
         // Cancel any wound-up throw (LMB or RMB) from a previously-held slot.
         bGrenadeThrowArmed = false;
         bArmedThrowIsAlt = false;
@@ -995,14 +1006,195 @@ void AProjectCompCharacter::HandleGrenadeSlotReleased(int32 Slot)
 
 void AProjectCompCharacter::DoSwitchToWeapon()
 {
-    if (EquippedGrenadeSlot == -1)
+    if (EquippedGrenadeSlot == -1 && !bBombEquipped)
     {
         return;  // already on weapon
     }
     EquippedGrenadeSlot = -1;
+    bBombEquipped = false;
     bGrenadeThrowArmed = false;
     bArmedThrowIsAlt = false;
     UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Switched back to primary weapon."));
+}
+
+void AProjectCompCharacter::DoEquipBomb()
+{
+    // Only the bomb carrier can equip it.
+    const UWorld* World = GetWorld();
+    const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
+    const AProjectCompBomb* Bomb = GS ? GS->GetBomb() : nullptr;
+    if (!Bomb || Bomb->GetCarrier() != this)
+    {
+        return;
+    }
+    bBombEquipped = true;
+    EquippedGrenadeSlot = -1;
+    bGrenadeThrowArmed = false;
+    bArmedThrowIsAlt = false;
+    UE_LOG(LogProjectComp, Verbose, TEXT("[Equip] Bomb equipped (press G to drop)."));
+}
+
+void AProjectCompCharacter::DoDropEquipped()
+{
+    if (bBombEquipped)
+    {
+        Server_DropBomb();
+        bBombEquipped = false;  // back to weapon locally
+        return;
+    }
+    // Weapon active (not a grenade) → drop it. Grenades are permanent kit.
+    if (EquippedGrenadeSlot == -1)
+    {
+        Server_DropWeapon();
+    }
+}
+
+bool AProjectCompCharacter::Server_DropBomb_Validate()
+{
+    return true;
+}
+
+void AProjectCompCharacter::Server_DropBomb_Implementation()
+{
+    const AProjectCompGameState* GS = GetWorld() ? GetWorld()->GetGameState<AProjectCompGameState>() : nullptr;
+    AProjectCompBomb* Bomb = GS ? GS->GetBomb() : nullptr;
+    if (Bomb && Bomb->GetCarrier() == this)
+    {
+        Bomb->Server_Drop(GetActorLocation());
+    }
+}
+
+bool AProjectCompCharacter::Server_DropWeapon_Validate()
+{
+    return true;
+}
+
+void AProjectCompCharacter::Server_DropWeapon_Implementation()
+{
+    if (!HasAuthority() || !CurrentWeapon)
+    {
+        return;
+    }
+    Server_DropWeaponInternal(CurrentWeapon);
+    CurrentWeapon = nullptr;  // replicated → owning client clears its FP weapon too
+}
+
+// Detach a weapon and leave it on the ground in front of the player. Clearing the
+// owner marks it as "dropped" so DoInteract can find and re-pick it up.
+void AProjectCompCharacter::Server_DropWeaponInternal(AProjectCompHitscanWeapon* Weapon)
+{
+    if (!HasAuthority() || !Weapon)
+    {
+        return;
+    }
+    Weapon->Server_SetTriggerHeld(false);
+    // Cancel any in-progress reload so it doesn't keep reloading on the ground.
+    // Server_CancelReload leaves CurrentMagAmmo/ReserveAmmo untouched, so the gun
+    // keeps the ammo it had before the reload — and that state persists on the
+    // actor until someone picks it back up.
+    Weapon->Server_CancelReload();
+    Weapon->SetOwner(nullptr);
+    Weapon->SetInstigator(nullptr);
+    Weapon->SetReplicateMovement(true);  // so the dropped position shows on clients
+    Weapon->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+    const FVector DropLoc = GetActorLocation() + GetActorForwardVector() * 80.0f - FVector(0.0f, 0.0f, 40.0f);
+    Weapon->SetActorLocation(DropLoc);
+    Weapon->SetAvailableForPickup(true);  // on the ground → walk-over pickup enabled
+}
+
+// Server: drop the currently-equipped weapon onto the ground (e.g. on death) so
+// it can be looted. No-op if unarmed or the weapon's already dropped.
+void AProjectCompCharacter::DropCurrentWeaponToGround()
+{
+    if (!HasAuthority() || !CurrentWeapon)
+    {
+        return;
+    }
+    Server_DropWeaponInternal(CurrentWeapon);
+    CurrentWeapon = nullptr;
+}
+
+void AProjectCompCharacter::DoInteract()
+{
+    Server_TryInteract();
+}
+
+bool AProjectCompCharacter::Server_TryInteract_Validate()
+{
+    return true;
+}
+
+void AProjectCompCharacter::Server_TryInteract_Implementation()
+{
+    if (!HasAuthority())
+    {
+        return;
+    }
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS || !PS->IsAlive())
+    {
+        return;
+    }
+
+    // Aim from the camera using the server-validated rotation (same source the
+    // weapon traces from). Close-range, "looking at it" cone — Valorant/CS feel.
+    const UCameraComponent* Cam = GetFirstPersonCameraComponent();
+    const FVector EyeLoc = Cam ? Cam->GetComponentLocation() : GetActorLocation();
+    const FVector AimDir = Server_GetValidatedAimRotation().Vector();
+
+    auto ScoreCandidate = [&](const FVector& TargetLoc, float& OutDot) -> bool
+    {
+        const FVector ToTarget = TargetLoc - EyeLoc;
+        const float Dist = ToTarget.Size();
+        if (Dist > InteractRange || Dist <= KINDA_SMALL_NUMBER)
+        {
+            return false;
+        }
+        OutDot = FVector::DotProduct(AimDir, ToTarget / Dist);
+        return OutDot >= InteractConeDot;
+    };
+
+    // Pick the best-aligned candidate (bomb or a dropped weapon) in front of us.
+    float BestDot = -1.0f;
+    AProjectCompBomb* BestBomb = nullptr;
+    AProjectCompHitscanWeapon* BestWeapon = nullptr;
+
+    const AProjectCompGameState* GS = GetWorld() ? GetWorld()->GetGameState<AProjectCompGameState>() : nullptr;
+    if (AProjectCompBomb* Bomb = GS ? const_cast<AProjectCompBomb*>(GS->GetBomb()) : nullptr)
+    {
+        if (Bomb->IsAvailable() && PS->GetTeamID() == ETeamID::Attackers && Bomb->GetCarrier() == nullptr)
+        {
+            float Dot = 0.0f;
+            if (ScoreCandidate(Bomb->GetActorLocation(), Dot) && Dot > BestDot)
+            {
+                BestDot = Dot; BestBomb = Bomb; BestWeapon = nullptr;
+            }
+        }
+    }
+
+    for (TActorIterator<AProjectCompHitscanWeapon> It(GetWorld()); It; ++It)
+    {
+        AProjectCompHitscanWeapon* W = *It;
+        if (!W || W->GetOwner() != nullptr)  // owned == currently equipped, not droppable loot
+        {
+            continue;
+        }
+        float Dot = 0.0f;
+        if (ScoreCandidate(W->GetActorLocation(), Dot) && Dot > BestDot)
+        {
+            BestDot = Dot; BestWeapon = W; BestBomb = nullptr;
+        }
+    }
+
+    if (BestBomb)
+    {
+        BestBomb->Server_Pickup(this);
+    }
+    else if (BestWeapon)
+    {
+        // F-interact is deliberate, so allow a swap (the current weapon drops).
+        EquipGroundWeapon(BestWeapon, /*bAllowSwap*/ true);
+    }
 }
 
 void AProjectCompCharacter::DoAltFireStart()
@@ -1173,9 +1365,10 @@ void AProjectCompCharacter::ReconcileHeldInputAfterPossession()
         UE_LOG(LogProjectComp, Verbose, TEXT("[Input] Reconcile: Fire held across possession — synthesising Started."));
         DoFireStart();
     }
-    if (UseAction && PlayerInput->GetActionValue(UseAction).Get<bool>())
+    // Plant/defuse is raw key 4 now — re-engage if it's still physically held.
+    if (PC->IsInputKeyDown(EKeys::Four))
     {
-        UE_LOG(LogProjectComp, Verbose, TEXT("[Input] Reconcile: Use held across possession — synthesising Started."));
+        UE_LOG(LogProjectComp, Verbose, TEXT("[Input] Reconcile: Use (key 4) held across possession — synthesising Started."));
         DoUseStart();
     }
 }
@@ -1252,6 +1445,38 @@ void AProjectCompCharacter::NotifyBombSiteOverlapChanged()
 //      bWasCrouchingBeforeInteract from bWantsToCrouch, the second read would
 //      see the value the first just wrote (true) and the player would never
 //      uncrouch. Idempotent transitions on a single helper avoid that.
+bool AProjectCompCharacter::CanInteractWithBombNow() const
+{
+    const UWorld* World = GetWorld();
+    const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
+    const AProjectCompBomb* Bomb = GS ? GS->GetBomb() : nullptr;
+    if (!Bomb)
+    {
+        return false;
+    }
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS || !PS->IsAlive())
+    {
+        return false;
+    }
+    const ETeamID Team = PS->GetTeamID();
+
+    // Plant: I'm the bomb carrier (attacker) standing in a bomb-site plant area.
+    if (Team == ETeamID::Attackers && Bomb->GetCarrier() == this && IsOverlappingBombSite())
+    {
+        return true;
+    }
+    // Defuse: I'm a defender within DefuseRadius of the planted bomb.
+    if (Team == ETeamID::Defenders && Bomb->IsPlanted())
+    {
+        if (FVector::DistSquared(GetActorLocation(), Bomb->GetActorLocation()) <= FMath::Square(Bomb->GetDefuseRadius()))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void AProjectCompCharacter::UpdateInteractLock()
 {
     UCharacterMovementComponent* CharMov = GetCharacterMovement();
@@ -1260,7 +1485,10 @@ void AProjectCompCharacter::UpdateInteractLock()
         return;
     }
 
-    const bool bShouldLock = bUseHeld && IsOverlappingBombSite();
+    // Only lock (crouch + freeze) for an ACTUAL plant/defuse — being the bomb
+    // carrier in a site, or a defender in range of the planted bomb. Fixes the
+    // old bug where any F-press inside a bomb site auto-crouched the player.
+    const bool bShouldLock = bUseHeld && CanInteractWithBombNow();
 
     if (bShouldLock && !bInteractLockActive)
     {
@@ -1324,16 +1552,53 @@ void AProjectCompCharacter::Server_EquipDefaultWeapon()
     SpawnParams.Instigator = this;
     SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-    CurrentWeapon = GetWorld()->SpawnActor<AProjectCompHitscanWeapon>(
+    AProjectCompHitscanWeapon* Spawned = GetWorld()->SpawnActor<AProjectCompHitscanWeapon>(
         DefaultWeaponClass,
         GetActorLocation(),
         GetActorRotation(),
         SpawnParams);
 
+    AttachWeaponToView(Spawned);
+}
+
+// Attach a weapon actor to the FP camera so the owner sees a held gun, and make
+// it this character's CurrentWeapon. Shared by initial equip and ground pickup.
+void AProjectCompCharacter::AttachWeaponToView(AProjectCompHitscanWeapon* Weapon)
+{
+    if (!HasAuthority() || !Weapon)
+    {
+        return;
+    }
+    Weapon->SetOwner(this);
+    Weapon->SetInstigator(this);
+    Weapon->SetReplicateMovement(false);  // follows the attach parent, not free movement
+    Weapon->SetAvailableForPickup(false); // equipped → no walk-over pickup volume
+    // Rough lower-right offset (forward / right / down). Fine-tune in the BP mesh.
+    Weapon->AttachToComponent(FirstPersonCameraComponent, FAttachmentTransformRules::SnapToTargetIncludingScale);
+    Weapon->SetActorRelativeLocation(FVector(45.0f, 18.0f, -18.0f));
+    Weapon->SetActorRelativeRotation(FRotator::ZeroRotator);
+    CurrentWeapon = Weapon;
+}
+
+// Server: equip a weapon lying on the ground. Auto-pickup (walk-over) passes
+// bAllowSwap=false so it only fills an empty slot; F-interact passes true so it
+// swaps the current weapon (dropping it) for the looked-at one.
+void AProjectCompCharacter::EquipGroundWeapon(AProjectCompHitscanWeapon* Weapon, bool bAllowSwap)
+{
+    if (!HasAuthority() || !Weapon)
+    {
+        return;
+    }
     if (CurrentWeapon)
     {
-        CurrentWeapon->AttachToActor(this, FAttachmentTransformRules::SnapToTargetIncludingScale);
+        if (!bAllowSwap)
+        {
+            return;  // already armed — auto-pickup leaves it alone
+        }
+        Server_DropWeaponInternal(CurrentWeapon);
+        CurrentWeapon = nullptr;
     }
+    AttachWeaponToView(Weapon);
 }
 
 void AProjectCompCharacter::PossessedBy(AController* NewController)
@@ -1358,6 +1623,16 @@ void AProjectCompCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
         if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
         {
             GM->Server_UnregisterLiveCharacter(this);
+        }
+
+        // Destroy the still-HELD weapon so it doesn't orphan into a floating gun
+        // when this character is torn down (death / respawn / round reset / travel).
+        // A DROPPED weapon has already cleared CurrentWeapon (and its owner), so it
+        // survives on the ground for pickup — only the in-hand gun is cleaned up.
+        if (CurrentWeapon)
+        {
+            CurrentWeapon->Destroy();
+            CurrentWeapon = nullptr;
         }
     }
 

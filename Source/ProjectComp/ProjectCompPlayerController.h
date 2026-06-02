@@ -11,6 +11,8 @@ class UInputAction;
 class UInputMappingContext;
 class UProjectCompMinimapWidget;
 class UProjectCompSettingsWidget;
+class UProjectCompLobbyWidget;
+class APlayerState;
 
 /**
  *  Player controller for the tac-FPS character.
@@ -40,6 +42,18 @@ public:
 	/** Owning-client entry point: request a Loom ability cast (player must be looming). */
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	void RequestAbilityCast(EAbilityType Type, FVector TargetLocation);
+
+	/** Owning-client entry point: change your team in the pre-match lobby. */
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void RequestTeamChange(ETeamID NewTeam);
+
+	/** Owning-client (lobby leader) entry point: start the match from the lobby. */
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void RequestStartMatch();
+
+	/** Owning-client (lobby leader) entry point: hand lobby leadership to Target. */
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void RequestSetLobbyLeader(APlayerState* Target);
 
 	/** Owning-client entry point: claim a Loom ability during PreRound selection window.
 	 *  First-come-first-served per team (no duplicates). Server arbitrates. */
@@ -160,6 +174,11 @@ public:
 	UFUNCTION(Exec)
 	void PauseTimer();
 
+	/** CHEAT: end the current phase and start the next immediately (from the lobby,
+	 *  starts the match). */
+	UFUNCTION(Exec)
+	void NextPhase();
+
 	/** Throw the equipped grenade of the given type from the caller's pawn
 	 *  (origin = camera location, direction = camera forward). Indices:
 	 *  1=Flash 2=Info 3=Vulnerable 4=Smoke. RoundActive only.
@@ -206,6 +225,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category="Loom")
 	TSubclassOf<UProjectCompMinimapWidget> MinimapWidgetClass;
 
+	/** Subclass of the team-select lobby widget, shown during the pre-match None
+	 *  phase. Assign BP_LobbyWidget in defaults. */
+	UPROPERTY(EditDefaultsOnly, Category="HUD")
+	TSubclassOf<UProjectCompLobbyWidget> LobbyWidgetClass;
+
 	/** Subclass of UProjectCompSettingsWidget to instantiate. Defaults to the
 	 *  C++ class; designers can override with a BP subclass if they need
 	 *  custom layout, but the C++ class is fully self-contained. */
@@ -240,6 +264,12 @@ protected:
 
 	/** Lazily create the widget instance on first open. Returns null on failure. */
 	UProjectCompMinimapWidget* EnsureMinimapWidget();
+
+	/** Show/hide the pre-match team-select lobby overlay (driven by the None phase). */
+	void SetLobbyOpen(bool bOpen);
+
+	/** Lazily create the lobby widget instance. Returns null on failure. */
+	UProjectCompLobbyWidget* EnsureLobbyWidget();
 
 	// ---- Server RPCs (declared with full _Validate + _Implementation) ------
 
@@ -292,6 +322,10 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_CheatToggleFreezeTimer();
 
+	/** CHEAT path: advance to the next phase (NextPhase exec). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_CheatAdvancePhase();
+
 	/** Server RPC: forward a grenade-use request to the pawn's GrenadeComponent.
 	 *  Origin and Direction are computed client-side from the pawn pose, then
 	 *  re-validated server-side inside the component.
@@ -304,6 +338,18 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_GlobalDropGrenade(EGrenadeType Type, FVector Target);
 
+	/** Server RPC: change the caller's team in the lobby (free swap, any size). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_RequestTeamChange(ETeamID NewTeam);
+
+	/** Server RPC: lobby-leader-only — start the match from the lobby. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_StartMatch();
+
+	/** Server RPC: leader-only — transfer lobby leadership to Target. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_SetLobbyLeader(APlayerState* Target);
+
 private:
 
 	/** Lazily-created instance of the minimap widget. Owned by this PC, hidden
@@ -313,6 +359,13 @@ private:
 
 	/** True while MinimapInstance is on the viewport. */
 	bool bMinimapOpen = false;
+
+	/** Lazily-created team-select lobby widget. */
+	UPROPERTY()
+	TObjectPtr<UProjectCompLobbyWidget> LobbyInstance;
+
+	/** True while LobbyInstance is on the viewport. */
+	bool bLobbyOpen = false;
 
 	/** True while the minimap is open specifically for grenade GLOBAL placement
 	 *  (vs the dead-only Loom cast). Allowed while alive; close routes through

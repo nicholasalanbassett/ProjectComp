@@ -10,6 +10,7 @@
 #include "ProjectCompPlayerController.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompBombSite.h"
+#include "ProjectCompBomb.h"
 #include "EngineUtils.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
@@ -221,6 +222,20 @@ void UProjectCompHUDWidget::BuildLayout()
 	AmmoLabelText->SetJustification(ETextJustify::Right);
 	ApplyTextShadow(AmmoLabelText);
 	AmmoBox->AddChildToVerticalBox(AmmoLabelText);
+
+	// ---- Bottom-right (above Ammo): "carrying the bomb" indicator ----------
+	BombCarriedText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BombCarriedText"));
+	BombCarriedText->SetFont(MakeFont(20));
+	BombCarriedText->SetText(NSLOCTEXT("HUD", "BombCarried", "\xE2\x97\x8F BOMB"));  // ● BOMB
+	BombCarriedText->SetColorAndOpacity(EliminatedTextColor);
+	BombCarriedText->SetJustification(ETextJustify::Right);
+	ApplyTextShadow(BombCarriedText);
+	BombCarriedText->SetVisibility(ESlateVisibility::Collapsed);
+	UCanvasPanelSlot* BombCarriedSlot = RootCanvas->AddChildToCanvas(BombCarriedText);
+	BombCarriedSlot->SetAnchors(FAnchors(1.0f, 1.0f));
+	BombCarriedSlot->SetAlignment(FVector2D(1.0f, 1.0f));
+	BombCarriedSlot->SetPosition(FVector2D(-CornerPadding, -CornerPadding - 150.0f));
+	BombCarriedSlot->SetAutoSize(true);
 
 	// ---- Center crosshair (4 ticks + optional center dot) -----------------
 	// Each tick is positioned relative to the viewport center via anchor
@@ -889,28 +904,38 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 		return;
 	}
 
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const UWorld* World = GetWorld();
+	const AProjectCompGameState* GS = World ? World->GetGameState<AProjectCompGameState>() : nullptr;
+	const AProjectCompBomb* Bomb = GS ? GS->GetBomb() : nullptr;
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
 
-	// Check for a freshly-defused site and start the 3s banner timer.
-	bool bAnyDefused = false;
-	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
+	// Bottom-right "you have the bomb" indicator — visible only while the local
+	// player is the carrier.
+	if (BombCarriedText)
 	{
-		AProjectCompBombSite* Site = WeakSite.Get();
-		if (Site && Site->bIsDefused)
+		const bool bIAmCarrier = Bomb && Bomb->GetCarrier() == GetOwningPlayerPawn();
+		BombCarriedText->SetVisibility(bIAmCarrier
+			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+
+	if (!Bomb)
+	{
+		BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	// Freshly-defused → show a 3s "BOMB DEFUSED" banner.
+	if (Bomb->IsDefused())
+	{
+		if (DefuseMessageEndTime == 0.0f)
 		{
-			bAnyDefused = true;
-			if (DefuseMessageEndTime == 0.0f)
-			{
-				DefuseMessageEndTime = Now + 3.0f;
-			}
-			break;
+			DefuseMessageEndTime = Now + 3.0f;
 		}
 	}
-	if (!bAnyDefused)
+	else
 	{
 		DefuseMessageEndTime = 0.0f;
 	}
-
 	if (DefuseMessageEndTime > 0.0f && Now < DefuseMessageEndTime)
 	{
 		BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
@@ -926,57 +951,27 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 		return;
 	}
 
-	// Find the most-interesting bomb site to display. Priority: planted >
-	// active plant > active defuse > nothing. We only show one at a time.
-	AProjectCompBombSite* DisplaySite = nullptr;
-	bool bShowDefuse = false;
-	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
+	// Planted: "BOMB PLANTED" + detonation countdown (+ defuse progress if any).
+	if (Bomb->IsPlanted())
 	{
-		AProjectCompBombSite* Site = WeakSite.Get();
-		if (!Site || Site->IsTerminal())
-		{
-			continue;
-		}
-		if (Site->bIsPlanted)
-		{
-			DisplaySite = Site;
-			bShowDefuse = Site->DefuseProgress > 0.01f;
-			break;  // planted always wins
-		}
-		if (Site->PlantProgress > 0.01f && !DisplaySite)
-		{
-			DisplaySite = Site;
-		}
-	}
-
-	if (!DisplaySite)
-	{
-		BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
-		return;
-	}
-
-	BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
-
-	if (DisplaySite->bIsPlanted)
-	{
-		// Use the replicated server clock — DetonationEndTime is stamped on the
-		// server, so reading local-world time on a remote client would drift.
-		const UWorld* World = GetWorld();
-		const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
-		const float ServerTime = GS ? GS->GetServerWorldTimeSeconds() : (World ? World->GetTimeSeconds() : 0.0f);
-		const float Remaining = FMath::Max(0.0f, DisplaySite->DetonationEndTime - ServerTime);
+		// DetonationEndTime is stamped in server-world-time; compare against the
+		// replicated server clock so it doesn't drift on remote clients.
+		const float ServerTime = GS ? GS->GetServerWorldTimeSeconds() : Now;
+		const float Remaining = FMath::Max(0.0f, Bomb->GetDetonationEndTime() - ServerTime);
 		const int32 RemainingInt = FMath::CeilToInt(Remaining);
+		const bool bShowDefuse = Bomb->GetDefuseProgress() > 0.01f;
 
+		BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
 		if (BombStatusTitle)
 		{
-			BombStatusTitle->SetText(FText::FromString(FString::Printf(TEXT("BOMB PLANTED AT %s"), *DisplaySite->Label.ToString())));
+			BombStatusTitle->SetText(NSLOCTEXT("HUD", "BombPlanted", "BOMB PLANTED"));
 			BombStatusTitle->SetColorAndOpacity(EliminatedTextColor);
 		}
 		if (BombStatusSubtitle)
 		{
 			if (bShowDefuse)
 			{
-				const int32 Percent = FMath::FloorToInt(DisplaySite->DefuseProgress * 100.0f);
+				const int32 Percent = FMath::FloorToInt(Bomb->GetDefuseProgress() * 100.0f);
 				BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("DEFUSING %d%%  —  DETONATES IN %ds"), Percent, RemainingInt)));
 			}
 			else
@@ -984,21 +979,27 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 				BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("DETONATES IN %ds"), RemainingInt)));
 			}
 		}
+		return;
 	}
-	else
+
+	// Plant in progress.
+	if (Bomb->GetPlantProgress() > 0.01f)
 	{
-		// Plant in progress.
-		const int32 Percent = FMath::FloorToInt(DisplaySite->PlantProgress * 100.0f);
+		BombStatusBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		const int32 Percent = FMath::FloorToInt(Bomb->GetPlantProgress() * 100.0f);
 		if (BombStatusTitle)
 		{
-			BombStatusTitle->SetText(FText::FromString(FString::Printf(TEXT("PLANTING AT %s"), *DisplaySite->Label.ToString())));
+			BombStatusTitle->SetText(NSLOCTEXT("HUD", "Planting", "PLANTING"));
 			BombStatusTitle->SetColorAndOpacity(AttackersColor);
 		}
 		if (BombStatusSubtitle)
 		{
 			BombStatusSubtitle->SetText(FText::FromString(FString::Printf(TEXT("%d%%"), Percent)));
 		}
+		return;
 	}
+
+	BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
 }
 
 // =====================================================================
@@ -1193,6 +1194,12 @@ void UProjectCompHUDWidget::BuildBuyPanel(UCanvasPanel* RootCanvas)
 	auto AddBuyButton = [&](UVerticalBox* Col, const TCHAR* WidgetName, const FString& Label) -> UButton*
 	{
 		UButton* Btn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), WidgetName);
+		// Non-focusable so a buy/loom click doesn't steal keyboard focus from the
+		// game viewport (which would flush the player's held movement keys and stop
+		// them mid-strafe). 5.7 has no public setter, so guard the deprecated write.
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Btn->IsFocusable = false;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),
 			FName(*(FString(WidgetName) + TEXT("_Txt"))));
 		T->SetText(FText::FromString(Label));
@@ -1260,6 +1267,12 @@ void UProjectCompHUDWidget::BuildBuyPanel(UCanvasPanel* RootCanvas)
 	auto AddLoomButton = [&](const TCHAR* WidgetName, const FString& Label) -> UButton*
 	{
 		UButton* Btn = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), WidgetName);
+		// Non-focusable so a buy/loom click doesn't steal keyboard focus from the
+		// game viewport (which would flush the player's held movement keys and stop
+		// them mid-strafe). 5.7 has no public setter, so guard the deprecated write.
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		Btn->IsFocusable = false;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),
 			FName(*(FString(WidgetName) + TEXT("_Txt"))));
 		T->SetText(FText::FromString(Label));

@@ -114,11 +114,11 @@ private:
      *  GetMaxSpeed / DoJump doesn't Cast<> every call. */
     mutable TWeakObjectPtr<class AProjectCompGameState> CachedGameState;
 
-    /** True while the round is in the LoomSelection phase — players are frozen in
-     *  place (no walk, no jump) so they commit to the mouse-locked Loom draft.
-     *  Driven by the replicated phase, so server + owning client agree and
-     *  movement prediction stays consistent. */
-    bool IsLoomSelectionPhase() const;
+    /** True while players should be fully frozen in place (no walk/jump/crouch):
+     *  the pre-match team-select lobby (None phase) and the LoomSelection draft —
+     *  both mouse-locked menu states. Driven by the replicated phase, so server +
+     *  owning client agree and movement prediction stays consistent. */
+    bool IsFrozenPhase() const;
 
     friend class FSavedMove_ProjectComp;
 };

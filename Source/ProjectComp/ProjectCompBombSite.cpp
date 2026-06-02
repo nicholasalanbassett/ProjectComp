@@ -12,8 +12,11 @@
 
 AProjectCompBombSite::AProjectCompBombSite()
 {
-	PrimaryActorTick.bCanEverTick = true;
-	PrimaryActorTick.bStartWithTickEnabled = true;
+	// FSM disabled — the bomb objective now lives on AProjectCompBomb. The site is
+	// purely the plant-allowed AREA (its trigger + overlap drive the carrier's
+	// "in a site" test and the interact-lock's IsOverlappingBombSite).
+	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bStartWithTickEnabled = false;
 	bReplicates = true;
 
 	Trigger = CreateDefaultSubobject<UBoxComponent>(TEXT("Trigger"));
@@ -48,6 +51,11 @@ void AProjectCompBombSite::BeginPlay()
 
 	Trigger->OnComponentBeginOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerBeginOverlap);
 	Trigger->OnComponentEndOverlap.AddDynamic(this, &AProjectCompBombSite::OnTriggerEndOverlap);
+}
+
+bool AProjectCompBombSite::IsActorInside(const AActor* Actor) const
+{
+	return Actor && Trigger && Trigger->IsOverlappingActor(Actor);
 }
 
 void AProjectCompBombSite::Tick(float DeltaTime)

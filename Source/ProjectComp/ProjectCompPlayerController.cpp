@@ -14,6 +14,7 @@
 #include "ProjectCompGrenadeComponent.h"
 #include "ProjectCompHUD.h"
 #include "ProjectCompHUDWidget.h"
+#include "ProjectCompLobbyWidget.h"
 #include "ProjectCompMinimapWidget.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompSettingsWidget.h"
@@ -125,10 +126,18 @@ void AProjectCompPlayerController::UpdateInputModeForPhase()
 	EAppliedInputMode Desired = EAppliedInputMode::GameOnly;
 	const ERoundPhase Phase = GS->GetCurrentPhase();
 
+	// Pre-match team-select lobby overlay is shown during the None phase.
+	SetLobbyOpen(Phase == ERoundPhase::None);
+
 	// Settings overlay takes priority — when it's open the cursor must be
 	// usable to click tier buttons regardless of phase.
 	if (bSettingsOpen)
 	{
+		Desired = EAppliedInputMode::GameAndUILocked;
+	}
+	else if (Phase == ERoundPhase::None)
+	{
+		// Pre-match lobby: full-screen team-select menu, cursor usable.
 		Desired = EAppliedInputMode::GameAndUILocked;
 	}
 	else if (Phase == ERoundPhase::LoomSelection)
@@ -327,6 +336,49 @@ UProjectCompMinimapWidget* AProjectCompPlayerController::EnsureMinimapWidget()
 	return MinimapInstance;
 }
 
+UProjectCompLobbyWidget* AProjectCompPlayerController::EnsureLobbyWidget()
+{
+	if (LobbyInstance)
+	{
+		return LobbyInstance;
+	}
+	if (!LobbyWidgetClass)
+	{
+		UE_LOG(LogProjectComp, Warning,
+			TEXT("[Lobby] LobbyWidgetClass unset on PlayerController — assign BP_LobbyWidget in defaults."));
+		return nullptr;
+	}
+	LobbyInstance = CreateWidget<UProjectCompLobbyWidget>(this, LobbyWidgetClass);
+	return LobbyInstance;
+}
+
+void AProjectCompPlayerController::SetLobbyOpen(bool bOpen)
+{
+	if (bOpen == bLobbyOpen)
+	{
+		return;
+	}
+	if (!IsLocalController())
+	{
+		return;  // UI is local-only
+	}
+	UProjectCompLobbyWidget* Widget = EnsureLobbyWidget();
+	if (!Widget)
+	{
+		return;
+	}
+	if (bOpen)
+	{
+		Widget->AddToViewport(/*ZOrder*/ 200);  // above HUD/minimap/settings
+		bLobbyOpen = true;
+	}
+	else
+	{
+		Widget->RemoveFromParent();
+		bLobbyOpen = false;
+	}
+}
+
 // =====================================================================
 // BP-callable entry points
 // =====================================================================
@@ -339,6 +391,21 @@ void AProjectCompPlayerController::SubmitAbilityVote(EAbilityType First, EAbilit
 void AProjectCompPlayerController::RequestAbilityCast(EAbilityType Type, FVector TargetLocation)
 {
 	Server_RequestAbilityCast(Type, TargetLocation);
+}
+
+void AProjectCompPlayerController::RequestTeamChange(ETeamID NewTeam)
+{
+	Server_RequestTeamChange(NewTeam);
+}
+
+void AProjectCompPlayerController::RequestStartMatch()
+{
+	Server_StartMatch();
+}
+
+void AProjectCompPlayerController::RequestSetLobbyLeader(APlayerState* Target)
+{
+	Server_SetLobbyLeader(Target);
 }
 
 void AProjectCompPlayerController::ClaimLoomAbility(EAbilityType Ability)
@@ -484,6 +551,47 @@ void AProjectCompPlayerController::CloseGrenadePlacement()
 // Server RPCs — _Validate runs first (drop the connection on cheating),
 // then _Implementation forwards to the GameMode for authoritative logic.
 // =====================================================================
+
+bool AProjectCompPlayerController::Server_RequestTeamChange_Validate(ETeamID NewTeam)
+{
+	return NewTeam == ETeamID::Attackers || NewTeam == ETeamID::Defenders;
+}
+
+void AProjectCompPlayerController::Server_RequestTeamChange_Implementation(ETeamID NewTeam)
+{
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_RequestTeamChange(this, NewTeam);
+	}
+}
+
+bool AProjectCompPlayerController::Server_StartMatch_Validate()
+{
+	return true;
+}
+
+void AProjectCompPlayerController::Server_StartMatch_Implementation()
+{
+	// The GameMode authorizes this — only the lobby leader (not the host) may start.
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_StartMatch(this);
+	}
+}
+
+bool AProjectCompPlayerController::Server_SetLobbyLeader_Validate(APlayerState* Target)
+{
+	return Target != nullptr;
+}
+
+void AProjectCompPlayerController::Server_SetLobbyLeader_Implementation(APlayerState* Target)
+{
+	// The GameMode authorizes this — only the current leader may transfer.
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_SetLobbyLeader(this, Target);
+	}
+}
 
 bool AProjectCompPlayerController::Server_SubmitAbilityVote_Validate(EAbilityType First, EAbilityType Second)
 {
@@ -731,6 +839,25 @@ void AProjectCompPlayerController::Server_CheatToggleFreezeTimer_Implementation(
 #endif
 }
 
+bool AProjectCompPlayerController::Server_CheatAdvancePhase_Validate()
+{
+#if !UE_BUILD_SHIPPING
+	return true;
+#else
+	return false;
+#endif
+}
+
+void AProjectCompPlayerController::Server_CheatAdvancePhase_Implementation()
+{
+#if !UE_BUILD_SHIPPING
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_CheatAdvancePhase();
+	}
+#endif
+}
+
 bool AProjectCompPlayerController::Server_UseGrenade_Validate(EGrenadeType Type, bool bAltFire, FVector Origin, FVector Direction)
 {
 	const uint8 Byte = static_cast<uint8>(Type);
@@ -933,6 +1060,14 @@ void AProjectCompPlayerController::PauseTimer()
 #if !UE_BUILD_SHIPPING
 	UE_LOG(LogProjectComp, Log, TEXT("[Exec] PauseTimer → Server_CheatToggleFreezeTimer."));
 	Server_CheatToggleFreezeTimer();
+#endif
+}
+
+void AProjectCompPlayerController::NextPhase()
+{
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogProjectComp, Log, TEXT("[Exec] NextPhase → Server_CheatAdvancePhase."));
+	Server_CheatAdvancePhase();
 #endif
 }
 

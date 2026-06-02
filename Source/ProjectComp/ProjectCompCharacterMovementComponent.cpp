@@ -4,7 +4,7 @@
 #include "GameFramework/Character.h"
 #include "ProjectCompGameState.h"
 
-bool UProjectCompCharacterMovementComponent::IsLoomSelectionPhase() const
+bool UProjectCompCharacterMovementComponent::IsFrozenPhase() const
 {
     if (!CachedGameState.IsValid())
     {
@@ -14,7 +14,13 @@ bool UProjectCompCharacterMovementComponent::IsLoomSelectionPhase() const
         }
     }
     const AProjectCompGameState* GS = CachedGameState.Get();
-    return GS && GS->GetCurrentPhase() == ERoundPhase::LoomSelection;
+    if (!GS)
+    {
+        return false;
+    }
+    // Frozen during the pre-match lobby (None) and the LoomSelection draft.
+    const ERoundPhase Phase = GS->GetCurrentPhase();
+    return Phase == ERoundPhase::None || Phase == ERoundPhase::LoomSelection;
 }
 
 UProjectCompCharacterMovementComponent::UProjectCompCharacterMovementComponent()
@@ -33,7 +39,7 @@ UProjectCompCharacterMovementComponent::UProjectCompCharacterMovementComponent()
 float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
 {
     // Frozen in place during the LoomSelection draft — no walking.
-    if (IsLoomSelectionPhase())
+    if (IsFrozenPhase())
     {
         return 0.0f;
     }
@@ -55,7 +61,7 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
 bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float DeltaTime)
 {
     // No jumping during the LoomSelection draft — players are frozen in place.
-    if (IsLoomSelectionPhase())
+    if (IsFrozenPhase())
     {
         return false;
     }
@@ -76,7 +82,7 @@ bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float 
 // owning client both deny the crouch from the same replicated phase.
 bool UProjectCompCharacterMovementComponent::CanCrouchInCurrentState() const
 {
-    if (IsLoomSelectionPhase())
+    if (IsFrozenPhase())
     {
         return false;
     }

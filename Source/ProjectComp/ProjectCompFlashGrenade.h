@@ -8,9 +8,10 @@
 
 /**
  * Flash grenade (Aggro Midrange). Uses the standardized base throw (no
- * trajectory overrides), so it flies identically to INFO / VULN / SMOKE: a
- * strong CS-style tap-throw that arcs, bounces, settles, then flashes on
- * settle (FuseAfterImpact = 0).
+ * trajectory overrides), so it flies identically to INFO / VULN / SMOKE.
+ * Detonates on a FIXED FUSE measured from the throw (CS flashbang style), NOT
+ * on landing: `PrimaryFuseTime` (LMB) / `AltFuseTime` (RMB). It pops at its
+ * current location when the fuse elapses — mid-air or settled.
  *
  * Self-flash is emergent (a throw that settles near you catches you in the
  * radius) — there's no longer a dedicated self-flash mode. Right-click (alt-fire)
@@ -36,6 +37,9 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
+	/** Launches via the base throw, then starts the throw-fuse timer (length
+	 *  depends on LMB vs RMB) that drives detonation. */
+	virtual void Server_InitializeExtra(bool bAltFire, const FVector& AimDirection) override;
 
 	/** Multicast: every machine draws the FLASH detonation viz (radius sphere
 	 *  + center marker) at the supplied center. Server fires this from
@@ -45,6 +49,15 @@ protected:
 	void Multicast_DrawDetonationViz(FVector Center, float Radius);
 
 	// ---- Flash-effect tunables (mirror FlashDome's tuning model) ---------
+
+	/** Fuse (seconds measured from the THROW) before a LMB-thrown flash detonates.
+	 *  CS flashbang style — pops wherever it is when the timer elapses. */
+	UPROPERTY(EditDefaultsOnly, Category = "Flash|Effect", meta = (ClampMin = "0.0"))
+	float PrimaryFuseTime = 1.6f;
+
+	/** Fuse (seconds from the THROW) for the RMB self-toss flash. */
+	UPROPERTY(EditDefaultsOnly, Category = "Flash|Effect", meta = (ClampMin = "0.0"))
+	float AltFuseTime = 1.0f;
 
 	/** Radius (cm) within which enemies are eligible for flash on detonation. */
 	UPROPERTY(EditDefaultsOnly, Category = "Flash|Effect", meta = (ClampMin = "100.0"))
@@ -81,6 +94,9 @@ protected:
 	float DebugDrawDuration = 3.0f;
 
 private:
+	/** Server-side fuse timer started on throw; fires Server_Detonate. */
+	FTimerHandle FlashFuseTimer;
+
 	/** Server-side LOS-ignore scratch (reused across the detonation scan). */
 	TArray<AActor*> IgnoreActorsScratch;
 

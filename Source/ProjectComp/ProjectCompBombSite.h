@@ -107,6 +107,11 @@ public:
 	/** Convenience for the GameMode's round-end check. */
 	bool IsTerminal() const { return bIsDetonated || bIsDefused; }
 
+	/** True if Actor is currently inside this site's trigger volume. Used by the
+	 *  bomb's plant FSM to gate "carrier may plant here". The site is now purely
+	 *  the plant-allowed AREA — plant/defuse state lives on AProjectCompBomb. */
+	bool IsActorInside(const AActor* Actor) const;
+
 protected:
 	virtual void BeginPlay() override;
 

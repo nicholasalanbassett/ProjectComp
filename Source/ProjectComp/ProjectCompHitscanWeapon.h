@@ -9,6 +9,10 @@
 
 class AProjectCompCharacter;
 class AProjectCompGameMode;
+class USceneComponent;
+class UStaticMeshComponent;
+class USphereComponent;
+class UPrimitiveComponent;
 
 /**
  * Hitscan weapon. Server-authoritative.
@@ -261,6 +265,10 @@ public:
 	 *  reload, not just the start of one. Mag stays at whatever was chambered. */
 	void Server_CancelReload();
 
+	/** Server: enable/disable the walk-over auto-pickup volume. Enabled when the
+	 *  weapon is dropped on the ground, disabled when it's equipped. */
+	void SetAvailableForPickup(bool bAvailable);
+
 	// ---- Owner-replicated ammo accessors (HUD reads these) ---------------
 
 	int32 GetCurrentMagAmmo() const { return CurrentMagAmmo; }
@@ -283,6 +291,12 @@ public:
 protected:
 
 	virtual void BeginPlay() override;
+
+	/** Server: a live player walked over this dropped weapon — auto-equip it if
+	 *  they have no weapon (auto-pickup only fills an empty slot; F can swap). */
+	UFUNCTION()
+	void OnPickupOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor, UPrimitiveComponent* OtherComp,
+		int32 OtherBodyIndex, bool bFromSweep, const FHitResult& Sweep);
 
 	/** True while the owner is holding the fire input. Server-side only. */
 	bool bTriggerHeld = false;
@@ -342,6 +356,22 @@ protected:
 	 *  GetAuthGameMode() call inside the hot loop. Weak ptr to survive late
 	 *  teardown without dereferencing freed memory. Null on client builds. */
 	TWeakObjectPtr<AProjectCompGameMode> CachedAuthGameMode;
+
+	// ---- Visual (BP-authored) -------------------------------------------
+	// Plain scene root: attaches to the owner's FP camera while equipped and is
+	// left on the ground when dropped. WeaponMesh hangs off this so the BP can
+	// freely set the mesh's relative location/rotation — a native ROOT component's
+	// transform can't be edited in the BP, which is why the mesh isn't the root.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Visual")
+	TObjectPtr<USceneComponent> WeaponRoot;
+	// Mesh + material are assigned on the BP subclass (e.g. BP_Rifle). No collision.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Visual")
+	TObjectPtr<UStaticMeshComponent> WeaponMesh;
+
+	/** Walk-over auto-pickup volume. Enabled only while the weapon is on the ground
+	 *  (dropped); disabled while equipped. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Pickup")
+	TObjectPtr<USphereComponent> PickupSphere;
 
 	/** Server: fire a single shot. Trace + damage + multicast. */
 	void FireOneShot();

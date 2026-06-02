@@ -10,8 +10,11 @@
 class AProjectCompGameState;
 class AProjectCompPlayerState;
 class AProjectCompCharacter;
+class AProjectCompBomb;
+class AProjectCompBombSpawn;
 class AController;
 class APlayerController;
+class APlayerState;
 
 /**
  * Server-only authority for the match.
@@ -118,9 +121,29 @@ public:
 	 *  only; the flag stays false in shipping because nothing toggles it there. */
 	bool Server_CheatToggleFreezeTimer();
 
+	/** CHEAT/testing: end the current phase and start the next immediately (forces
+	 *  the phase clock to expire; from the lobby, starts the match). */
+	void Server_CheatAdvancePhase();
+
 	/** When true, Tick() skips the phase-timer decrement so the round clock holds.
 	 *  Toggled by the PauseTimer cheat exec. Server-only, never replicated. */
 	bool bCheatFreezeTimer = false;
+
+	/** Pre-match lobby: the lobby leader starts the match (begins round 1) out of
+	 *  the None phase. No-op if already started, not in the lobby, or the requester
+	 *  isn't the current lobby leader. */
+	void Server_StartMatch(APlayerController* Requester);
+
+	/** Pre-match lobby: transfer lobby leadership to Target. Only the CURRENT
+	 *  leader may call this, and only during the None phase. */
+	void Server_SetLobbyLeader(APlayerController* Requester, APlayerState* Target);
+
+	/** Pre-match lobby: change a player's team (free swap, any size). Only honored
+	 *  during the None phase; relocates the player to the new team's spawn. */
+	void Server_RequestTeamChange(APlayerController* PC, ETeamID NewTeam);
+
+	/** True once the host has started the match (left the lobby). Server-only. */
+	bool bMatchStarted = false;
 
 	/** Public so the HealthComponent (or other damage source) can drive the death cascade. */
 	void HandlePlayerDeath(APlayerController* Victim, AController* Killer);
@@ -133,16 +156,28 @@ public:
 	 */
 	void CheckRoundEndCondition();
 
-	/** Returns true if any bomb site in the world is currently planted (and not yet terminal). */
+	/** Returns true if the bomb is currently planted (and not yet terminal). */
 	bool IsAnyBombPlanted() const;
 
-	/** Returns the first bomb site that has reached a terminal state (detonated/defused) this round, or null. */
-	class AProjectCompBombSite* GetTerminalBombSite() const;
+	/** True if Actor is inside any bomb-site plant area. Used by the bomb's plant FSM. */
+	bool IsActorInBombSite(const AActor* Actor) const;
 
-	/** Server-side cache of all level-placed bomb sites. Built in StartPlay; bomb sites
-	 *  do not spawn at runtime. Iterating this is O(sites) instead of O(actors). */
+	/** Server-side cache of all level-placed bomb sites (plant areas). Built in
+	 *  StartPlay; bomb sites do not spawn at runtime. */
 	UPROPERTY()
 	TArray<TWeakObjectPtr<class AProjectCompBombSite>> CachedBombSites;
+
+	/** The single bomb actor (spawned in StartPlay, class = BombClass). */
+	UPROPERTY()
+	TObjectPtr<class AProjectCompBomb> BombActor;
+
+	/** Class to spawn for the bomb. Defaults to AProjectCompBomb; override in BP. */
+	UPROPERTY(EditDefaultsOnly, Category = "Bomb")
+	TSubclassOf<class AProjectCompBomb> BombClass;
+
+	/** Level-placed bomb-spawn marker (first found). The bomb resets here each round. */
+	UPROPERTY()
+	TWeakObjectPtr<class AProjectCompBombSpawn> CachedBombSpawn;
 
 	/**
 	 * Server-side event-driven registry of every AProjectCompCharacter currently
@@ -170,11 +205,15 @@ public:
 	 *  but a holder iterating during teardown could still observe a null Resolve(). */
 	const TArray<TWeakObjectPtr<AProjectCompCharacter>>& GetLiveCharacters() const { return LiveCharacters; }
 
-	/** Server: route score for a terminal bomb site and end the round. */
-	void HandleBombResolution(class AProjectCompBombSite* Site);
+	/** Server: route score for the terminal bomb (detonated/defused) and end the round. */
+	void HandleBombResolution();
 
 	/** Server: reset all bomb sites to NotPlanted at the start of a new round. */
 	void Server_ResetAllBombSites();
+
+	/** Server: destroy all weapons lying on the ground (no owner) — clears dropped
+	 *  loot between rounds so it doesn't accumulate. Called during round prep. */
+	void Server_CleanupGroundWeapons();
 
 protected:
 

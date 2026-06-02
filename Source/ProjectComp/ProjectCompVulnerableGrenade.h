@@ -68,7 +68,7 @@ protected:
 
 	/** AOE radius (cm). */
 	UPROPERTY(EditDefaultsOnly, Category = "Vulnerable", meta = (ClampMin = "100.0"))
-	float ZoneRadius = 600.0f;
+	float ZoneRadius = 350.0f;
 
 	/** Seconds the zone stays active after impact-fuse completes. Auto-detonates
 	 *  at expiry; can also be cut short by being shot out (1-HP). */

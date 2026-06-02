@@ -55,7 +55,7 @@ protected:
 
 	/** Radius (cm) of the smoke cloud / vision block. */
 	UPROPERTY(EditDefaultsOnly, Category = "Smoke", meta = (ClampMin = "100.0"))
-	float SmokeRadius = 450.0f;
+	float SmokeRadius = 380.0f;
 
 	/** Seconds the smoke persists (vision blocked) before it dissipates. */
 	UPROPERTY(EditDefaultsOnly, Category = "Smoke", meta = (ClampMin = "0.5"))

@@ -37,7 +37,7 @@ protected:
 
 	/** Radius (cm) inside which enemy players are counted at scan time. */
 	UPROPERTY(EditDefaultsOnly, Category = "Info", meta = (ClampMin = "100.0"))
-	float ScanRadius = 1000.0f;
+	float ScanRadius = 400.0f;
 
 	/** Seconds the debug shapes persist post-scan. Ignored in shipping. */
 	UPROPERTY(EditDefaultsOnly, Category = "Info|Debug", meta = (ClampMin = "0.5"))

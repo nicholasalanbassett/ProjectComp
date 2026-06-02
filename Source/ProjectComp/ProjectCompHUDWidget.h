@@ -144,6 +144,10 @@ protected:
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> BombStatusSubtitle;
 
+	/** Bottom-right "carrying the bomb" indicator — shown only when the local
+	 *  player is the bomb carrier. */
+	UPROPERTY() TObjectPtr<UTextBlock> BombCarriedText;
+
 	/** Full-screen white image rendered when the local player is flashed. Alpha
 	 *  is driven each tick from PlayerState->GetFlashEndTime() so the fade looks
 	 *  smooth even though only end-time + fade-start-time replicate. */

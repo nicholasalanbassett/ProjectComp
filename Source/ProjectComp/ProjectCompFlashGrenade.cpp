@@ -11,6 +11,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
+#include "TimerManager.h"
 
 // Toggle for the FLASH-specific detonation viz (radius sphere, per-target rays,
 // self-flash marker). Separate from the throwable base's projectile-path
@@ -24,11 +25,26 @@ static TAutoConsoleVariable<int32> CVarFlashGrenadeDebugDraw(
 
 AProjectCompFlashGrenade::AProjectCompFlashGrenade()
 {
-	// FLASH wants instant detonation on impact — no fuse window.
-	// Trajectory is intentionally NOT overridden: FLASH uses the standardized
-	// base throw (LMB gravity arc / RMB straight, both detonate on first
-	// contact) so it flies identically to INFO / VULN / SMOKE.
+	// FLASH detonates on a fixed fuse from the throw (see Server_InitializeExtra),
+	// not on landing — so the impact->active path is a no-op here. Trajectory is
+	// NOT overridden: FLASH flies on the standardized base throw like the others.
 	FuseAfterImpact = 0.0f;
+}
+
+void AProjectCompFlashGrenade::Server_InitializeExtra(bool bAltFire, const FVector& AimDirection)
+{
+	// Launch via the standardized base throw (also records bIsAltFire / velocity).
+	Super::Server_InitializeExtra(bAltFire, AimDirection);
+
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// CS flashbang fuse: detonate a fixed time AFTER the throw regardless of when
+	// or whether it lands. LMB and RMB use separate fuse lengths.
+	const float Fuse = FMath::Max(bAltFire ? AltFuseTime : PrimaryFuseTime, 0.01f);
+	GetWorldTimerManager().SetTimer(FlashFuseTimer, [this]() { Server_Detonate(); }, Fuse, /*bLoop*/ false);
 }
 
 void AProjectCompFlashGrenade::BeginPlay()
@@ -44,9 +60,10 @@ void AProjectCompFlashGrenade::BeginPlay()
 
 void AProjectCompFlashGrenade::OnEnterActivePhase()
 {
-	// FLASH has no persistence — the moment the projectile reaches the
-	// detonation point, the scan + flash apply runs and the actor cleans up.
-	Server_Detonate();
+	// No-op: FLASH detonation is throw-fuse driven (see Server_InitializeExtra),
+	// not settle driven. The grenade just rests at its landing point until the
+	// fuse timer fires Server_Detonate (it may also pop mid-air if the fuse
+	// elapses before it lands).
 }
 
 void AProjectCompFlashGrenade::HandleDetonationGameplay()

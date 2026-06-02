@@ -7,6 +7,8 @@
 #include "ProjectCompGameTypes.h"
 #include "ProjectCompGameState.generated.h"
 
+class AProjectCompBomb;
+
 /**
  * Match-wide replicated state.
  *
@@ -54,7 +56,20 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Round State")
 	bool IsSelectionWindowOpen() const { return bSelectionWindowOpen; }
 
+	/** Pre-match lobby leader — the only player allowed to start the match. The
+	 *  first joiner by default; transferable by the current leader. Null until set. */
+	UFUNCTION(BlueprintPure, Category = "Lobby")
+	APlayerState* GetLobbyLeader() const { return LobbyLeader; }
+
+	/** The single physical bomb actor (spawned by the GameMode). Replicated so all
+	 *  clients + the character can read carry/plant state for HUD + interact lock. */
+	UFUNCTION(BlueprintPure, Category = "Bomb")
+	AProjectCompBomb* GetBomb() const { return Bomb; }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
+
+	void Server_SetLobbyLeader(APlayerState* NewLeader);
+	void Server_SetBomb(AProjectCompBomb* InBomb);
 
 	void Server_SetPhase(ERoundPhase NewPhase);
 	void Server_SetRound(int32 NewRound);
@@ -126,6 +141,15 @@ protected:
 	 *  Authoritative gate for all buy/claim RPCs — clients render UI based on this. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
 	bool bSelectionWindowOpen = false;
+
+	/** Pre-match lobby leader (replicated so all clients gate the Start button +
+	 *  the "make leader" right-click menu). Set by the GameMode. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Lobby")
+	TObjectPtr<APlayerState> LobbyLeader = nullptr;
+
+	/** The match's single bomb actor (spawned by the GameMode). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Bomb")
+	TObjectPtr<AProjectCompBomb> Bomb = nullptr;
 
 	// ---- RepNotify handlers ----------------------------------------------
 

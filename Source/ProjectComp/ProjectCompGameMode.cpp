@@ -7,6 +7,8 @@
 #include "ProjectCompPlayerStart.h"
 #include "ProjectCompBarrier.h"
 #include "ProjectCompBombSite.h"
+#include "ProjectCompBomb.h"
+#include "ProjectCompBombSpawn.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompFlashDome.h"
 #include "ProjectCompSoundDome.h"
@@ -32,6 +34,9 @@ AProjectCompGameMode::AProjectCompGameMode()
 	PlayerStateClass = AProjectCompPlayerState::StaticClass();
 	PlayerControllerClass = AProjectCompPlayerController::StaticClass();
 	HUDClass = AProjectCompHUD::StaticClass();
+
+	// Spawn the plain C++ bomb by default; a BP subclass can override it.
+	BombClass = AProjectCompBomb::StaticClass();
 }
 
 void AProjectCompGameMode::StartPlay()
@@ -45,26 +50,44 @@ void AProjectCompGameMode::StartPlay()
 		CachedBombSites.Add(*It);
 	}
 
+	// Find the level-placed bomb-spawn marker (first one) and spawn the single bomb.
+	CachedBombSpawn = nullptr;
+	for (TActorIterator<AProjectCompBombSpawn> It(GetWorld()); It; ++It)
+	{
+		CachedBombSpawn = *It;
+		break;
+	}
+	if (!BombActor && BombClass)
+	{
+		const FVector SpawnLoc = CachedBombSpawn.IsValid() ? CachedBombSpawn->GetActorLocation() : FVector::ZeroVector;
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		BombActor = GetWorld()->SpawnActor<AProjectCompBomb>(BombClass, SpawnLoc, FRotator::ZeroRotator, SpawnParams);
+		if (!CachedBombSpawn.IsValid())
+		{
+			UE_LOG(LogProjectComp, Warning, TEXT("[Bomb] No AProjectCompBombSpawn placed in the level — bomb spawned at world origin. Place a BombSpawn marker."));
+		}
+		if (AProjectCompGameState* GS = GetTypedGameState())
+		{
+			GS->Server_SetBomb(BombActor);
+		}
+	}
+
 	// Cap one-time allocation for the live-character registry. 5v5 fills 10
 	// slots; 16 leaves headroom for late-join, AI, or 10v10 stress without
 	// triggering a TArray growth-and-copy inside the Server_RegisterLiveCharacter
 	// path. Characters register from their server-side BeginPlay.
 	LiveCharacters.Reserve(16);
 
-	// Begin the match at round 1. Round 1 always opens with LoomSelection per
-	// the rotation rule, so this routes there instead of straight to PreRound.
+	// Sit in the pre-match team-select lobby (None phase) until the host starts.
+	// Round 1 is staged here; Server_StartMatch (host) kicks off the round loop.
 	if (AProjectCompGameState* GS = GetTypedGameState())
 	{
 		GS->Server_SetRound(1);
+		GS->Server_SetPhase(ERoundPhase::None);
+		GS->Server_SetPhaseTimeRemaining(0.0f);
 	}
-	if (ShouldRunLoomSelectionForRound(1))
-	{
-		StartLoomSelection();
-	}
-	else
-	{
-		StartPreRound();
-	}
+	bMatchStarted = false;
 }
 
 void AProjectCompGameMode::Tick(float DeltaSeconds)
@@ -124,9 +147,9 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 	{
 		// Bomb-resolution check runs every tick — if a bomb hit detonated/defused
 		// since last frame, route the score and end the round immediately.
-		if (AProjectCompBombSite* TerminalSite = GetTerminalBombSite())
+		if (BombActor && BombActor->IsTerminal())
 		{
-			HandleBombResolution(TerminalSite);
+			HandleBombResolution();
 			return;  // round just ended — skip the rest of the tick
 		}
 
@@ -215,6 +238,105 @@ void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 	{
 		RelocatePlayerToTeamStart(NewPlayer);
 	}
+
+	// First player to join becomes the lobby leader (transferable later). Not
+	// tied to the host — whoever connects first leads until they hand it off.
+	if (AProjectCompGameState* GS = GetTypedGameState())
+	{
+		if (PS && !GS->GetLobbyLeader())
+		{
+			GS->Server_SetLobbyLeader(PS);
+			UE_LOG(LogProjectComp, Log, TEXT("[Lobby] '%s' is the lobby leader (first joiner)."), *PS->GetPlayerName());
+		}
+	}
+}
+
+void AProjectCompGameMode::Server_StartMatch(APlayerController* Requester)
+{
+	if (!HasAuthority() || bMatchStarted || !Requester)
+	{
+		return;
+	}
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::None)
+	{
+		return;  // only valid out of the pre-match lobby
+	}
+	// Only the lobby leader may start the match (not the host).
+	const APlayerState* ReqPS = Requester->GetPlayerState<APlayerState>();
+	if (!ReqPS || GS->GetLobbyLeader() != ReqPS)
+	{
+		UE_LOG(LogProjectComp, Warning, TEXT("[Lobby] StartMatch rejected — requester is not the lobby leader."));
+		return;
+	}
+	bMatchStarted = true;
+	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Lobby leader started the match."));
+
+	// Round 1 always opens with LoomSelection per the rotation rule.
+	if (ShouldRunLoomSelectionForRound(1))
+	{
+		StartLoomSelection();
+	}
+	else
+	{
+		StartPreRound();
+	}
+}
+
+void AProjectCompGameMode::Server_SetLobbyLeader(APlayerController* Requester, APlayerState* Target)
+{
+	if (!HasAuthority() || !Requester || !Target)
+	{
+		return;
+	}
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::None)
+	{
+		return;  // leadership only changes in the lobby
+	}
+	// Only the CURRENT leader can hand off leadership.
+	const APlayerState* ReqPS = Requester->GetPlayerState<APlayerState>();
+	if (!ReqPS || GS->GetLobbyLeader() != ReqPS)
+	{
+		UE_LOG(LogProjectComp, Warning, TEXT("[Lobby] SetLobbyLeader rejected — requester is not the current leader."));
+		return;
+	}
+	// Target must be a real player currently in the match.
+	if (!GS->PlayerArray.Contains(Target))
+	{
+		return;
+	}
+	GS->Server_SetLobbyLeader(Target);
+	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Leadership transferred to '%s'."), *Target->GetPlayerName());
+}
+
+void AProjectCompGameMode::Server_RequestTeamChange(APlayerController* PC, ETeamID NewTeam)
+{
+	if (!HasAuthority() || !PC)
+	{
+		return;
+	}
+	// Free swap, any size — but only while still in the lobby.
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::None)
+	{
+		return;
+	}
+	if (NewTeam != ETeamID::Attackers && NewTeam != ETeamID::Defenders)
+	{
+		return;
+	}
+	AProjectCompPlayerState* PS = PC->GetPlayerState<AProjectCompPlayerState>();
+	if (!PS || PS->GetTeamID() == NewTeam)
+	{
+		return;
+	}
+	PS->Server_SetTeamID(NewTeam);
+	// Drop the cached spawn so the player relocates to the new team's side.
+	AssignedStarts.Remove(PC);
+	RelocatePlayerToTeamStart(PC);
+	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] '%s' swapped to team %d."),
+		*PS->GetPlayerName(), static_cast<int32>(NewTeam));
 }
 
 void AProjectCompGameMode::Server_RegisterLiveCharacter(AProjectCompCharacter* Char)
@@ -242,8 +364,10 @@ void AProjectCompGameMode::Server_UnregisterLiveCharacter(AProjectCompCharacter*
 
 void AProjectCompGameMode::Logout(AController* Exiting)
 {
+	APlayerState* LeavingPS = nullptr;
 	if (APlayerController* PC = Cast<APlayerController>(Exiting))
 	{
+		LeavingPS = PC->GetPlayerState<APlayerState>();
 		if (FTimerHandle* Handle = RespawnTimers.Find(PC))
 		{
 			GetWorldTimerManager().ClearTimer(*Handle);
@@ -252,6 +376,29 @@ void AProjectCompGameMode::Logout(AController* Exiting)
 		AssignedStarts.Remove(PC);
 	}
 	Super::Logout(Exiting);
+
+	// If the lobby leader left, hand leadership to the first remaining player.
+	if (AProjectCompGameState* GS = GetTypedGameState())
+	{
+		const APlayerState* Leader = GS->GetLobbyLeader();
+		if (!Leader || Leader == LeavingPS)
+		{
+			APlayerState* NewLeader = nullptr;
+			for (APlayerState* PS : GS->PlayerArray)
+			{
+				if (PS && PS != LeavingPS)
+				{
+					NewLeader = PS;
+					break;
+				}
+			}
+			GS->Server_SetLobbyLeader(NewLeader);
+			if (NewLeader)
+			{
+				UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Leader left; '%s' is now the lobby leader."), *NewLeader->GetPlayerName());
+			}
+		}
+	}
 }
 
 // =====================================================================
@@ -525,6 +672,10 @@ void AProjectCompGameMode::PrepareForNewRound()
 			}
 		}
 	}
+
+	// Clear last round's litter: destroy any weapons dropped on the ground (death
+	// drops + manual G-drops). Equipped weapons have an owner and are skipped.
+	Server_CleanupGroundWeapons();
 
 	// Fresh round = fresh spawn allocation. Destroy + respawn every player's
 	// pawn so anyone in a frozen-corpse state from last round gets a fresh
@@ -921,10 +1072,19 @@ void AProjectCompGameMode::Server_SetAllBarriersForPhase(ERoundPhase NewPhase)
 
 bool AProjectCompGameMode::IsAnyBombPlanted() const
 {
+	return BombActor && BombActor->IsPlanted();
+}
+
+bool AProjectCompGameMode::IsActorInBombSite(const AActor* Actor) const
+{
+	if (!Actor)
+	{
+		return false;
+	}
 	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
 	{
 		const AProjectCompBombSite* Site = WeakSite.Get();
-		if (Site && Site->bIsPlanted && !Site->IsTerminal())
+		if (Site && Site->IsActorInside(Actor))
 		{
 			return true;
 		}
@@ -932,49 +1092,32 @@ bool AProjectCompGameMode::IsAnyBombPlanted() const
 	return false;
 }
 
-AProjectCompBombSite* AProjectCompGameMode::GetTerminalBombSite() const
-{
-	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
-	{
-		AProjectCompBombSite* Site = WeakSite.Get();
-		if (Site && Site->IsTerminal())
-		{
-			return Site;
-		}
-	}
-	return nullptr;
-}
-
-void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
+void AProjectCompGameMode::HandleBombResolution()
 {
 	AProjectCompGameState* GS = GetTypedGameState();
-	if (!GS || !Site)
+	if (!GS || !BombActor)
 	{
 		return;
 	}
 
-	// Per design: plant detonation = 1 point, defuse = 1 point. Hardcoded to
-	// override any per-site BP overrides on PointValue / DefusePointValue —
-	// keep scoring uniform across sites so the match score reads as a count
-	// of rounds won, not a weighted sum.
+	// Plant detonation = 1 point, defuse = 1 point — uniform so the score reads as
+	// a count of rounds won.
 	constexpr int32 BombResolutionPoints = 1;
 
 	ETeamID WinningTeam = ETeamID::Spectator;
-	if (Site->bIsDetonated)
+	if (BombActor->IsDetonated())
 	{
 		GS->Server_AddTeamScore(ETeamID::Attackers, BombResolutionPoints);
 		WinningTeam = ETeamID::Attackers;
-		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DETONATED at %s. Attackers +%d (now %d)."),
-			GS->GetCurrentRound(), *Site->Label.ToString(), BombResolutionPoints,
-			GS->GetTeamLoadout(ETeamID::Attackers).Score);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DETONATED. Attackers +%d (now %d)."),
+			GS->GetCurrentRound(), BombResolutionPoints, GS->GetTeamLoadout(ETeamID::Attackers).Score);
 	}
-	else if (Site->bIsDefused)
+	else if (BombActor->IsDefused())
 	{
 		GS->Server_AddTeamScore(ETeamID::Defenders, BombResolutionPoints);
 		WinningTeam = ETeamID::Defenders;
-		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DEFUSED at %s. Defenders +%d (now %d)."),
-			GS->GetCurrentRound(), *Site->Label.ToString(), BombResolutionPoints,
-			GS->GetTeamLoadout(ETeamID::Defenders).Score);
+		UE_LOG(LogProjectComp, Log, TEXT("Round %d: Bomb DEFUSED. Defenders +%d (now %d)."),
+			GS->GetCurrentRound(), BombResolutionPoints, GS->GetTeamLoadout(ETeamID::Defenders).Score);
 	}
 
 	AwardRoundEndCredits(WinningTeam);
@@ -983,12 +1126,11 @@ void AProjectCompGameMode::HandleBombResolution(AProjectCompBombSite* Site)
 
 void AProjectCompGameMode::Server_ResetAllBombSites()
 {
-	for (const TWeakObjectPtr<AProjectCompBombSite>& WeakSite : CachedBombSites)
+	// Reset the bomb back to its spawn marker (Available) for the new round.
+	if (BombActor)
 	{
-		if (AProjectCompBombSite* Site = WeakSite.Get())
-		{
-			Site->Server_ResetForNewRound();
-		}
+		const FVector SpawnLoc = CachedBombSpawn.IsValid() ? CachedBombSpawn->GetActorLocation() : FVector::ZeroVector;
+		BombActor->Server_ResetToLocation(SpawnLoc);
 	}
 }
 
@@ -1220,6 +1362,33 @@ void AProjectCompGameMode::SetPhaseTimer(float Duration)
 // Player lifecycle
 // =====================================================================
 
+void AProjectCompGameMode::Server_CleanupGroundWeapons()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	// A dropped weapon has no owner (cleared on drop); an equipped weapon's owner
+	// is its wielding character. Destroy the orphaned (ground) ones so loot from
+	// the previous round doesn't pile up. Collect first, then destroy, so we don't
+	// mutate the actor list mid-iteration.
+	TArray<AProjectCompHitscanWeapon*> ToDestroy;
+	for (TActorIterator<AProjectCompHitscanWeapon> It(GetWorld()); It; ++It)
+	{
+		if (AProjectCompHitscanWeapon* W = *It)
+		{
+			if (W->GetOwner() == nullptr)
+			{
+				ToDestroy.Add(W);
+			}
+		}
+	}
+	for (AProjectCompHitscanWeapon* W : ToDestroy)
+	{
+		W->Destroy();
+	}
+}
+
 void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AController* Killer)
 {
 	if (!HasAuthority() || !Victim)
@@ -1239,6 +1408,32 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 	{
 		KillerPS->Server_AddKill();
 		KillerPS->Server_AddCredits(KillCreditBonus);
+	}
+
+	// Drop the bomb where the carrier fell, so other attackers can pick it up.
+	if (BombActor && BombActor->GetState() == EBombState::Carried)
+	{
+		if (APawn* VictimPawn = Victim->GetPawn())
+		{
+			if (BombActor->GetCarrier() == VictimPawn)
+			{
+				BombActor->Server_Drop(VictimPawn->GetActorLocation());
+			}
+		}
+	}
+
+	// Drop the held weapon ONLY on the FINAL death of the round (no lives left —
+	// the "2nd death" with MaxLives=2). On a non-final death the player will
+	// respawn, so the gun stays with them (and is replaced fresh on respawn)
+	// rather than littering the map. Life was already decremented above, so
+	// LivesRemaining==0 here means there's no respawn coming. Dropped before
+	// RelocatePlayerToTeamStart so it lands at the death spot, not at spawn.
+	if (PS && PS->GetLivesRemaining() <= 0)
+	{
+		if (AProjectCompCharacter* VictimChar = Cast<AProjectCompCharacter>(Victim->GetPawn()))
+		{
+			VictimChar->DropCurrentWeaponToGround();
+		}
 	}
 
 	// Looming-mobile: the dead player keeps input + movement so they can
@@ -1447,6 +1642,38 @@ bool AProjectCompGameMode::Server_CheatToggleFreezeTimer()
 		GS ? static_cast<int32>(GS->GetCurrentPhase()) : -1,
 		GS ? GS->GetPhaseTimeRemaining() : -1.0f);
 	return bCheatFreezeTimer;
+}
+
+void AProjectCompGameMode::Server_CheatAdvancePhase()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	// Lobby: there's no timer to expire — kick off the match (round 1).
+	if (GS->GetCurrentPhase() == ERoundPhase::None)
+	{
+		if (!bMatchStarted)
+		{
+			bMatchStarted = true;
+			UE_LOG(LogProjectComp, Log, TEXT("[Cheat] NextPhase from lobby — starting match."));
+			if (ShouldRunLoomSelectionForRound(1)) { StartLoomSelection(); }
+			else { StartPreRound(); }
+		}
+		return;
+	}
+
+	// Otherwise force the phase clock to expire; the normal Tick transition then
+	// advances to the next phase (and handles round-advance / halftime / match-end).
+	UE_LOG(LogProjectComp, Log, TEXT("[Cheat] NextPhase — expiring phase %d."),
+		static_cast<int32>(GS->GetCurrentPhase()));
+	GS->Server_SetPhaseTimeRemaining(0.0f);
 }
 
 void AProjectCompGameMode::AwardRoundEndCredits(ETeamID WinningTeam)

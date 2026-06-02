@@ -22,6 +22,8 @@ void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AProjectCompGameState, PhaseTimeRemainingDs);
 	DOREPLIFETIME(AProjectCompGameState, Teams);
 	DOREPLIFETIME(AProjectCompGameState, bSelectionWindowOpen);
+	DOREPLIFETIME(AProjectCompGameState, LobbyLeader);
+	DOREPLIFETIME(AProjectCompGameState, Bomb);
 }
 
 // =====================================================================
@@ -101,6 +103,18 @@ void AProjectCompGameState::Server_SetSelectionWindowOpen(bool bOpen)
 {
 	if (!ensure(HasAuthority())) return;
 	bSelectionWindowOpen = bOpen;
+}
+
+void AProjectCompGameState::Server_SetLobbyLeader(APlayerState* NewLeader)
+{
+	if (!ensure(HasAuthority())) return;
+	LobbyLeader = NewLeader;
+}
+
+void AProjectCompGameState::Server_SetBomb(AProjectCompBomb* InBomb)
+{
+	if (!ensure(HasAuthority())) return;
+	Bomb = InBomb;
 }
 
 // =====================================================================

@@ -3,9 +3,13 @@
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompCharacter.h"
 #include "ProjectCompGameMode.h"
+#include "ProjectCompGameState.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectComp.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SceneComponent.h"
+#include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/DamageEvents.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -51,7 +55,26 @@ AProjectCompHitscanWeapon::AProjectCompHitscanWeapon()
 	// will not receive fire packets, which closes the wallhack channel.
 	bNetUseOwnerRelevancy = true;
 
-	// No mesh / visual on the MVP weapon. Added later when art exists.
+	// Plain scene root attaches to the FP camera while equipped. The visual mesh
+	// hangs off it so the BP subclass (e.g. BP_Rifle) can freely set the mesh's
+	// relative rotation/location (the native root's transform isn't BP-editable).
+	WeaponRoot = CreateDefaultSubobject<USceneComponent>(TEXT("WeaponRoot"));
+	SetRootComponent(WeaponRoot);
+
+	// Visual mesh + material are assigned on the BP subclass — empty in C++.
+	WeaponMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("WeaponMesh"));
+	WeaponMesh->SetupAttachment(WeaponRoot);
+	WeaponMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	WeaponMesh->SetCastShadow(false);
+
+	// Walk-over auto-pickup volume. Starts disabled (weapons spawn equipped);
+	// enabled when the weapon is dropped on the ground. Overlaps live pawns only.
+	PickupSphere = CreateDefaultSubobject<USphereComponent>(TEXT("PickupSphere"));
+	PickupSphere->SetupAttachment(WeaponRoot);
+	PickupSphere->InitSphereRadius(80.0f);
+	PickupSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PickupSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
+	PickupSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 
 	// Bone → hit-zone mapping for the standard UE mannequin rig.
 	// Override BoneZoneMap in BP defaults for any custom skeleton.
@@ -160,6 +183,37 @@ void AProjectCompHitscanWeapon::BeginPlay()
 		{
 			CachedAuthGameMode = World->GetAuthGameMode<AProjectCompGameMode>();
 		}
+
+		if (PickupSphere)
+		{
+			PickupSphere->OnComponentBeginOverlap.AddDynamic(this, &AProjectCompHitscanWeapon::OnPickupOverlap);
+		}
+	}
+}
+
+void AProjectCompHitscanWeapon::SetAvailableForPickup(bool bAvailable)
+{
+	if (!HasAuthority() || !PickupSphere)
+	{
+		return;
+	}
+	PickupSphere->SetCollisionEnabled(bAvailable
+		? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+}
+
+void AProjectCompHitscanWeapon::OnPickupOverlap(UPrimitiveComponent* /*OverlappedComp*/, AActor* OtherActor,
+	UPrimitiveComponent* /*OtherComp*/, int32 /*OtherBodyIndex*/, bool /*bFromSweep*/, const FHitResult& /*Sweep*/)
+{
+	// Only a dropped (unowned) weapon is loot. Auto-pickup fills an EMPTY slot
+	// only — if the walker already has a weapon, they keep it (F can still swap).
+	if (!HasAuthority() || GetOwner() != nullptr)
+	{
+		return;
+	}
+	AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(OtherActor);
+	if (Char && Char->GetCurrentWeapon() == nullptr)
+	{
+		Char->EquipGroundWeapon(this, /*bAllowSwap*/ false);
 	}
 }
 
@@ -225,6 +279,22 @@ void AProjectCompHitscanWeapon::Tick(float DeltaTime)
 			BurstShotsFired = 0;
 		}
 		return;
+	}
+
+	// Trigger is held — but the pre-match lobby (None) and the LoomSelection draft
+	// hard-block firing (players are frozen + mouse-locked into a menu). Bail
+	// before any shot. This lookup only runs while the trigger is actually held,
+	// so non-firing weapons pay nothing. (PreRound/PostRound fire stays intentional.)
+	if (const UWorld* W = GetWorld())
+	{
+		if (const AProjectCompGameState* PCGS = W->GetGameState<AProjectCompGameState>())
+		{
+			const ERoundPhase FirePhase = PCGS->GetCurrentPhase();
+			if (FirePhase == ERoundPhase::LoomSelection || FirePhase == ERoundPhase::None)
+			{
+				return;
+			}
+		}
 	}
 
 	ShotIdleTime = 0.0f;

@@ -216,6 +216,21 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Input")
 	virtual void DoSwitchToWeapon();
 
+	/** Input handler: key 3 — equip the carried bomb so G can drop it. No-op unless
+	 *  this player is the current bomb carrier. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoEquipBomb();
+
+	/** Input handler: G — drop the currently-equipped item (bomb or weapon).
+	 *  Grenades are permanent kit for the round and can't be dropped. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoDropEquipped();
+
+	/** Input handler: F — interact. Picks up a dropped weapon or the bomb you're
+	 *  looking at, within close range (Valorant/CS feel). Forwards to the server. */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void DoInteract();
+
 	/** Input handler: RMB press. If a grenade is equipped, ARMS the self-toss
 	 *  (hold-to-wind-up); the throw fires on release in DoAltFireEnd — mirrors the
 	 *  LMB throw. No grenade equipped → no-op (reserved for ADS / scope). */
@@ -272,6 +287,27 @@ protected:
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SetUseHeld(bool bHeld);
 
+	/** Server: drop the carried bomb at the player's feet (G with the bomb equipped). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_DropBomb();
+
+	/** Server: drop the equipped weapon onto the ground (G with the weapon equipped). */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_DropWeapon();
+
+	/** Server: F-interact — pick up the bomb or a dropped weapon the player is
+	 *  looking at within InteractRange. Server traces from the validated aim. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_TryInteract();
+
+	/** Max distance (cm) for an F-interact pickup. Close range, Valorant/CS-like. */
+	UPROPERTY(EditDefaultsOnly, Category = "Interact", meta = (ClampMin = "50.0"))
+	float InteractRange = 200.0f;
+
+	/** Min dot(aim, toTarget) for a pickup to count as "looking at it" (~0.7 ≈ 45°). */
+	UPROPERTY(EditDefaultsOnly, Category = "Interact", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float InteractConeDot = 0.7f;
+
 	/** Server: forward an R-key press down to the equipped weapon's
 	 *  Server_StartReload. Server validates eligibility (alive, mag not
 	 *  full, reserves > 0) and silently rejects otherwise. */
@@ -296,6 +332,26 @@ protected:
 
 	/** Server: spawn + equip the DefaultWeaponClass for this character. Called on possession. */
 	virtual void Server_EquipDefaultWeapon();
+
+	/** Server: attach a weapon actor to the FP view and make it CurrentWeapon.
+	 *  Shared by initial equip and ground pickup. */
+	void AttachWeaponToView(AProjectCompHitscanWeapon* Weapon);
+
+	/** Server: detach a weapon, clear its owner (marks it as droppable loot), and
+	 *  leave it on the ground in front of the player. Does NOT touch CurrentWeapon. */
+	void Server_DropWeaponInternal(AProjectCompHitscanWeapon* Weapon);
+
+public:
+	/** Server: equip a weapon lying on the ground. bAllowSwap=false (walk-over
+	 *  auto-pickup) only fills an empty slot; true (F-interact) swaps the held
+	 *  weapon for the new one. Called from the weapon's pickup overlap + interact. */
+	void EquipGroundWeapon(AProjectCompHitscanWeapon* Weapon, bool bAllowSwap);
+
+	/** Server: drop the equipped weapon onto the ground (called on death so the
+	 *  gun can be looted). No-op if unarmed. */
+	void DropCurrentWeaponToGround();
+
+protected:
 
 	// ---- Engine overrides --------------------------------------------------
 
@@ -447,6 +503,10 @@ protected:
 	 *  Server_UseGrenade path which does its own validation. */
 	int32 EquippedGrenadeSlot = -1;
 
+	/** Owning-client-local: true while the carried bomb is the equipped item (key 3).
+	 *  Gates G to drop the bomb; cleared when switching to the weapon or a grenade. */
+	bool bBombEquipped = false;
+
 	/** Owning-client-local: true while LMB is held down with a grenade equipped,
 	 *  i.e. a throw is "wound up" and waiting for release. Set on fire-press
 	 *  (DoFireStart) while EquippedGrenadeSlot >= 0; the actual throw fires on
@@ -565,6 +625,11 @@ protected:
 	 *  Called from input edges, RPC, and overlap-changed events. Idempotent — safe to
 	 *  call repeatedly; only transitions when the desired state differs from current. */
 	void UpdateInteractLock();
+
+	/** True only when the local player can currently plant (bomb carrier in a site)
+	 *  or defuse (defender in range of the planted bomb). Gates the interact lock so
+	 *  a plain F-press inside a site no longer auto-crouches. Reads GameState's bomb. */
+	bool CanInteractWithBombNow() const;
 
 	/**
 	 * Per-client mesh visibility refresh. Runs on every client (including listen
