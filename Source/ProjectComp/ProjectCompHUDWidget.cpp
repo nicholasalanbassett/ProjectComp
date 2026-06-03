@@ -83,6 +83,7 @@ void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 	RefreshDisplay();
 	UpdateKillFeed(InDeltaTime);
 	RefreshFlashOverlay();
+	RefreshResultsScreen();
 }
 
 // =====================================================================
@@ -412,6 +413,9 @@ void UProjectCompHUDWidget::BuildLayout()
 	// ---- PreRound buy panel (centered overlay) ----------------------------
 	// Built before the FlashOverlay so the overlay still sits above it in Z.
 	BuildBuyPanel(RootCanvas);
+
+	// ---- End-of-match results screen (centered overlay) -------------------
+	BuildResultsPanel(RootCanvas);
 
 	// ---- Flash overlay (full-screen white) ---------------------------------
 	// Added LAST so it sits on top of every other HUD element in Z-order.
@@ -1000,6 +1004,206 @@ void UProjectCompHUDWidget::RefreshBombStatus()
 	}
 
 	BombStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+}
+
+// =====================================================================
+// End-of-match results screen
+// =====================================================================
+
+void UProjectCompHUDWidget::BuildResultsPanel(UCanvasPanel* RootCanvas)
+{
+	if (!WidgetTree || !RootCanvas)
+	{
+		return;
+	}
+
+	ResultsBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ResultsBox"));
+	UCanvasPanelSlot* BoxSlot = RootCanvas->AddChildToCanvas(ResultsBox);
+	BoxSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	BoxSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+	BoxSlot->SetPosition(FVector2D(0.0f, 0.0f));
+	BoxSlot->SetAutoSize(true);
+
+	auto AddCentered = [&](UWidget* W, float TopPad, float BottomPad)
+	{
+		UVerticalBoxSlot* S = ResultsBox->AddChildToVerticalBox(W);
+		S->SetHorizontalAlignment(HAlign_Center);
+		S->SetPadding(FMargin(0.0f, TopPad, 0.0f, BottomPad));
+	};
+
+	ResultsTitle = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ResultsTitle"));
+	ResultsTitle->SetFont(MakeFont(56));
+	ResultsTitle->SetText(NSLOCTEXT("HUD", "MatchOverTitle", "MATCH OVER"));
+	ResultsTitle->SetColorAndOpacity(PrimaryTextColor);
+	ResultsTitle->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(ResultsTitle);
+	AddCentered(ResultsTitle, 0.0f, 4.0f);
+
+	ResultsWinnerText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ResultsWinnerText"));
+	ResultsWinnerText->SetFont(MakeFont(34));
+	ResultsWinnerText->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(ResultsWinnerText);
+	AddCentered(ResultsWinnerText, 0.0f, 2.0f);
+
+	ResultsScoreText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ResultsScoreText"));
+	ResultsScoreText->SetFont(MakeFont(28));
+	ResultsScoreText->SetColorAndOpacity(LabelTextColor);
+	ResultsScoreText->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(ResultsScoreText);
+	AddCentered(ResultsScoreText, 0.0f, 14.0f);
+
+	ResultsScoreboardBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ResultsScoreboardBox"));
+	AddCentered(ResultsScoreboardBox, 0.0f, 16.0f);
+
+	BtnReturnToLobby = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), TEXT("BtnReturnToLobby"));
+	// Non-focusable: keeps keyboard focus on the viewport (consistent with the buy buttons).
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	BtnReturnToLobby->IsFocusable = false;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	UTextBlock* BtnText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("BtnReturnToLobby_Txt"));
+	BtnText->SetText(NSLOCTEXT("HUD", "ReturnToLobby", "RETURN TO LOBBY"));
+	BtnText->SetFont(MakeFont(18));
+	BtnText->SetColorAndOpacity(PrimaryTextColor);
+	BtnText->SetJustification(ETextJustify::Center);
+	BtnReturnToLobby->AddChild(BtnText);
+	BtnReturnToLobby->OnClicked.AddDynamic(this, &UProjectCompHUDWidget::OnClickReturnToLobby);
+	AddCentered(BtnReturnToLobby, 0.0f, 0.0f);
+
+	ResultsWaitingText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ResultsWaitingText"));
+	ResultsWaitingText->SetFont(MakeFont(16));
+	ResultsWaitingText->SetColorAndOpacity(LabelTextColor);
+	ResultsWaitingText->SetText(NSLOCTEXT("HUD", "WaitingForLeader", "Waiting for lobby leader\xE2\x80\xA6"));
+	ResultsWaitingText->SetJustification(ETextJustify::Center);
+	ApplyTextShadow(ResultsWaitingText);
+	AddCentered(ResultsWaitingText, 0.0f, 0.0f);
+
+	ResultsBox->SetVisibility(ESlateVisibility::Collapsed);
+}
+
+void UProjectCompHUDWidget::RefreshResultsScreen()
+{
+	if (!ResultsBox)
+	{
+		return;
+	}
+	const AProjectCompGameState* GS = GetTypedGameState();
+	const bool bMatchEnded = GS && GS->GetCurrentPhase() == ERoundPhase::MatchEnded;
+	if (!bMatchEnded)
+	{
+		if (ResultsBox->GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			ResultsBox->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		bResultsScoreboardBuilt = false;  // rebuild fresh next match
+		return;
+	}
+
+	// Visible (not HitTestInvisible) so the Return-to-Lobby button is clickable.
+	ResultsBox->SetVisibility(ESlateVisibility::Visible);
+
+	// Suppress the dead-player overlay so it doesn't sit behind the results panel
+	// (RefreshDisplay set it earlier this tick based on alive state).
+	if (DeathStatusBox)
+	{
+		DeathStatusBox->SetVisibility(ESlateVisibility::Collapsed);
+	}
+
+	const int32 AttackerScore = GS->GetTeamLoadout(ETeamID::Attackers).Score;
+	const int32 DefenderScore = GS->GetTeamLoadout(ETeamID::Defenders).Score;
+	const ETeamID Winner = GS->GetMatchWinner();
+
+	if (ResultsWinnerText)
+	{
+		FText WinText;
+		switch (Winner)
+		{
+			case ETeamID::Attackers: WinText = NSLOCTEXT("HUD", "AttackersWin", "ATTACKERS WIN"); break;
+			case ETeamID::Defenders: WinText = NSLOCTEXT("HUD", "DefendersWin", "DEFENDERS WIN"); break;
+			default:                 WinText = NSLOCTEXT("HUD", "MatchDraw",     "DRAW"); break;
+		}
+		ResultsWinnerText->SetText(WinText);
+		ResultsWinnerText->SetColorAndOpacity(GetTeamColor(Winner));
+	}
+	if (ResultsScoreText)
+	{
+		ResultsScoreText->SetText(FText::FromString(FString::Printf(TEXT("%d  \xE2\x80\x94  %d"), AttackerScore, DefenderScore)));
+	}
+
+	if (!bResultsScoreboardBuilt)
+	{
+		PopulateScoreboard();
+		bResultsScoreboardBuilt = true;
+	}
+
+	// Only the lobby leader gets the Return button; everyone else sees the wait text.
+	const APlayerController* OwningPC = GetOwningPlayer();
+	const APlayerState* LocalPS = OwningPC ? OwningPC->PlayerState : nullptr;
+	const bool bIsLeader = LocalPS && GS->GetLobbyLeader() == LocalPS;
+	if (BtnReturnToLobby)
+	{
+		BtnReturnToLobby->SetVisibility(bIsLeader ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+	if (ResultsWaitingText)
+	{
+		ResultsWaitingText->SetVisibility(bIsLeader ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
+	}
+}
+
+void UProjectCompHUDWidget::PopulateScoreboard()
+{
+	if (!ResultsScoreboardBox || !WidgetTree)
+	{
+		return;
+	}
+	ResultsScoreboardBox->ClearChildren();
+
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	auto AddTeamSection = [&](ETeamID Team, const TCHAR* Header)
+	{
+		UTextBlock* HeaderText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+		HeaderText->SetText(FText::FromString(Header));
+		HeaderText->SetFont(MakeFont(18));
+		HeaderText->SetColorAndOpacity(GetTeamColor(Team));
+		HeaderText->SetJustification(ETextJustify::Center);
+		ApplyTextShadow(HeaderText);
+		UVerticalBoxSlot* HS = ResultsScoreboardBox->AddChildToVerticalBox(HeaderText);
+		HS->SetHorizontalAlignment(HAlign_Center);
+		HS->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 2.0f));
+
+		for (const TObjectPtr<APlayerState>& PSPtr : GS->PlayerArray)
+		{
+			const AProjectCompPlayerState* PS = Cast<AProjectCompPlayerState>(PSPtr.Get());
+			if (!PS || PS->GetTeamID() != Team)
+			{
+				continue;
+			}
+			UTextBlock* Row = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+			Row->SetText(FText::FromString(FString::Printf(TEXT("%s      %d / %d"),
+				*PS->GetPlayerName(), PS->GetKills(), PS->GetDeaths())));
+			Row->SetFont(MakeFont(16));
+			Row->SetColorAndOpacity(PrimaryTextColor);
+			Row->SetJustification(ETextJustify::Center);
+			ApplyTextShadow(Row);
+			UVerticalBoxSlot* RS = ResultsScoreboardBox->AddChildToVerticalBox(Row);
+			RS->SetHorizontalAlignment(HAlign_Center);
+		}
+	};
+
+	AddTeamSection(ETeamID::Attackers, TEXT("ATTACKERS      K / D"));
+	AddTeamSection(ETeamID::Defenders, TEXT("DEFENDERS      K / D"));
+}
+
+void UProjectCompHUDWidget::OnClickReturnToLobby()
+{
+	if (AProjectCompPlayerController* PC = Cast<AProjectCompPlayerController>(GetOwningPlayer()))
+	{
+		PC->RequestReturnToLobby();
+	}
 }
 
 // =====================================================================

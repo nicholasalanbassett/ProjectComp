@@ -61,6 +61,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Lobby")
 	APlayerState* GetLobbyLeader() const { return LobbyLeader; }
 
+	/** Team that won the match — set when EndMatch fires; Spectator until then.
+	 *  Drives the end-of-match results screen. */
+	UFUNCTION(BlueprintPure, Category = "Round State")
+	ETeamID GetMatchWinner() const { return MatchWinner; }
+
 	/** The single physical bomb actor (spawned by the GameMode). Replicated so all
 	 *  clients + the character can read carry/plant state for HUD + interact lock. */
 	UFUNCTION(BlueprintPure, Category = "Bomb")
@@ -78,6 +83,7 @@ public:
 	void Server_SetTeamCooldownPool(ETeamID Team, float NewPool);
 	void Server_AddTeamScore(ETeamID Team, int32 Delta = 1);
 	void Server_SetSelectionWindowOpen(bool bOpen);
+	void Server_SetMatchWinner(ETeamID Team);
 
 	// ---- Multicast hooks --------------------------------------------------
 
@@ -150,6 +156,10 @@ protected:
 	/** The match's single bomb actor (spawned by the GameMode). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Bomb")
 	TObjectPtr<AProjectCompBomb> Bomb = nullptr;
+
+	/** Winning team of the just-ended match (Spectator until EndMatch). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
+	ETeamID MatchWinner = ETeamID::Spectator;
 
 	// ---- RepNotify handlers ----------------------------------------------
 

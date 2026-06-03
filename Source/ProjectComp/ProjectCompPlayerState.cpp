@@ -147,6 +147,16 @@ void AProjectCompPlayerState::Server_ResetLives()
 	LivesRemaining = MaxLives;
 }
 
+void AProjectCompPlayerState::Server_ResetMatchStats()
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	Kills = 0;
+	Deaths = 0;
+}
+
 void AProjectCompPlayerState::Server_SetRespawnEndTime(float NewTime)
 {
 	if (!ensure(HasAuthority()))

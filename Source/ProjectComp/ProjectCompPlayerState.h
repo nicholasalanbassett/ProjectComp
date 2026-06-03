@@ -145,6 +145,10 @@ public:
 	/** Server: restore LivesRemaining to MaxLives. Called between rounds. */
 	void Server_ResetLives();
 
+	/** Server: zero kills + deaths. Called on return-to-lobby so the next match
+	 *  starts with a clean scoreboard. */
+	void Server_ResetMatchStats();
+
 	/** Server: set the absolute server-time at which this player will respawn. 0 to clear. */
 	void Server_SetRespawnEndTime(float NewTime);
 

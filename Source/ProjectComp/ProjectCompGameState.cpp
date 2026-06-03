@@ -24,6 +24,7 @@ void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AProjectCompGameState, bSelectionWindowOpen);
 	DOREPLIFETIME(AProjectCompGameState, LobbyLeader);
 	DOREPLIFETIME(AProjectCompGameState, Bomb);
+	DOREPLIFETIME(AProjectCompGameState, MatchWinner);
 }
 
 // =====================================================================
@@ -103,6 +104,12 @@ void AProjectCompGameState::Server_SetSelectionWindowOpen(bool bOpen)
 {
 	if (!ensure(HasAuthority())) return;
 	bSelectionWindowOpen = bOpen;
+}
+
+void AProjectCompGameState::Server_SetMatchWinner(ETeamID Team)
+{
+	if (!ensure(HasAuthority())) return;
+	MatchWinner = Team;
 }
 
 void AProjectCompGameState::Server_SetLobbyLeader(APlayerState* NewLeader)

@@ -51,6 +51,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void RequestStartMatch();
 
+	/** Owning-client (lobby leader) entry point: return to the lobby from the
+	 *  end-of-match results screen. */
+	UFUNCTION(BlueprintCallable, Category = "Lobby")
+	void RequestReturnToLobby();
+
 	/** Owning-client (lobby leader) entry point: hand lobby leadership to Target. */
 	UFUNCTION(BlueprintCallable, Category = "Lobby")
 	void RequestSetLobbyLeader(APlayerState* Target);
@@ -345,6 +350,10 @@ protected:
 	/** Server RPC: lobby-leader-only — start the match from the lobby. */
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_StartMatch();
+
+	/** Server RPC: lobby-leader-only — return to the lobby from MatchEnded. */
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_ReturnToLobby();
 
 	/** Server RPC: leader-only — transfer lobby leadership to Target. */
 	UFUNCTION(Server, Reliable, WithValidation)

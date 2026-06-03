@@ -240,6 +240,38 @@ protected:
 	/** Set per-column + root visibility based on current phase. */
 	void RefreshBuyPanelVisibility();
 
+	// =====================================================================
+	// End-of-match results screen (centered overlay shown during MatchEnded).
+	// Winner banner + final score + per-player scoreboard + a leader-only
+	// "Return to Lobby" button.
+	// =====================================================================
+
+	UPROPERTY() TObjectPtr<UVerticalBox> ResultsBox;
+	UPROPERTY() TObjectPtr<UTextBlock>   ResultsTitle;       // "MATCH OVER"
+	UPROPERTY() TObjectPtr<UTextBlock>   ResultsWinnerText;  // "ATTACKERS WIN"
+	UPROPERTY() TObjectPtr<UTextBlock>   ResultsScoreText;   // "13 — 9"
+	UPROPERTY() TObjectPtr<UVerticalBox> ResultsScoreboardBox;
+	UPROPERTY() TObjectPtr<UButton>      BtnReturnToLobby;
+	UPROPERTY() TObjectPtr<UTextBlock>   ResultsWaitingText; // non-leaders
+
+	/** Built once when the layout is constructed. */
+	void BuildResultsPanel(UCanvasPanel* RootCanvas);
+
+	/** Per-tick: show on MatchEnded, fill winner/score, gate the leader button. */
+	void RefreshResultsScreen();
+
+	/** Rebuild the per-player scoreboard rows from GameState->PlayerArray. Called
+	 *  once on entry into MatchEnded (guarded by bResultsScoreboardBuilt). */
+	void PopulateScoreboard();
+
+	/** Latches true after the scoreboard is built for the current results screen;
+	 *  reset when the screen hides so a fresh match rebuilds it. */
+	bool bResultsScoreboardBuilt = false;
+
+	/** Button handler: ask the server (via the PC) to return to the lobby. */
+	UFUNCTION()
+	void OnClickReturnToLobby();
+
 public:
 
 	/** Toggle the buy menu's open state. During PreRound the panel only renders

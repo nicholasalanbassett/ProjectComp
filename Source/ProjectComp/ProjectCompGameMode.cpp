@@ -210,7 +210,23 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 				}
 				break;
 			}
-			default: break;
+			case ERoundPhase::None:
+					// Lobby idles with timer 0, so this runs every tick. On a dedicated
+					// server, auto-start once enough players are present.
+					if (IsDedicatedServerMode())
+					{
+						TickServerLobby();
+					}
+					break;
+				case ERoundPhase::MatchEnded:
+					// Results screen held for PostMatchDuration; on a dedicated server,
+					// auto-return to the lobby when it elapses so matches loop unattended.
+					if (IsDedicatedServerMode())
+					{
+						ResetToLobby();
+					}
+					break;
+				default: break;
 		}
 	}
 }
@@ -220,7 +236,7 @@ void AProjectCompGameMode::PostLogin(APlayerController* NewPlayer)
 	AProjectCompPlayerState* PS = NewPlayer ? NewPlayer->GetPlayerState<AProjectCompPlayerState>() : nullptr;
 	if (PS)
 	{
-		PS->Server_SetTeamID(PickTeamForNewPlayer());
+		PS->Server_SetTeamID(PickTeamForNewPlayer(PS));
 		PS->Server_SetIsAlive(true);
 		PS->Server_ClearVotes();
 		// Bootstrap the new player's wallet so their first PreRound buy window
@@ -269,9 +285,22 @@ void AProjectCompGameMode::Server_StartMatch(APlayerController* Requester)
 		UE_LOG(LogProjectComp, Warning, TEXT("[Lobby] StartMatch rejected — requester is not the lobby leader."));
 		return;
 	}
-	bMatchStarted = true;
 	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Lobby leader started the match."));
+	BeginMatch();
+}
 
+void AProjectCompGameMode::BeginMatch()
+{
+	if (!HasAuthority() || bMatchStarted)
+	{
+		return;
+	}
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::None)
+	{
+		return;
+	}
+	bMatchStarted = true;
 	// Round 1 always opens with LoomSelection per the rotation rule.
 	if (ShouldRunLoomSelectionForRound(1))
 	{
@@ -397,6 +426,33 @@ void AProjectCompGameMode::Logout(AController* Exiting)
 			{
 				UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Leader left; '%s' is now the lobby leader."), *NewLeader->GetPlayerName());
 			}
+		}
+	}
+
+	// Dedicated server: if everyone's gone, reset to a clean lobby for the next
+	// joiners; otherwise check whether a team just emptied mid-match (forfeit).
+	// LeavingPS may still be in PlayerArray at this point, so exclude it.
+	if (IsDedicatedServerMode())
+	{
+		const AProjectCompGameState* GS = GetTypedGameState();
+		int32 Remaining = 0;
+		if (GS)
+		{
+			for (APlayerState* PS : GS->PlayerArray)
+			{
+				if (PS && PS != LeavingPS)
+				{
+					++Remaining;
+				}
+			}
+		}
+		if (Remaining <= 0)
+		{
+			ResetToLobby();
+		}
+		else
+		{
+			CheckForfeit(LeavingPS);
 		}
 	}
 }
@@ -617,8 +673,9 @@ bool AProjectCompGameMode::ShouldRunLoomSelectionForRound(int32 Round) const
 	{
 		return true;
 	}
-	// Rotation: every 3 rounds starting from round 1 (rounds 1, 4, 7, 10, 13...).
-	return (Round - 1) % 3 == 0;
+	// Runs at the start of the match (round 1) and every LoomSelectionRoundInterval
+	// rounds thereafter (default 6 → rounds 1, 7, 13, 19...).
+	return (Round - 1) % FMath::Max(1, LoomSelectionRoundInterval) == 0;
 }
 
 void AProjectCompGameMode::PrepareForNewRound()
@@ -651,9 +708,9 @@ void AProjectCompGameMode::PrepareForNewRound()
 	}
 
 	// Per-player resets. NOTE: ChosenLoomAbility is deliberately NOT cleared
-	// here — it persists for the full 3-round window between LoomSelection
-	// phases, and only StartLoomSelection clears it. The Loom-usage charge
-	// (1 cast per round) DOES reset every round regardless.
+	// here — it persists across the rounds between LoomSelection phases (the
+	// LoomSelectionRoundInterval window), and only StartLoomSelection clears it.
+	// The Loom-usage charge (1 cast per round) DOES reset every round regardless.
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
@@ -714,7 +771,7 @@ void AProjectCompGameMode::StartLoomSelection()
 
 	// Wipe the per-player Loom claim so this LoomSelection's draft is fresh.
 	// (PrepareForNewRound deliberately leaves ChosenLoomAbility alone so that
-	// non-LoomSelection rounds preserve the 3-round commitment.)
+	// non-LoomSelection rounds preserve the drafted pick until the next selection.)
 	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
 	{
 		if (APlayerController* PC = It->Get())
@@ -819,7 +876,7 @@ void AProjectCompGameMode::StartPostRound()
 	UE_LOG(LogProjectComp, Log, TEXT("Round %d: PostRound started (%.1fs)."), GS->GetCurrentRound(), PostRoundDuration);
 }
 
-void AProjectCompGameMode::EndMatch()
+void AProjectCompGameMode::EndMatch(ETeamID ForcedWinner)
 {
 	AProjectCompGameState* GS = GetTypedGameState();
 	if (!GS)
@@ -827,9 +884,188 @@ void AProjectCompGameMode::EndMatch()
 		return;
 	}
 
+	// Normal end fires when a team reaches RoundsToWinMatch, so the higher score is
+	// the winner (a true tie is impossible under first-to-N). A forfeit (team
+	// emptied) passes ForcedWinner to override the score.
+	const int32 AttackerScore = GS->GetTeamLoadout(ETeamID::Attackers).Score;
+	const int32 DefenderScore = GS->GetTeamLoadout(ETeamID::Defenders).Score;
+	const ETeamID Winner = (ForcedWinner != ETeamID::Spectator)
+		? ForcedWinner
+		: ((AttackerScore >= DefenderScore) ? ETeamID::Attackers : ETeamID::Defenders);
+	GS->Server_SetMatchWinner(Winner);
+
 	GS->Server_SetPhase(ERoundPhase::MatchEnded);
+	// Hold the results screen for PostMatchDuration. On a dedicated server the Tick
+	// auto-returns to lobby when this expires; listen/PIE waits for the leader's button.
+	GS->Server_SetPhaseTimeRemaining(PostMatchDuration);
+	UE_LOG(LogProjectComp, Log, TEXT("Match ended after %d rounds — %s win (%d-%d)%s."),
+		GS->GetCurrentRound(),
+		Winner == ETeamID::Attackers ? TEXT("Attackers") : TEXT("Defenders"),
+		AttackerScore, DefenderScore,
+		ForcedWinner != ETeamID::Spectator ? TEXT(" [forfeit]") : TEXT(""));
+}
+
+// Leader-gated entry from the results-screen button. Validates the requester is
+// the lobby leader and we're on the results screen, then runs the shared reset.
+void AProjectCompGameMode::Server_ReturnToLobby(APlayerController* Requester)
+{
+	if (!HasAuthority() || !Requester)
+	{
+		return;
+	}
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::MatchEnded)
+	{
+		return;  // only valid from the results screen
+	}
+	const APlayerState* ReqPS = Requester->GetPlayerState<APlayerState>();
+	if (!ReqPS || GS->GetLobbyLeader() != ReqPS)
+	{
+		UE_LOG(LogProjectComp, Warning, TEXT("[Lobby] ReturnToLobby rejected — requester is not the lobby leader."));
+		return;
+	}
+	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Lobby leader returned the match to the lobby."));
+	ResetToLobby();
+}
+
+// Shared reset back to the pre-match team-select lobby (None phase). Mirrors
+// StartPlay's lobby staging + the per-round reset in PrepareForNewRound, but also
+// zeroes match scores and stats. No gating — callers (leader button, dedicated
+// auto-return, empty-server reset) enforce their own preconditions.
+void AProjectCompGameMode::ResetToLobby()
+{
+	AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+
+	bMatchStarted = false;
+	LastPreparedRound = 0;  // force a fresh round-1 prep when the next match starts
+
+	// Zero both teams' scores + per-round ability state.
+	for (uint8 i = 0; i < 2; ++i)
+	{
+		FTeamLoadout Loadout = GS->GetTeamLoadout(static_cast<ETeamID>(i));
+		Loadout.Score = 0;
+		Loadout.AbilitySlot1 = EAbilityType::None;
+		Loadout.AbilitySlot2 = EAbilityType::None;
+		Loadout.SharedCooldownPool = 1.0f;
+		GS->Server_SetTeamLoadout(static_cast<ETeamID>(i), Loadout);
+	}
+
+	// Per-player reset (teams are retained so a rematch is one click in the lobby).
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			if (AProjectCompPlayerState* PS = PC->GetPlayerState<AProjectCompPlayerState>())
+			{
+				PS->Server_SetIsAlive(true);
+				PS->Server_ClearVotes();
+				PS->Server_ResetLives();
+				PS->Server_SetRespawnEndTime(0.0f);
+				PS->Server_ResetLoomUsage();
+				PS->Server_ClearEquippedGrenades();
+				PS->Server_ClearLoadout();
+				PS->Server_ClearChosenLoomAbility();
+				PS->Server_SetCredits(StartingCredits);
+				PS->Server_ResetMatchStats();
+			}
+		}
+	}
+
+	// Clear dropped loot, reset the bomb, and respawn everyone at their team spawn.
+	Server_CleanupGroundWeapons();
+	Server_ResetAllBombSites();
+	AssignedStarts.Empty();
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			RespawnPlayerAtAssignedStart(PC);
+		}
+	}
+
+	// Back to the team-select lobby. Clients' UpdateInputModeForPhase re-opens the
+	// lobby widget when they see the None phase.
+	GS->Server_SetMatchWinner(ETeamID::Spectator);
+	GS->Server_SetSelectionWindowOpen(false);
+	GS->Server_SetRound(1);
 	GS->Server_SetPhaseTimeRemaining(0.0f);
-	UE_LOG(LogProjectComp, Log, TEXT("Match ended after %d rounds."), GS->GetCurrentRound());
+	GS->Server_SetPhase(ERoundPhase::None);
+
+	UE_LOG(LogProjectComp, Log, TEXT("[Lobby] Match reset to the team-select lobby."));
+}
+
+void AProjectCompGameMode::TickServerLobby()
+{
+	if (bMatchStarted)
+	{
+		return;
+	}
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS || GS->GetCurrentPhase() != ERoundPhase::None)
+	{
+		return;
+	}
+	if (GS->PlayerArray.Num() >= MinPlayersToAutoStart)
+	{
+		UE_LOG(LogProjectComp, Log, TEXT("[Server] Auto-starting match (%d players present)."), GS->PlayerArray.Num());
+		BeginMatch();
+	}
+}
+
+int32 AProjectCompGameMode::CountPlayersOnTeam(ETeamID Team, const APlayerState* Ignore) const
+{
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return 0;
+	}
+	int32 Count = 0;
+	for (APlayerState* PSBase : GS->PlayerArray)
+	{
+		if (!PSBase || PSBase == Ignore)
+		{
+			continue;
+		}
+		if (const AProjectCompPlayerState* PS = Cast<AProjectCompPlayerState>(PSBase))
+		{
+			if (PS->GetTeamID() == Team)
+			{
+				++Count;
+			}
+		}
+	}
+	return Count;
+}
+
+void AProjectCompGameMode::CheckForfeit(const APlayerState* Ignore)
+{
+	const AProjectCompGameState* GS = GetTypedGameState();
+	if (!GS)
+	{
+		return;
+	}
+	const ERoundPhase Phase = GS->GetCurrentPhase();
+	// Only forfeit while a match is actually being played (not in lobby / results).
+	if (!bMatchStarted || Phase == ERoundPhase::None || Phase == ERoundPhase::MatchEnded)
+	{
+		return;
+	}
+	const int32 Att = CountPlayersOnTeam(ETeamID::Attackers, Ignore);
+	const int32 Def = CountPlayersOnTeam(ETeamID::Defenders, Ignore);
+	if (Att == 0 && Def > 0)
+	{
+		UE_LOG(LogProjectComp, Log, TEXT("[Server] Attackers empty mid-match — Defenders win by forfeit."));
+		EndMatch(ETeamID::Defenders);
+	}
+	else if (Def == 0 && Att > 0)
+	{
+		UE_LOG(LogProjectComp, Log, TEXT("[Server] Defenders empty mid-match — Attackers win by forfeit."));
+		EndMatch(ETeamID::Attackers);
+	}
 }
 
 AActor* AProjectCompGameMode::ChoosePlayerStart_Implementation(AController* Player)
@@ -1526,16 +1762,28 @@ void AProjectCompGameMode::HandlePlayerRespawn(APlayerController* Player)
 	RespawnTimers.Remove(Player);
 }
 
-ETeamID AProjectCompGameMode::PickTeamForNewPlayer()
+ETeamID AProjectCompGameMode::PickTeamForNewPlayer(const APlayerState* Joining)
 {
-	// Deterministic alternation via our own counter: 1st join → Attackers,
-	// 2nd → Defenders, 3rd → Attackers, etc. We use a private counter rather
-	// than GetNumPlayers() or NumPlayers because in PIE listen-server mode the
-	// host's PlayerController is sometimes not yet in the world iterator when
-	// the client's PostLogin fires, which made the engine-based count race.
-	// When real team-select UI lands this becomes irrelevant — players choose.
-	++JoinSequence;
-	return (JoinSequence % 2 == 1) ? ETeamID::Attackers : ETeamID::Defenders;
+	// Balance by filling the smaller team, capped at MaxTeamSize; if both are full
+	// the joiner becomes a spectator (e.g. the 11th player in a 5v5, or a late join
+	// into full teams). Counting currently-assigned teams (rather than a join
+	// counter) keeps sides balanced across mid-match leaves and rejoins. The
+	// joining player is excluded from the count — they may already sit in
+	// PlayerArray with a default team when PostLogin runs. Players can still
+	// free-swap in the lobby via the team-select UI.
+	const int32 Att = CountPlayersOnTeam(ETeamID::Attackers, Joining);
+	const int32 Def = CountPlayersOnTeam(ETeamID::Defenders, Joining);
+	if (Att <= Def)
+	{
+		if (Att < MaxTeamSize) { return ETeamID::Attackers; }
+		if (Def < MaxTeamSize) { return ETeamID::Defenders; }
+	}
+	else
+	{
+		if (Def < MaxTeamSize) { return ETeamID::Defenders; }
+		if (Att < MaxTeamSize) { return ETeamID::Attackers; }
+	}
+	return ETeamID::Spectator;
 }
 
 // =====================================================================

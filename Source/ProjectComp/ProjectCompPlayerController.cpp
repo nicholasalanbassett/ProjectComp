@@ -161,6 +161,11 @@ void AProjectCompPlayerController::UpdateInputModeForPhase()
 		}
 		Desired = bBuyOpen ? EAppliedInputMode::GameAndUIHoverFree : EAppliedInputMode::GameOnly;
 	}
+	else if (Phase == ERoundPhase::MatchEnded)
+	{
+		// End-of-match results screen — cursor usable to click "Return to Lobby".
+		Desired = EAppliedInputMode::GameAndUILocked;
+	}
 
 	if (Desired == LastAppliedInputMode)
 	{
@@ -403,6 +408,11 @@ void AProjectCompPlayerController::RequestStartMatch()
 	Server_StartMatch();
 }
 
+void AProjectCompPlayerController::RequestReturnToLobby()
+{
+	Server_ReturnToLobby();
+}
+
 void AProjectCompPlayerController::RequestSetLobbyLeader(APlayerState* Target)
 {
 	Server_SetLobbyLeader(Target);
@@ -576,6 +586,20 @@ void AProjectCompPlayerController::Server_StartMatch_Implementation()
 	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
 	{
 		GM->Server_StartMatch(this);
+	}
+}
+
+bool AProjectCompPlayerController::Server_ReturnToLobby_Validate()
+{
+	return true;
+}
+
+void AProjectCompPlayerController::Server_ReturnToLobby_Implementation()
+{
+	// GameMode authorizes this — only the lobby leader, and only from MatchEnded.
+	if (AProjectCompGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AProjectCompGameMode>() : nullptr)
+	{
+		GM->Server_ReturnToLobby(this);
 	}
 }
 

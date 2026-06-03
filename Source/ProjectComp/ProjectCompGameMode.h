@@ -134,6 +134,15 @@ public:
 	 *  isn't the current lobby leader. */
 	void Server_StartMatch(APlayerController* Requester);
 
+	/** End-of-match: lobby leader returns everyone to the team-select lobby (None
+	 *  phase), resetting match scores, stats, lives, credits, loadouts, the bomb,
+	 *  and dropped loot. Teams are retained. Only valid from the MatchEnded phase. */
+	void Server_ReturnToLobby(APlayerController* Requester);
+
+	/** True when running as a dedicated server (auto-manage the match flow: start,
+	 *  return-to-lobby, empty reset). Listen/PIE play stays leader-driven. */
+	bool IsDedicatedServerMode() const { return GetNetMode() == NM_DedicatedServer; }
+
 	/** Pre-match lobby: transfer lobby leadership to Target. Only the CURRENT
 	 *  leader may call this, and only during the None phase. */
 	void Server_SetLobbyLeader(APlayerController* Requester, APlayerState* Target);
@@ -227,7 +236,9 @@ protected:
 	void StartPreRound();
 	void StartRoundActive();
 	void StartPostRound();
-	void EndMatch();
+	/** End the match. ForcedWinner overrides the score-based winner (used for forfeits
+	 *  when a team empties); leave as Spectator to derive the winner from the score. */
+	void EndMatch(ETeamID ForcedWinner = ETeamID::Spectator);
 
 	/** Server: rotation rule — true if the round needs a LoomSelection before
 	 *  its PreRound. Fires on rounds 1, 4, 7, 10, 13, 16, 19, 22 (every 3
@@ -250,8 +261,10 @@ protected:
 	/** Move a freshly-spawned player into the world and back to alive state. */
 	void HandlePlayerRespawn(APlayerController* Player);
 
-	/** Deterministic alternation by join order — see implementation comment. Non-const because GetNumPlayers() is non-const. */
-	ETeamID PickTeamForNewPlayer();
+	/** Pick the joining player's team: fill the smaller side, capped at MaxTeamSize,
+	 *  else Spectator. `Joining` is excluded from the count (it may already be in
+	 *  PlayerArray with a default team when this runs). */
+	ETeamID PickTeamForNewPlayer(const APlayerState* Joining);
 
 	/** Flip every player's TeamID (Attackers ↔ Defenders). Triggered at halftime. */
 	void Server_SwapAllPlayerTeams();
@@ -274,10 +287,16 @@ protected:
 	// ---- Tuning knobs (editable in BP defaults) ---------------------------
 
 	/** Duration of the LoomSelection phase in seconds. Mouse-locked, no movement,
-	 *  Loom claim only. Inserted before rounds 1, 4, 7, 10, 13, 16, 19, 22
-	 *  (rotation rule (round-1)%3 == 0 + halftime guarantee). */
+	 *  Loom claim only. Inserted at the start of the match and every
+	 *  LoomSelectionRoundInterval rounds thereafter. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
 	float LoomSelectionDuration = 10.0f;
+
+	/** How often the LoomSelection draft runs: at the start of the match (round 1)
+	 *  and every N rounds after. Default 6 → rounds 1, 7, 13, 19. The drafted
+	 *  ability persists across the rounds between selections. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "1"))
+	int32 LoomSelectionRoundInterval = 6;
 
 	/** Duration of the PreRound phase in seconds (buy window + positioning). */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0"))
@@ -423,10 +442,43 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0"))
 	int32 HalftimeRoundNumber = 12;
 
+	// ---- Dedicated-server lifecycle (auto-managed only when NetMode == DedicatedServer;
+	// listen/PIE play keeps the leader-driven Start / Return-to-Lobby buttons) -------
+
+	/** Min connected players before a dedicated server auto-starts a match from the lobby. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Server", meta = (ClampMin = "1"))
+	int32 MinPlayersToAutoStart = 2;
+
+	/** Max players per team. Join-time assignment keeps each team at or below this. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Server", meta = (ClampMin = "1"))
+	int32 MaxTeamSize = 5;
+
+	/** Seconds the results screen stays up before a dedicated server auto-returns to the lobby. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Server", meta = (ClampMin = "0.0"))
+	float PostMatchDuration = 15.0f;
+
 private:
 
 	/** Convenience getter for the typed GameState. */
 	AProjectCompGameState* GetTypedGameState() const;
+
+	/** Server: begin the round loop (round 1). Shared by the leader-driven
+	 *  Server_StartMatch and the dedicated-server auto-start. No gating. */
+	void BeginMatch();
+
+	/** Server: reset all match state back to the team-select lobby (None phase).
+	 *  Shared by Server_ReturnToLobby and the dedicated auto-return / empty reset. */
+	void ResetToLobby();
+
+	/** Dedicated only: auto-start once MinPlayersToAutoStart are present in the lobby. */
+	void TickServerLobby();
+
+	/** Count connected players currently assigned to Team (optionally ignoring one
+	 *  PlayerState, e.g. a player mid-Logout still in PlayerArray). */
+	int32 CountPlayersOnTeam(ETeamID Team, const APlayerState* Ignore) const;
+
+	/** Dedicated only: if a team has emptied mid-match, forfeit to the other team. */
+	void CheckForfeit(const APlayerState* Ignore);
 
 	/** Server: per-round prep that needs to happen exactly once at the start
 	 *  of each round, regardless of whether that round opens with
@@ -444,13 +496,6 @@ private:
 	/** Per-player respawn timer handles, keyed by PlayerController. */
 	UPROPERTY()
 	TMap<TObjectPtr<APlayerController>, FTimerHandle> RespawnTimers;
-
-	/**
-	 * Monotonic counter incremented once per PostLogin. Used by PickTeamForNewPlayer
-	 * to alternate team assignment deterministically (odd → Attackers, even → Defenders)
-	 * without relying on engine-counted state that can race in PIE listen-server.
-	 */
-	int32 JoinSequence = 0;
 
 	/**
 	 * Each player's sticky PlayerStart assignment for the current round.
