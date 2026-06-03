@@ -699,7 +699,9 @@ void UProjectCompHUDWidget::RefreshDisplay()
 		}
 	}
 
-	// Ability indicator: tinted by team color when ready, gray when cooling.
+	// Ability indicator: lit while this player still holds their one Loom charge
+	// for the round, gray once they've spent it (the per-player charge is the gate
+	// now, not the team cooldown pool).
 	if (PS && GS && AbilityIndicatorImage)
 	{
 		const ETeamID Team = PS->GetTeamID();
@@ -709,7 +711,7 @@ void UProjectCompHUDWidget::RefreshDisplay()
 		}
 		else
 		{
-			const bool bReady = GS->IsTeamAbilityReady(Team);
+			const bool bReady = !PS->HasUsedLoomThisRound();
 			AbilityIndicatorImage->SetColorAndOpacity(bReady ? AbilityReadyColor : AbilityCooldownColor);
 		}
 	}

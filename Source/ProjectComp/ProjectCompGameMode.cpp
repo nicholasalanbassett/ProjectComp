@@ -547,9 +547,13 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		return false;
 	}
 
-	if (Loadout.SharedCooldownPool < 1.0f)
+	// One Loom cast per round per player. The charge persists across this player's
+	// respawn within the round (reset only at round start via Server_ResetLoomUsage),
+	// so a player who spent it during their 1st-death looming window has none left
+	// for their 2nd-death window, and vice-versa — exactly one of the two.
+	if (PS->HasUsedLoomThisRound())
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: pool not full (%.2f)."), Loadout.SharedCooldownPool);
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast rejected: player already used their one Loom charge this round."));
 		return false;
 	}
 
@@ -649,7 +653,9 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 		return false;
 	}
 
-	GS->Server_SetTeamCooldownPool(Team, 0.0f);
+	// Consume this player's single per-round Loom charge (the authoritative gate
+	// now — the team shared-cooldown pool is no longer used to limit casts).
+	PS->Server_MarkLoomUsed();
 	GS->Multicast_OnAbilityCast(Type, TargetLocation, Team);
 	return true;
 }
