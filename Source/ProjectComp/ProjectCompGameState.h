@@ -71,6 +71,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Bomb")
 	AProjectCompBomb* GetBomb() const { return Bomb; }
 
+	// ---- Enemy reveals (AM Utility Reveal + MM Camera Spike) --------------
+
+	/** Read-only view of the active enemy-reveal records. Consumers (minimap / HUD)
+	 *  filter by RevealedToTeam / RevealedToPlayer for the local viewer. */
+	const TArray<FEnemyRevealEntry>& GetEnemyReveals() const { return EnemyReveals; }
+
 	// ---- Server-only mutators (called by GameMode) ------------------------
 
 	void Server_SetLobbyLeader(APlayerState* NewLeader);
@@ -84,6 +90,19 @@ public:
 	void Server_AddTeamScore(ETeamID Team, int32 Delta = 1);
 	void Server_SetSelectionWindowOpen(bool bOpen);
 	void Server_SetMatchWinner(ETeamID Team);
+
+	// ---- Enemy-reveal mutators (called by the Loom ability actors) --------
+
+	/** Server: add or refresh an enemy-reveal record. Upserts on (Target,
+	 *  RevealedToTeam, RevealedToPlayer) so a continuously-refreshing producer
+	 *  (MM Camera Spike) doesn't pile up duplicate entries for the same enemy. */
+	void Server_AddEnemyReveal(const FEnemyRevealEntry& Entry);
+
+	/** Server: drop every reveal whose ExpireServerTime has passed. Called each tick. */
+	void Server_PurgeExpiredReveals();
+
+	/** Server: clear all reveals (called at round start). */
+	void Server_ClearEnemyRevealsForRound();
 
 	// ---- Multicast hooks --------------------------------------------------
 
@@ -160,6 +179,11 @@ protected:
 	/** Winning team of the just-ended match (Spectator until EndMatch). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Round State")
 	ETeamID MatchWinner = ETeamID::Spectator;
+
+	/** Active enemy-reveal records (AM + MM). Replicated to all; consumers filter
+	 *  by local team / player. Server purges expired entries each tick. */
+	UPROPERTY(Replicated)
+	TArray<FEnemyRevealEntry> EnemyReveals;
 
 	// ---- RepNotify handlers ----------------------------------------------
 

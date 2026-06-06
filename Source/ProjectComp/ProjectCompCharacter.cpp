@@ -22,6 +22,8 @@
 #include "ProjectCompGameState.h"
 #include "ProjectCompGameMode.h"
 #include "ProjectCompBomb.h"
+#include "ProjectCompAcousticZone.h"
+#include "ProjectCompInteractJammer.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -1136,6 +1138,13 @@ void AProjectCompCharacter::Server_TryInteract_Implementation()
         return;
     }
 
+    // CM (Interact Jammer): an enemy jammer zone blocks all F-interact (bomb +
+    // weapon pickup) while the player stands in it.
+    if (IsInsideEnemyInteractJammer())
+    {
+        return;
+    }
+
     // Aim from the camera using the server-validated rotation (same source the
     // weapon traces from). Close-range, "looking at it" cone — Valorant/CS feel.
     const UCameraComponent* Cam = GetFirstPersonCameraComponent();
@@ -1434,6 +1443,66 @@ void AProjectCompCharacter::NotifyBombSiteOverlapChanged()
     UpdateInteractLock();
 }
 
+bool AProjectCompCharacter::IsInsideEnemyAcousticZone() const
+{
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS)
+    {
+        return false;
+    }
+    const ETeamID MyTeam = PS->GetTeamID();
+    const FVector MyLoc = GetActorLocation();
+    // Called at most once per shot (cosmetic path), so a TActorIterator is fine —
+    // acoustic zones are few and short-lived.
+    for (TActorIterator<AProjectCompAcousticZone> It(World); It; ++It)
+    {
+        const AProjectCompAcousticZone* Zone = *It;
+        if (Zone
+            && Zone->GetCasterTeam() != ETeamID::Spectator
+            && Zone->GetCasterTeam() != MyTeam
+            && Zone->IsPointInZone(MyLoc))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AProjectCompCharacter::IsInsideEnemyInteractJammer() const
+{
+    const UWorld* World = GetWorld();
+    if (!World)
+    {
+        return false;
+    }
+    const AProjectCompPlayerState* PS = GetPlayerState<AProjectCompPlayerState>();
+    if (!PS)
+    {
+        return false;
+    }
+    const ETeamID MyTeam = PS->GetTeamID();
+    const FVector MyLoc = GetActorLocation();
+    // Interactions are key-press-rare, so a per-call iterate over the (few) active
+    // jammer zones is cheap — no replicated per-player state needed.
+    for (TActorIterator<AProjectCompInteractJammer> It(World); It; ++It)
+    {
+        const AProjectCompInteractJammer* Zone = *It;
+        if (Zone
+            && Zone->GetCasterTeam() != ETeamID::Spectator
+            && Zone->GetCasterTeam() != MyTeam
+            && Zone->IsPointInZone(MyLoc))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Single source of truth for the plant/defuse movement lock.
 //
 // Why this is a re-evaluating helper rather than edge-triggered code at the
@@ -1459,6 +1528,13 @@ bool AProjectCompCharacter::CanInteractWithBombNow() const
     {
         return false;
     }
+    // CM (Interact Jammer): an enemy jammer zone blocks plant/defuse while the
+    // player stands in it. Gated here so the interact lock also releases.
+    if (IsInsideEnemyInteractJammer())
+    {
+        return false;
+    }
+
     const ETeamID Team = PS->GetTeamID();
 
     // Plant: I'm the bomb carrier (attacker) standing in a bomb-site plant area.

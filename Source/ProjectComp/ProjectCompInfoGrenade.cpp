@@ -6,8 +6,10 @@
 #include "ProjectCompGameMode.h"
 #include "ProjectCompGameState.h"
 #include "ProjectCompPlayerState.h"
+#include "ProjectCompMinimapEmp.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 
@@ -87,7 +89,23 @@ void AProjectCompInfoGrenade::OnEnterActivePhase()
 					SmokeHit, ScanCenter, TargetLoc, ECC_VisionBlock, SmokeParams);
 			}
 
+			// MC (Minimap EMP): if the scanned enemy's OWN team has an active EMP
+			// rect over their position, they don't register on this enemy's scan.
+			bool bEmpHidden = false;
 			if (bIsEnemy && bInRange && !bSmokeOccluded)
+			{
+				for (TActorIterator<AProjectCompMinimapEmp> EmpIt(World); EmpIt; ++EmpIt)
+				{
+					const AProjectCompMinimapEmp* Emp = *EmpIt;
+					if (Emp && Emp->GetCasterTeam() == Team && Emp->IsPointInRect(TargetLoc))
+					{
+						bEmpHidden = true;
+						break;
+					}
+				}
+			}
+
+			if (bIsEnemy && bInRange && !bSmokeOccluded && !bEmpHidden)
 			{
 				++EnemyCount;
 			}

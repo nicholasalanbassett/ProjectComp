@@ -344,15 +344,39 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float FriendlyFireScalar = 0.0f;
 
-	/** Class spawned for the CA (Control/Aggro) flash-dome ability. BP subclass
-	 *  hooks the visual mesh + material; the C++ base handles all gameplay. */
-	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
-	TSubclassOf<class AProjectCompFlashDome> FlashDomeClass;
+	// ---- Loom ability actor classes (BP subclasses hook visuals; the C++ base
+	// owns gameplay). One per in-rotation ability. CA + AC remain standby/TBD
+	// (no class); the old CA FlashDome is deleted and the MC SoundDome is benched
+	// (MC is now Minimap EMP). Each spawned via the shared SpawnLoomAbility<>() —
+	// every ability actor exposes a public SpawnZLift + Server_Initialize(ETeamID). ----
 
-	/** Class spawned for the MC (Midrange/Control) sound-dome ability — the
-	 *  re-homed audio-dampen field (formerly the Sound grenade). */
+	/** AA — Acoustic Deafening: gunfire-mute zone. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
-	TSubclassOf<class AProjectCompSoundDome> SoundDomeClass;
+	TSubclassOf<class AProjectCompAcousticZone> AcousticZoneClass;
+
+	/** AM — Utility Reveal: enemy utility-loadout scan. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompRevealZone> RevealZoneClass;
+
+	/** CC — Titan Pillar: solid blocker + crush sweep. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompTitanPillar> TitanPillarClass;
+
+	/** CM — Interact Jammer: blocks enemy F-interact in radius. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompInteractJammer> InteractJammerClass;
+
+	/** MA — Tunnel Vision: peripheral-blackout debuff. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompTunnelVisionZone> TunnelVisionZoneClass;
+
+	/** MC — Minimap EMP: zeros enemy Info scans in a map quadrant. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompMinimapEmp> MinimapEmpClass;
+
+	/** MM — Camera Spike: caster-only continuous minimap reveal. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Abilities")
+	TSubclassOf<class AProjectCompCameraSpike> CameraSpikeClass;
 
 	// ---- Economy tuning (CS-style; all playtest-tunable in BP defaults) ----
 

@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "ProjectCompGameTypes.generated.h"
 
+class APlayerState;
+
 /** Team identity. Index into GameState team arrays. */
 UENUM(BlueprintType)
 enum class ETeamID : uint8
@@ -134,6 +136,61 @@ struct FKillFeedData
 	FString VictimName;
 	ETeamID KillerTeam = ETeamID::Spectator;
 	ETeamID VictimTeam = ETeamID::Spectator;
+};
+
+/**
+ * One revealed-enemy record, replicated as an array on the GameState. The single
+ * shared reveal source consumed by the minimap (enemy blips) and the HUD (utility
+ * loadout panel). Two ability producers today:
+ *   - AM (Utility Reveal): team-wide reveal of enemies in a cast zone, with their
+ *     utility loadout (bShowLoadout + RevealedLoadout), snapshot location.
+ *   - MM (Camera Spike): single-viewer (the looming caster) live-location reveal
+ *     of enemies inside the spike's ping radius.
+ *
+ * Visibility is filtered on the CONSUMER side (minimap/HUD only draw entries
+ * whose RevealedToTeam matches the local team, or whose RevealedToPlayer is the
+ * local PlayerState). The array itself replicates to everyone — acceptable for a
+ * first pass; the leaked data (someone got scanned) is minor and becomes public
+ * once acted on. Server purges expired entries each tick (Server_PurgeExpiredReveals).
+ */
+USTRUCT()
+struct FEnemyRevealEntry
+{
+	GENERATED_BODY()
+
+	/** The revealed enemy. */
+	UPROPERTY()
+	TObjectPtr<APlayerState> Target = nullptr;
+
+	/** Snapshot world location captured at reveal time. Used when bUseLiveLocation is false. */
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+
+	/** Team this reveal is visible to (AM). Spectator = not a team reveal. */
+	UPROPERTY()
+	ETeamID RevealedToTeam = ETeamID::Spectator;
+
+	/** Single player this reveal is visible to (MM). Null = team reveal (use RevealedToTeam). */
+	UPROPERTY()
+	TObjectPtr<APlayerState> RevealedToPlayer = nullptr;
+
+	/** Absolute server-time the reveal expires. */
+	UPROPERTY()
+	float ExpireServerTime = 0.0f;
+
+	/** When true, consumers read the Target's current pawn location instead of Location (MM). */
+	UPROPERTY()
+	bool bUseLiveLocation = false;
+
+	/** When true, the HUD shows RevealedLoadout for this enemy (AM). */
+	UPROPERTY()
+	bool bShowLoadout = false;
+
+	/** The revealed enemy's equipped grenade kit (copied server-side at reveal time —
+	 *  the enemy's own EquippedGrenadeTypes is COND_OwnerOnly so a teammate client
+	 *  can't read it directly). */
+	UPROPERTY()
+	TArray<EGrenadeType> RevealedLoadout;
 };
 
 /** Hit-zone classification used by hitscan weapons to scale damage per body region. */

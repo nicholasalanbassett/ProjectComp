@@ -22,6 +22,7 @@
 #include "Components/VerticalBoxSlot.h"
 #include "Components/TextBlock.h"
 #include "Components/Image.h"
+#include "Engine/Texture2D.h"
 #include "Fonts/SlateFontInfo.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
@@ -83,6 +84,8 @@ void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 	RefreshDisplay();
 	UpdateKillFeed(InDeltaTime);
 	RefreshFlashOverlay();
+	RefreshTunnelVisionOverlay();
+	RefreshRevealPanel();
 	RefreshResultsScreen();
 }
 
@@ -417,6 +420,34 @@ void UProjectCompHUDWidget::BuildLayout()
 	// ---- End-of-match results screen (centered overlay) -------------------
 	BuildResultsPanel(RootCanvas);
 
+	// ---- Tunnel-vision overlay (MA) — peripheral blackout vignette ---------
+	// Added before the flash overlay so a flash still renders on top. The radial
+	// vignette texture is assigned on a BP subclass; without it
+	// RefreshTunnelVisionOverlay falls back to a mild dark tint.
+	TunnelVisionOverlay = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("TunnelVisionOverlay"));
+	if (TunnelVisionTexture)
+	{
+		TunnelVisionOverlay->SetBrushFromTexture(TunnelVisionTexture);
+	}
+	TunnelVisionOverlay->SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.0f));
+	{
+		UCanvasPanelSlot* TVSlot = RootCanvas->AddChildToCanvas(TunnelVisionOverlay);
+		TVSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+		TVSlot->SetOffsets(FMargin(0.0f, 0.0f, 0.0f, 0.0f));
+	}
+	TunnelVisionOverlay->SetVisibility(ESlateVisibility::Collapsed);
+
+	// ---- Utility Reveal panel (AM) — left-side list of revealed enemy kits -
+	RevealedLoadoutsBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("RevealedLoadoutsBox"));
+	{
+		UCanvasPanelSlot* RevealSlot = RootCanvas->AddChildToCanvas(RevealedLoadoutsBox);
+		RevealSlot->SetAnchors(FAnchors(0.0f, 0.35f));
+		RevealSlot->SetAlignment(FVector2D(0.0f, 0.0f));
+		RevealSlot->SetPosition(FVector2D(CornerPadding, 0.0f));
+		RevealSlot->SetAutoSize(true);
+	}
+	RevealedLoadoutsBox->SetVisibility(ESlateVisibility::Collapsed);
+
 	// ---- Flash overlay (full-screen white) ---------------------------------
 	// Added LAST so it sits on top of every other HUD element in Z-order.
 	// HitTestInvisible so clicks/input pass through. Anchored to all four edges
@@ -616,6 +647,140 @@ float UProjectCompHUDWidget::RefreshFlashOverlay()
 	FlashOverlay->SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, Alpha));
 	FlashOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
 	return Alpha;
+}
+
+// =====================================================================
+// Tunnel-vision overlay (MA)
+// =====================================================================
+
+float UProjectCompHUDWidget::RefreshTunnelVisionOverlay()
+{
+	if (!TunnelVisionOverlay)
+	{
+		return 0.0f;
+	}
+	const AProjectCompPlayerState* PS = GetLocalPlayerState();
+	const UWorld* World = GetWorld();
+	if (!PS || !World)
+	{
+		TunnelVisionOverlay->SetVisibility(ESlateVisibility::Collapsed);
+		return 0.0f;
+	}
+	const AGameStateBase* GS = World->GetGameState();
+	const float Now     = GS ? GS->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	const float EndTime = PS->GetTunnelVisionEndTime();
+
+	if (EndTime <= Now)
+	{
+		TunnelVisionOverlay->SetVisibility(ESlateVisibility::Collapsed);
+		return 0.0f;
+	}
+
+	// Hard blackout while active (no fade — central sightline stays clear via the
+	// radial texture). Full opacity with the texture; placeholder dark tint without.
+	if (TunnelVisionTexture)
+	{
+		TunnelVisionOverlay->SetColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 1.0f));
+	}
+	else
+	{
+		TunnelVisionOverlay->SetColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.35f));
+	}
+	TunnelVisionOverlay->SetVisibility(ESlateVisibility::HitTestInvisible);
+	return 1.0f;
+}
+
+// =====================================================================
+// Utility Reveal panel (AM)
+// =====================================================================
+
+void UProjectCompHUDWidget::RefreshRevealPanel()
+{
+	if (!RevealedLoadoutsBox || !WidgetTree)
+	{
+		return;
+	}
+	const AProjectCompGameState* GS = GetTypedGameState();
+	const AProjectCompPlayerState* LocalPS = GetLocalPlayerState();
+	const UWorld* World = GetWorld();
+	if (!GS || !LocalPS || !World)
+	{
+		RevealedLoadoutsBox->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+	const ETeamID LocalTeam = LocalPS->GetTeamID();
+	const AGameStateBase* GSBase = World->GetGameState();
+	const float Now = GSBase ? GSBase->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+
+	auto GrenadeName = [](EGrenadeType T) -> const TCHAR*
+	{
+		switch (T)
+		{
+		case EGrenadeType::Flash:      return TEXT("Flash");
+		case EGrenadeType::Info:       return TEXT("Info");
+		case EGrenadeType::Vulnerable: return TEXT("Vuln");
+		case EGrenadeType::Smoke:      return TEXT("Smoke");
+		default:                       return TEXT("?");
+		}
+	};
+
+	int32 ActiveRows = 0;
+	for (const FEnemyRevealEntry& Entry : GS->GetEnemyReveals())
+	{
+		// AM team reveals with a loadout to show, not yet expired.
+		if (!Entry.Target || !Entry.bShowLoadout || Entry.ExpireServerTime <= Now)
+		{
+			continue;
+		}
+		if (Entry.RevealedToTeam != LocalTeam)
+		{
+			continue;
+		}
+
+		FString Kit;
+		for (int32 i = 0; i < Entry.RevealedLoadout.Num(); ++i)
+		{
+			if (i > 0) { Kit += TEXT(", "); }
+			Kit += GrenadeName(Entry.RevealedLoadout[i]);
+		}
+		if (Entry.RevealedLoadout.Num() == 0)
+		{
+			Kit = TEXT("(no utility)");
+		}
+		const FString Name = Entry.Target->GetPlayerName();
+		const FString RowText = FString::Printf(TEXT("%s: %s"),
+			Name.IsEmpty() ? TEXT("ENEMY") : *Name, *Kit);
+
+		if (ActiveRows >= RevealedLoadoutRows.Num())
+		{
+			UTextBlock* NewRow = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+			NewRow->SetFont(MakeFont(16));
+			ApplyTextShadow(NewRow);
+			NewRow->SetColorAndOpacity(FSlateColor(KillNotifColor));
+			if (UVerticalBoxSlot* RowSlot = RevealedLoadoutsBox->AddChildToVerticalBox(NewRow))
+			{
+				RowSlot->SetPadding(FMargin(0.0f, 2.0f));
+			}
+			RevealedLoadoutRows.Add(NewRow);
+		}
+		UTextBlock* Row = RevealedLoadoutRows[ActiveRows];
+		if (!Row)
+		{
+			continue;
+		}
+		Row->SetText(FText::FromString(RowText));
+		Row->SetVisibility(ESlateVisibility::HitTestInvisible);
+		++ActiveRows;
+	}
+
+	for (int32 i = ActiveRows; i < RevealedLoadoutRows.Num(); ++i)
+	{
+		if (RevealedLoadoutRows[i])
+		{
+			RevealedLoadoutRows[i]->SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
+	RevealedLoadoutsBox->SetVisibility(ActiveRows > 0 ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 }
 
 // =====================================================================

@@ -703,6 +703,36 @@ void AProjectCompHitscanWeapon::Multicast_OnFired_Implementation(FVector_NetQuan
 			LocalRecoilPatternIndex = FMath::Min(LocalRecoilPatternIndex + 1, RecoilPattern.Num() - 1);
 		}
 	}
+
+	// Cosmetic fire hook (BP-authored muzzle flash + shot SFX). Runs on every
+	// client; the BP skips the shot sound when bMuted is true (AA: this listener
+	// is standing inside an enemy Acoustic Deafening zone).
+	OnFiredCosmetic(Start, Dir, static_cast<float>(DistanceCm), bHit, IsGunfireMutedForLocalListener());
+}
+
+void AProjectCompHitscanWeapon::OnFiredCosmetic_Implementation(FVector StartLoc, FVector Direction, float DistanceCm, bool bHit, bool bMutedForLocalListener)
+{
+	// C++ default: gunfire SFX/VFX is authored on the weapon BP, which overrides
+	// this. POC tell so testers can confirm the AA mute path actually fires.
+#if !UE_BUILD_SHIPPING
+	if (bMutedForLocalListener)
+	{
+		UE_LOG(LogProjectComp, Verbose,
+			TEXT("[AA] Gunfire SFX muted for local listener (inside enemy Acoustic Deafening zone)."));
+	}
+#endif
+}
+
+bool AProjectCompHitscanWeapon::IsGunfireMutedForLocalListener() const
+{
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+	const APlayerController* LocalPC = World->GetFirstPlayerController();
+	const AProjectCompCharacter* LocalChar = LocalPC ? Cast<AProjectCompCharacter>(LocalPC->GetPawn()) : nullptr;
+	return LocalChar && LocalChar->IsInsideEnemyAcousticZone();
 }
 
 AProjectCompCharacter* AProjectCompHitscanWeapon::GetOwningCharacter() const

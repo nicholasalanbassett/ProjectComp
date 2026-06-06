@@ -25,6 +25,7 @@ void AProjectCompGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(AProjectCompGameState, LobbyLeader);
 	DOREPLIFETIME(AProjectCompGameState, Bomb);
 	DOREPLIFETIME(AProjectCompGameState, MatchWinner);
+	DOREPLIFETIME(AProjectCompGameState, EnemyReveals);
 }
 
 // =====================================================================
@@ -122,6 +123,48 @@ void AProjectCompGameState::Server_SetBomb(AProjectCompBomb* InBomb)
 {
 	if (!ensure(HasAuthority())) return;
 	Bomb = InBomb;
+}
+
+void AProjectCompGameState::Server_AddEnemyReveal(const FEnemyRevealEntry& Entry)
+{
+	if (!ensure(HasAuthority())) return;
+	if (!Entry.Target)
+	{
+		return;
+	}
+	// Upsert: a continuously-refreshing producer (Camera Spike) re-reveals the
+	// same enemy every scan, so match an existing record for this (Target, viewer)
+	// pair and refresh it in place rather than appending duplicates.
+	for (FEnemyRevealEntry& Existing : EnemyReveals)
+	{
+		if (Existing.Target == Entry.Target
+			&& Existing.RevealedToTeam == Entry.RevealedToTeam
+			&& Existing.RevealedToPlayer == Entry.RevealedToPlayer)
+		{
+			Existing = Entry;
+			return;
+		}
+	}
+	EnemyReveals.Add(Entry);
+}
+
+void AProjectCompGameState::Server_PurgeExpiredReveals()
+{
+	if (!HasAuthority() || EnemyReveals.Num() == 0)
+	{
+		return;
+	}
+	const float Now = GetServerWorldTimeSeconds();
+	EnemyReveals.RemoveAll([Now](const FEnemyRevealEntry& E)
+	{
+		return !E.Target || E.ExpireServerTime <= Now;
+	});
+}
+
+void AProjectCompGameState::Server_ClearEnemyRevealsForRound()
+{
+	if (!ensure(HasAuthority())) return;
+	EnemyReveals.Reset();
 }
 
 // =====================================================================

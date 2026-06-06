@@ -406,6 +406,19 @@ protected:
 	UFUNCTION(NetMulticast, Unreliable)
 	void Multicast_OnFired(FVector_NetQuantize StartLoc, FVector_NetQuantizeNormal Direction, uint16 DistanceCm, bool bHit);
 
+	/** Cosmetic fire hook for the weapon BP — author muzzle flash + the shot SFX
+	 *  here. Called on EVERY client from Multicast_OnFired. When
+	 *  bMutedForLocalListener is true the LOCAL player is standing inside an enemy
+	 *  AA (Acoustic Deafening) zone, so the BP must SKIP the shot sound — the
+	 *  gunfire is acoustically deafened for this listener. C++ base is a no-op
+	 *  (verbose log only): gunfire audio is authored on the BP today. */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Weapon|Cosmetic")
+	void OnFiredCosmetic(FVector StartLoc, FVector Direction, float DistanceCm, bool bHit, bool bMutedForLocalListener);
+
+	/** True if the LOCAL listener (this machine's player) is inside an enemy
+	 *  Acoustic Deafening zone — i.e. gunfire SFX should be muted for them. */
+	bool IsGunfireMutedForLocalListener() const;
+
 	/** Convenience accessor for the owning character. */
 	AProjectCompCharacter* GetOwningCharacter() const;
 };

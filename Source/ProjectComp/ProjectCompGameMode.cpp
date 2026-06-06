@@ -10,8 +10,13 @@
 #include "ProjectCompBomb.h"
 #include "ProjectCompBombSpawn.h"
 #include "ProjectCompCharacter.h"
-#include "ProjectCompFlashDome.h"
-#include "ProjectCompSoundDome.h"
+#include "ProjectCompAcousticZone.h"
+#include "ProjectCompRevealZone.h"
+#include "ProjectCompTitanPillar.h"
+#include "ProjectCompInteractJammer.h"
+#include "ProjectCompTunnelVisionZone.h"
+#include "ProjectCompMinimapEmp.h"
+#include "ProjectCompCameraSpike.h"
 #include "ProjectCompHealthComponent.h"
 #include "ProjectCompHitscanWeapon.h"
 #include "ProjectCompHUD.h"
@@ -155,6 +160,8 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 
 		TickCooldownPools(DeltaSeconds);
 		EnforceLoomingPlayerBounds();
+		// Drop expired AM/MM enemy-reveal records so the minimap/HUD stop showing them.
+		GS->Server_PurgeExpiredReveals();
 	}
 
 	// Auto-transition when timer hits zero.
@@ -498,6 +505,47 @@ bool AProjectCompGameMode::Server_SubmitAbilityVote(APlayerController* Voter, EA
 	return true;
 }
 
+namespace
+{
+	/**
+	 * Shared Loom-ability actor spawn. Resolves the configured class (or the
+	 * native default), lifts the spawn by the class CDO's SpawnZLift, sets
+	 * owner/instigator, spawns, and calls Server_Initialize(Team). Returns the
+	 * spawned actor (null on failure). Every Loom ability actor exposes a public
+	 * float SpawnZLift and void Server_Initialize(ETeamID), so one template covers
+	 * all of them (zone subclasses + the standalone Titan Pillar).
+	 */
+	template <typename TAbility>
+	TAbility* SpawnLoomAbility(UWorld* World, TSubclassOf<TAbility> ConfiguredClass,
+		APlayerController* Caster, ETeamID Team, const FVector& TargetLocation)
+	{
+		if (!World)
+		{
+			return nullptr;
+		}
+		const TSubclassOf<TAbility> SpawnClass = ConfiguredClass
+			? ConfiguredClass
+			: TSubclassOf<TAbility>(TAbility::StaticClass());
+
+		UClass* SpawnUClass = SpawnClass.Get();
+		const TAbility* CDO = SpawnUClass ? Cast<TAbility>(SpawnUClass->GetDefaultObject()) : nullptr;
+		const float ZLift = CDO ? CDO->SpawnZLift : 100.0f;
+
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = Caster;
+		SpawnParams.Instigator = Caster ? Caster->GetPawn() : nullptr;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+		TAbility* Actor = World->SpawnActor<TAbility>(
+			SpawnClass, TargetLocation + FVector(0.0f, 0.0f, ZLift), FRotator::ZeroRotator, SpawnParams);
+		if (Actor)
+		{
+			Actor->Server_Initialize(Team);
+		}
+		return Actor;
+	}
+}
+
 bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, EAbilityType Type, FVector TargetLocation)
 {
 	if (!HasAuthority())
@@ -563,9 +611,9 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 	// (e.g. unset FlashDomeClass with a null CDO, or a spawn-collision reject)
 	// drain the pool without producing a dome.
 	//
-	// Inline switch is intentional — only CA (FlashDome) and MC (SoundDome) are
-	// implemented so far. Refactor to an IAbilityHandler dispatch table once a
-	// few more land; abstracting now would over-fit to two near-identical cases.
+	// Inline switch dispatches per-ability via the shared SpawnLoomAbility<>()
+	// helper. CA + AC are standby/TBD (fall through to default, not consumed);
+	// every in-rotation slot maps to its spawned ability actor.
 	UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] Cast ACCEPTED: type=%d team=%d target=%s. Dispatching..."),
 		static_cast<int32>(Type), static_cast<int32>(Team), *TargetLocation.ToCompactString());
 
@@ -573,77 +621,37 @@ bool AProjectCompGameMode::Server_RequestAbilityCast(APlayerController* Caster, 
 
 	switch (Type)
 	{
-	case EAbilityType::CA:
-	{
-		const TSubclassOf<AProjectCompFlashDome> SpawnClass =
-			FlashDomeClass ? FlashDomeClass : TSubclassOf<AProjectCompFlashDome>(AProjectCompFlashDome::StaticClass());
-
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Owner = Caster;
-		SpawnParams.Instigator = Caster->GetPawn();
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-		// Lift the dome above the trace impact point. Floor-level dome centers
-		// fail LOS because the trace from camera (~Z=160) down to dome (Z=0)
-		// grazes or hits the floor mesh before reaching the endpoint. Read the
-		// per-class lift off the CDO so each BP variant can tune independently.
-		const AProjectCompFlashDome* DomeCDO = SpawnClass
-			? SpawnClass->GetDefaultObject<AProjectCompFlashDome>()
-			: nullptr;
-		const float DomeZLift = DomeCDO ? DomeCDO->SpawnZLift : 150.0f;
-		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, DomeZLift);
-
-		AProjectCompFlashDome* Dome = GetWorld()->SpawnActor<AProjectCompFlashDome>(
-				SpawnClass, DomeSpawn, FRotator::ZeroRotator, SpawnParams);
-		if (Dome)
-		{
-			Dome->Server_Initialize(Team);
-			bSpawnSucceeded = true;
-			UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] FlashDome spawned at %s (target=%s + lift) for team %d."),
-				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
-		}
-		else
-		{
-			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] FlashDome SpawnActor returned null — pool not deducted."));
-		}
+	case EAbilityType::AA:  // Acoustic Deafening
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompAcousticZone>(
+			GetWorld(), AcousticZoneClass, Caster, Team, TargetLocation) != nullptr;
 		break;
-	}
-	case EAbilityType::MC:
-	{
-		// Re-homed Sound grenade: spawn an audio-dampen dome at the cast target.
-		const TSubclassOf<AProjectCompSoundDome> SpawnClass =
-			SoundDomeClass ? SoundDomeClass : TSubclassOf<AProjectCompSoundDome>(AProjectCompSoundDome::StaticClass());
-
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.Owner = Caster;
-		SpawnParams.Instigator = Caster->GetPawn();
-		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-		// Lift the zone center off the floor (same rationale as FlashDome). Read
-		// the per-class lift off the CDO so BP variants can tune independently.
-		const AProjectCompSoundDome* DomeCDO = SpawnClass
-			? SpawnClass->GetDefaultObject<AProjectCompSoundDome>()
-			: nullptr;
-		const float DomeZLift = DomeCDO ? DomeCDO->SpawnZLift : 100.0f;
-		const FVector DomeSpawn = TargetLocation + FVector(0.0f, 0.0f, DomeZLift);
-
-		AProjectCompSoundDome* Dome = GetWorld()->SpawnActor<AProjectCompSoundDome>(
-			SpawnClass, DomeSpawn, FRotator::ZeroRotator, SpawnParams);
-		if (Dome)
-		{
-			Dome->Server_Initialize(Team);
-			bSpawnSucceeded = true;
-			UE_LOG(LogProjectComp, Verbose, TEXT("[Loom] SoundDome spawned at %s (target=%s + lift) for team %d."),
-				*DomeSpawn.ToCompactString(), *TargetLocation.ToCompactString(), static_cast<int32>(Team));
-		}
-		else
-		{
-			UE_LOG(LogProjectComp, Warning, TEXT("[Loom] SoundDome SpawnActor returned null — pool not deducted."));
-		}
+	case EAbilityType::AM:  // Utility Reveal
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompRevealZone>(
+			GetWorld(), RevealZoneClass, Caster, Team, TargetLocation) != nullptr;
 		break;
-	}
+	case EAbilityType::CC:  // Titan Pillar
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompTitanPillar>(
+			GetWorld(), TitanPillarClass, Caster, Team, TargetLocation) != nullptr;
+		break;
+	case EAbilityType::CM:  // Interact Jammer
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompInteractJammer>(
+			GetWorld(), InteractJammerClass, Caster, Team, TargetLocation) != nullptr;
+		break;
+	case EAbilityType::MA:  // Tunnel Vision
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompTunnelVisionZone>(
+			GetWorld(), TunnelVisionZoneClass, Caster, Team, TargetLocation) != nullptr;
+		break;
+	case EAbilityType::MC:  // Minimap EMP (re-homed from the benched SoundDome)
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompMinimapEmp>(
+			GetWorld(), MinimapEmpClass, Caster, Team, TargetLocation) != nullptr;
+		break;
+	case EAbilityType::MM:  // Camera Spike
+		bSpawnSucceeded = SpawnLoomAbility<AProjectCompCameraSpike>(
+			GetWorld(), CameraSpikeClass, Caster, Team, TargetLocation) != nullptr;
+		break;
 	default:
-		UE_LOG(LogProjectComp, Warning, TEXT("[Loom] Cast type=%d has no gameplay handler yet — pool not deducted."),
+		// AC + CA are standby/TBD (no handler); None is invalid. Charge not consumed.
+		UE_LOG(LogProjectComp, Warning, TEXT("[Loom] Cast type=%d has no gameplay handler (AC/CA are standby) — not consumed."),
 			static_cast<int32>(Type));
 		break;
 	}
@@ -761,6 +769,9 @@ void AProjectCompGameMode::PrepareForNewRound()
 
 	// Reset bomb sites for the new round.
 	Server_ResetAllBombSites();
+
+	// Clear any lingering AM/MM enemy-reveal records from last round (GS validated above).
+	GS->Server_ClearEnemyRevealsForRound();
 }
 
 void AProjectCompGameMode::StartLoomSelection()
@@ -1551,14 +1562,15 @@ void AProjectCompGameMode::TallyAndLockTeamDraft(ETeamID Team)
 	});
 
 	// Pick the top two distinct entries. If voting was empty (e.g. nobody on
-	// the team voted), fall back to CA/AA so the Loom system has something to
-	// test against until the draft UI lands.
+	// the team voted), fall back to AA/CM so the Loom system has something to
+	// test against until the draft UI lands. (Must be IMPLEMENTED slots — CA is
+	// now standby/TBD, so the old CA fallback would draft an unusable ability.)
 	// TODO(loom-ui): change these fallbacks back to EAbilityType::None once the
 	// PreRound draft widget is in place — the production behavior should be
-	// "no votes = no abilities," not "no votes = free CA/AA."
+	// "no votes = no abilities," not "no votes = free AA/CM."
 	FTeamLoadout Loadout = GS->GetTeamLoadout(Team);
-	Loadout.AbilitySlot1 = Sorted.Num() > 0 ? Sorted[0].Key : EAbilityType::CA;
-	Loadout.AbilitySlot2 = Sorted.Num() > 1 ? Sorted[1].Key : EAbilityType::AA;
+	Loadout.AbilitySlot1 = Sorted.Num() > 0 ? Sorted[0].Key : EAbilityType::AA;
+	Loadout.AbilitySlot2 = Sorted.Num() > 1 ? Sorted[1].Key : EAbilityType::CM;
 	GS->Server_SetTeamLoadout(Team, Loadout);
 
 	UE_LOG(LogProjectComp, Log, TEXT("Team %d draft locked: %d, %d (from %d voters)."),

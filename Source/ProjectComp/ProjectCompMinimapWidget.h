@@ -88,6 +88,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Minimap|Teammates")
 	FVector2D TeammateMarkerSize = FVector2D(14.0f, 22.0f);
 
+	/** Color of revealed-enemy markers (AM Utility Reveal + MM Camera Spike).
+	 *  CS/Val convention is red. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Minimap|Enemies")
+	FLinearColor EnemyMarkerColor = FLinearColor(0.95f, 0.30f, 0.25f, 1.0f);
+
+	/** Pixel size of each revealed-enemy marker (square dot). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Minimap|Enemies")
+	FVector2D EnemyMarkerSize = FVector2D(16.0f, 16.0f);
+
 	// ---- Mode control (Loom cast vs grenade global drop) -----------------
 
 	/** Switch to grenade-placement mode for the given equipped slot. Called by
@@ -112,6 +121,10 @@ protected:
 
 	/** Update marker positions/rotations for alive teammates each tick. */
 	void UpdateTeammateMarkers();
+
+	/** Update revealed-enemy markers from GameState->GetEnemyReveals() each tick.
+	 *  Draws blips only for reveals visible to the local viewer (team or player). */
+	void UpdateEnemyMarkers();
 
 	/** Refresh the bottom hint text to reflect the current SelectedSlot. */
 	void UpdateHintText();
@@ -143,6 +156,10 @@ protected:
 	 *  thrash the widget tree on each tick. */
 	UPROPERTY()
 	TArray<TObjectPtr<UImage>> TeammateMarkers;
+
+	/** Pooled revealed-enemy markers (parallel to the teammate pool). */
+	UPROPERTY()
+	TArray<TObjectPtr<UImage>> EnemyMarkers;
 
 	/** Current interaction mode — Loom cast (default) or grenade global drop. */
 	EMinimapMode Mode = EMinimapMode::LoomCast;

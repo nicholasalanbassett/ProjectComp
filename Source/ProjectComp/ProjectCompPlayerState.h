@@ -66,6 +66,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player")
 	float GetFlashFadeStartTime() const { return FlashFadeStartTime; }
 
+	/** Server-time the MA (Tunnel Vision) peripheral-blackout effect ends. 0 = not
+	 *  affected. HUD reads this to drive the vignette overlay (owner-only). */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetTunnelVisionEndTime() const { return TunnelVisionEndTime; }
+
 	// ---- Loom + Economy accessors ---------------------------------------
 
 	UFUNCTION(BlueprintPure, Category = "Player|Economy")
@@ -155,6 +160,11 @@ public:
 	/** Server: apply a flash effect with the given full-white + fade durations.
 	 *  Stamps FlashFadeStartTime + FlashEndTime in absolute server-time and replicates. */
 	void Server_ApplyFlash(float FullWhiteDuration, float FadeDuration);
+
+	/** Server: apply the MA (Tunnel Vision) peripheral blackout for Duration seconds.
+	 *  Stamps TunnelVisionEndTime in absolute server-time. Re-applying refreshes to
+	 *  the later end-time so overlapping casts don't cut the effect short. */
+	void Server_ApplyTunnelVision(float Duration);
 
 	// ---- Server: Economy -------------------------------------------------
 
@@ -272,6 +282,12 @@ protected:
 	/** Server-time the fade phase begins. Equal to FlashEndTime - FadeDuration. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	float FlashFadeStartTime = 0.0f;
+
+	/** Server-time the MA (Tunnel Vision) peripheral-blackout ends. 0 = not affected.
+	 *  Owner-only — only the affected player needs their own overlay, and leaking
+	 *  "who's tunnel-visioned" to opponents would be an info edge. */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	float TunnelVisionEndTime = 0.0f;
 
 	// ---- Economy --------------------------------------------------------
 

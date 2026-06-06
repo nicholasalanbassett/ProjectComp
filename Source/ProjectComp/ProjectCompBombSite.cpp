@@ -223,8 +223,11 @@ APawn* AProjectCompBombSite::FindActiveInteractor(ETeamID TeamFilter) const
 			continue;
 		}
 
+		// CM (Interact Jammer) also blocks the authoritative plant/defuse progress
+		// scan — not just CanInteractWithBombNow — since this path only checks
+		// IsUseHeld() and would otherwise keep advancing inside a jammer zone.
 		const AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(Pawn);
-		if (Char && Char->IsUseHeld())
+		if (Char && Char->IsUseHeld() && !Char->IsInsideEnemyInteractJammer())
 		{
 			return Pawn;
 		}

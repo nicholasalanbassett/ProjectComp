@@ -35,6 +35,8 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	// opponents (info advantage). Owner-only keeps the wire compact + private.
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, FlashEndTime, COND_OwnerOnly);
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, FlashFadeStartTime, COND_OwnerOnly);
+	// Tunnel-vision effect — owner-only for the same reason as the flash overlay.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, TunnelVisionEndTime, COND_OwnerOnly);
 
 	// Wallet is owner-only — no tactical value in leaking enemy credit totals,
 	// and tac-FPS economy convention keeps opponents guessing about buy state.
@@ -182,6 +184,23 @@ void AProjectCompPlayerState::Server_ApplyFlash(float FullWhiteDuration, float F
 	                     : (World ? World->GetTimeSeconds() : 0.0f);
 	FlashFadeStartTime = Now + FMath::Max(0.0f, FullWhiteDuration);
 	FlashEndTime       = FlashFadeStartTime + FMath::Max(0.0f, FadeDuration);
+}
+
+void AProjectCompPlayerState::Server_ApplyTunnelVision(float Duration)
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	// Same replicated server clock as the flash effect so the HUD overlay on a
+	// remote client times out in sync with the server stamp.
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GS = World ? World->GetGameState() : nullptr;
+	const float Now = GS ? GS->GetServerWorldTimeSeconds()
+	                     : (World ? World->GetTimeSeconds() : 0.0f);
+	const float NewEnd = Now + FMath::Max(0.0f, Duration);
+	// Refresh to the later end-time — overlapping casts extend, never shorten.
+	TunnelVisionEndTime = FMath::Max(TunnelVisionEndTime, NewEnd);
 }
 
 // =============================================================================

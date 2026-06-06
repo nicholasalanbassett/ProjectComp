@@ -152,6 +152,7 @@ void UProjectCompMinimapWidget::NativeTick(const FGeometry& MyGeometry, float In
 	}
 
 	UpdateTeammateMarkers();
+	UpdateEnemyMarkers();
 }
 
 FReply UProjectCompMinimapWidget::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -352,6 +353,104 @@ void UProjectCompMinimapWidget::UpdateTeammateMarkers()
 		if (TeammateMarkers[i])
 		{
 			TeammateMarkers[i]->SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
+}
+
+void UProjectCompMinimapWidget::UpdateEnemyMarkers()
+{
+	if (!MapContent || !WidgetTree)
+	{
+		return;
+	}
+
+	const APlayerController* OwningPC = GetOwningPlayer();
+	const AProjectCompPlayerState* LocalPS = OwningPC ? OwningPC->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+	if (!LocalPS)
+	{
+		return;
+	}
+	const ETeamID LocalTeam = LocalPS->GetTeamID();
+
+	const FGeometry& AreaGeom = MapContent->GetCachedGeometry();
+	const FVector2D AreaSize = AreaGeom.GetLocalSize();
+	if (AreaSize.X <= KINDA_SMALL_NUMBER || AreaSize.Y <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GSBase = World ? World->GetGameState() : nullptr;
+	const AProjectCompGameState* GS = Cast<AProjectCompGameState>(GSBase);
+	if (!GS)
+	{
+		return;
+	}
+	const float Now = GSBase->GetServerWorldTimeSeconds();
+
+	// Draw one blip per reveal record visible to the local viewer (AM team reveals
+	// or MM single-viewer reveals). Server purges expired entries, but guard here
+	// too in case a just-expired entry is still on the client's last replicated copy.
+	int32 ActiveCount = 0;
+	for (const FEnemyRevealEntry& Entry : GS->GetEnemyReveals())
+	{
+		if (!Entry.Target || Entry.ExpireServerTime <= Now)
+		{
+			continue;
+		}
+		const bool bForMe = (Entry.RevealedToPlayer == LocalPS)
+			|| (Entry.RevealedToPlayer == nullptr && Entry.RevealedToTeam == LocalTeam);
+		if (!bForMe)
+		{
+			continue;
+		}
+
+		// Live location (MM) reads the enemy's current pawn; snapshot (AM) uses the
+		// stored location.
+		FVector WorldLoc = Entry.Location;
+		if (Entry.bUseLiveLocation)
+		{
+			if (const APawn* Pawn = Entry.Target->GetPawn())
+			{
+				WorldLoc = Pawn->GetActorLocation();
+			}
+		}
+
+		if (ActiveCount >= EnemyMarkers.Num())
+		{
+			UImage* NewMarker = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass());
+			NewMarker->SetColorAndOpacity(EnemyMarkerColor);
+			NewMarker->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
+			if (UCanvasPanelSlot* MarkerSlot = MapContent->AddChildToCanvas(NewMarker))
+			{
+				MarkerSlot->SetAnchors(FAnchors(0.0f, 0.0f));
+				MarkerSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+				MarkerSlot->SetSize(EnemyMarkerSize);
+				MarkerSlot->SetAutoSize(false);
+			}
+			EnemyMarkers.Add(NewMarker);
+		}
+
+		UImage* Marker = EnemyMarkers[ActiveCount];
+		if (!Marker)
+		{
+			continue;
+		}
+		const FVector2D PixelPos = WorldXYToMinimapLocal(WorldLoc, AreaSize);
+		if (UCanvasPanelSlot* MarkerSlot = Cast<UCanvasPanelSlot>(Marker->Slot))
+		{
+			MarkerSlot->SetPosition(PixelPos);
+		}
+		Marker->SetVisibility(ESlateVisibility::HitTestInvisible);
+		++ActiveCount;
+	}
+
+	// Hide unused pool entries.
+	for (int32 i = ActiveCount; i < EnemyMarkers.Num(); ++i)
+	{
+		if (EnemyMarkers[i])
+		{
+			EnemyMarkers[i]->SetVisibility(ESlateVisibility::Collapsed);
 		}
 	}
 }

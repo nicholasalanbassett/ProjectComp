@@ -619,6 +619,15 @@ public:
 	/** Called by AProjectCompVulnerableGrenade on enemy begin/end-overlap.
 	 *  Server-only — clamps to non-negative. */
 	void OnVulnerableZoneOverlapChanged(bool bEntered);
+
+	/** True if this character is standing inside an enemy AA (Acoustic Deafening)
+	 *  zone — a zone whose caster is on the opposing team. Used CLIENT-SIDE by the
+	 *  weapon's cosmetic fire hook to mute the gunfire SFX for a deafened listener. */
+	bool IsInsideEnemyAcousticZone() const;
+
+	/** True if this character is standing inside an enemy CM (Interact Jammer)
+	 *  zone. Consulted SERVER-SIDE to reject F-interact (plant/defuse/pickup). */
+	bool IsInsideEnemyInteractJammer() const;
 protected:
 
 	/** Apply or release the interact movement lock based on bUseHeld + bomb site overlap.

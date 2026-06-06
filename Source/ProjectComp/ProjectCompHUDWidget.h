@@ -17,6 +17,7 @@ class UHorizontalBox;
 class UImage;
 class UProjectCompHealthComponent;
 class UTextBlock;
+class UTexture2D;
 class UVerticalBox;
 
 /**
@@ -152,6 +153,21 @@ protected:
 	 *  is driven each tick from PlayerState->GetFlashEndTime() so the fade looks
 	 *  smooth even though only end-time + fade-start-time replicate. */
 	UPROPERTY() TObjectPtr<UImage> FlashOverlay;
+
+	/** Full-screen MA (Tunnel Vision) peripheral-blackout vignette. Shown while
+	 *  PlayerState->GetTunnelVisionEndTime() is in the future. The radial texture
+	 *  (black periphery, clear center) is assigned via TunnelVisionTexture. */
+	UPROPERTY() TObjectPtr<UImage> TunnelVisionOverlay;
+
+	/** Radial vignette texture for Tunnel Vision — black ring, transparent center.
+	 *  Assign on a BP subclass; without it a placeholder dark tint is used so the
+	 *  effect is still visibly triggered. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Overlays")
+	TObjectPtr<UTexture2D> TunnelVisionTexture;
+
+	/** AM (Utility Reveal) panel — one row per revealed enemy listing their kit. */
+	UPROPERTY() TObjectPtr<UVerticalBox> RevealedLoadoutsBox;
+	UPROPERTY() TArray<TObjectPtr<UTextBlock>> RevealedLoadoutRows;
 
 	/** Bottom-center equipped-item indicator row. Three vertical boxes side
 	 *  by side, each containing a cooldown text on top and a label text
@@ -335,6 +351,14 @@ protected:
 	/** Update FlashOverlay alpha + visibility from local PlayerState's flash times.
 	 *  Returns the alpha that was applied (mainly useful for testing). */
 	float RefreshFlashOverlay();
+
+	/** Update the MA (Tunnel Vision) overlay from local PlayerState's end-time.
+	 *  Returns the alpha applied (for testing). */
+	float RefreshTunnelVisionOverlay();
+
+	/** Rebuild the AM (Utility Reveal) loadout panel from GameState->GetEnemyReveals()
+	 *  for the local team. */
+	void RefreshRevealPanel();
 
 	// ---- Kill feed (top-right) + personal notification (bottom-center) ------
 
