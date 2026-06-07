@@ -351,6 +351,12 @@ protected:
 	float ServerRecoilPitch = 0.0f;
 	float ServerRecoilYaw   = 0.0f;
 
+	/** Client-local reload-anim window, set by Multicast_OnReloadStarted on every
+	 *  client. Not replicated — purely cosmetic timing so remote third-person
+	 *  reload anims play. IsReloadAnimActive() reads these against local world time. */
+	float ReloadAnimStartTimeLocal = 0.0f;
+	float ReloadAnimDuration = 0.0f;
+
 	/** Cached authority GameMode resolved once in BeginPlay so the per-shot fire
 	 *  path can reach the LiveCharacters registry without a Cast<>() or a
 	 *  GetAuthGameMode() call inside the hot loop. Weak ptr to survive late
@@ -418,6 +424,23 @@ protected:
 	/** True if the LOCAL listener (this machine's player) is inside an enemy
 	 *  Acoustic Deafening zone — i.e. gunfire SFX should be muted for them. */
 	bool IsGunfireMutedForLocalListener() const;
+
+	/** Server→all cosmetic: fired when a reload begins. The per-frame bIsReloading
+	 *  state is COND_OwnerOnly (anti-intel), so REMOTE clients can't see it — they
+	 *  drive the third-person reload montage off this multicast instead. Sets a
+	 *  client-local anim window on every machine and calls OnReloadCosmetic. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_OnReloadStarted(float Duration);
+
+	/** Cosmetic reload hook for the weapon BP (montages / SFX). Runs on every
+	 *  client via Multicast_OnReloadStarted. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Weapon|Cosmetic")
+	void OnReloadCosmetic(float Duration);
+
+	/** True while a reload animation should be playing on THIS client. Works on
+	 *  remote clients too (unlike owner-only IsReloading()); Anim BPs poll this. */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Cosmetic")
+	bool IsReloadAnimActive() const;
 
 	/** Convenience accessor for the owning character. */
 	AProjectCompCharacter* GetOwningCharacter() const;

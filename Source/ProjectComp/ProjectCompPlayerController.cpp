@@ -234,7 +234,7 @@ void AProjectCompPlayerController::ToggleMinimap()
 
 void AProjectCompPlayerController::ToggleBuyMenu()
 {
-	// Route to the HUD widget; widget gates its own visibility on phase, so
+	// Route to the C++ HUD widget; widget gates its own visibility on phase, so
 	// pressing B outside PreRound just no-ops visually (state is reset on
 	// PreRound entry anyway).
 	if (AProjectCompHUD* H = Cast<AProjectCompHUD>(GetHUD()))
@@ -244,6 +244,10 @@ void AProjectCompPlayerController::ToggleBuyMenu()
 			W->ToggleBuyMenu();
 		}
 	}
+
+	// Also notify any designer WBP HUD bound to the delegate (GetHUDWidget()
+	// returns null above when a DesignerHUDWidgetClass is in use).
+	OnBuyMenuToggled.Broadcast();
 }
 
 UProjectCompSettingsWidget* AProjectCompPlayerController::EnsureSettingsWidget()

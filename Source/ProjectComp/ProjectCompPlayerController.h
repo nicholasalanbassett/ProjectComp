@@ -14,6 +14,11 @@ class UProjectCompSettingsWidget;
 class UProjectCompLobbyWidget;
 class APlayerState;
 
+/** Fired when the buy-menu toggle (B key / ToggleBuyMenu) is pressed. A WBP HUD
+ *  binds to this to flip its own buy-panel visibility (the C++ HUD path uses its
+ *  own internal toggle). */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBuyMenuToggled);
+
 /**
  *  Player controller for the tac-FPS character.
  *
@@ -203,6 +208,11 @@ public:
 	 *  state, which is reset to closed on the next PreRound entry anyway. */
 	UFUNCTION(BlueprintCallable, Category = "HUD")
 	void ToggleBuyMenu();
+
+	/** Broadcast each time ToggleBuyMenu fires. A designer WBP HUD binds here to
+	 *  show/hide its buy panel; the C++ HUD ignores it and uses its own state. */
+	UPROPERTY(BlueprintAssignable, Category = "HUD")
+	FOnBuyMenuToggled OnBuyMenuToggled;
 
 	/** Owning-client entry point: open/close the performance settings overlay.
 	 *  Bound to the P key. Game continues running behind it; input mode goes

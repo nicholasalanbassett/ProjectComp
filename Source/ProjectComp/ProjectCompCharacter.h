@@ -139,6 +139,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
 	TSubclassOf<AProjectCompHitscanWeapon> DefaultWeaponClass;
 
+	/** Optional socket on FirstPersonMesh to attach the weapon to, so reload anims
+	 *  can move the gun with the hands. NAME_None (default) = attach to the camera
+	 *  with the current fixed offset (existing behavior). */
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon")
+	FName WeaponAttachSocket = NAME_None;
+
 	/** Max distance (cm) the ability aim-trace reaches from the camera before
 	 *  falling back to the end of the ray. Tuned per-design later. */
 	UPROPERTY(EditDefaultsOnly, Category = "Ability", meta = (ClampMin = "100.0"))
@@ -416,6 +422,13 @@ public:
 	UFUNCTION(BlueprintPure, Category="Grenade")
 	int32 GetEquippedGrenadeSlot() const { return EquippedGrenadeSlot; }
 	AProjectCompHitscanWeapon* GetCurrentWeapon() const { return CurrentWeapon; }
+
+	/** Cosmetic: fired when CurrentWeapon changes (equip / draw / swap; NewWeapon
+	 *  null on holster/drop). FP + TP draw montages hook this. Fires on the owning
+	 *  client + remotes via OnRep_CurrentWeapon, and on the authority from the
+	 *  equip path so the listen host's own pawn animates too. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Weapon")
+	void OnWeaponEquipped(AProjectCompHitscanWeapon* NewWeapon);
 	/** True while the player is locked into a plant/defuse interaction. Read by
 	 *  the weapon to block fire + reload during the interaction. */
 	bool IsInteractLocked() const { return bInteractLockActive; }
@@ -486,9 +499,14 @@ protected:
 	/** Reserved (unused). */
 	float DefaultEyeHeight;
 
-	/** Server-spawned weapon actor currently equipped. Replicated so clients can render it. */
-	UPROPERTY(Replicated)
+	/** Server-spawned weapon actor currently equipped. Replicated so clients can
+	 *  render it; RepNotify drives the OnWeaponEquipped draw hook on remotes. */
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeapon)
 	TObjectPtr<AProjectCompHitscanWeapon> CurrentWeapon;
+
+	/** RepNotify: fire the OnWeaponEquipped cosmetic hook on clients. */
+	UFUNCTION()
+	void OnRep_CurrentWeapon();
 
 	/** Server-only: tracked Use-key state for plant/defuse interactions. */
 	bool bUseHeld = false;

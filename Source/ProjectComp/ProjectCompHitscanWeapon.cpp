@@ -385,6 +385,29 @@ void AProjectCompHitscanWeapon::Server_StartReload()
 
 	bIsReloading  = true;
 	ReloadEndTime = ServerTime + ReloadDuration;
+
+	// Tell every client a reload started so remote third-person anims can play
+	// (bIsReloading itself is owner-only).
+	Multicast_OnReloadStarted(ReloadDuration);
+}
+
+void AProjectCompHitscanWeapon::Multicast_OnReloadStarted_Implementation(float Duration)
+{
+	const UWorld* World = GetWorld();
+	ReloadAnimStartTimeLocal = World ? World->GetTimeSeconds() : 0.0f;
+	ReloadAnimDuration = Duration;
+	OnReloadCosmetic(Duration);
+}
+
+bool AProjectCompHitscanWeapon::IsReloadAnimActive() const
+{
+	if (ReloadAnimDuration <= 0.0f)
+	{
+		return false;
+	}
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	return (Now - ReloadAnimStartTimeLocal) < ReloadAnimDuration;
 }
 
 void AProjectCompHitscanWeapon::Server_RefillAllAmmo()

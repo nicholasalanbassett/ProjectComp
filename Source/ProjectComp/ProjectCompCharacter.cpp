@@ -1649,11 +1649,35 @@ void AProjectCompCharacter::AttachWeaponToView(AProjectCompHitscanWeapon* Weapon
     Weapon->SetInstigator(this);
     Weapon->SetReplicateMovement(false);  // follows the attach parent, not free movement
     Weapon->SetAvailableForPickup(false); // equipped → no walk-over pickup volume
-    // Rough lower-right offset (forward / right / down). Fine-tune in the BP mesh.
-    Weapon->AttachToComponent(FirstPersonCameraComponent, FAttachmentTransformRules::SnapToTargetIncludingScale);
-    Weapon->SetActorRelativeLocation(FVector(45.0f, 18.0f, -18.0f));
-    Weapon->SetActorRelativeRotation(FRotator::ZeroRotator);
+
+    // Attach to a hand/weapon socket on the arms mesh if one is configured (lets
+    // reload anims move the gun); otherwise attach to the camera with the fixed
+    // lower-right offset (the existing default behavior).
+    if (WeaponAttachSocket != NAME_None && FirstPersonMesh && FirstPersonMesh->DoesSocketExist(WeaponAttachSocket))
+    {
+        Weapon->AttachToComponent(FirstPersonMesh, FAttachmentTransformRules::SnapToTargetIncludingScale, WeaponAttachSocket);
+        Weapon->SetActorRelativeLocation(FVector::ZeroVector);
+        Weapon->SetActorRelativeRotation(FRotator::ZeroRotator);
+    }
+    else
+    {
+        // Rough lower-right offset (forward / right / down). Fine-tune in the BP mesh.
+        Weapon->AttachToComponent(FirstPersonCameraComponent, FAttachmentTransformRules::SnapToTargetIncludingScale);
+        Weapon->SetActorRelativeLocation(FVector(45.0f, 18.0f, -18.0f));
+        Weapon->SetActorRelativeRotation(FRotator::ZeroRotator);
+    }
+
     CurrentWeapon = Weapon;
+
+    // Authority doesn't get OnRep — fire the draw hook here so the listen host's
+    // own pawn (and dedicated-server-driven logic) animates the equip too.
+    OnWeaponEquipped(Weapon);
+}
+
+void AProjectCompCharacter::OnRep_CurrentWeapon()
+{
+    // Clients (owner + remotes): drive the FP/TP draw montage off the equip change.
+    OnWeaponEquipped(CurrentWeapon);
 }
 
 // Server: equip a weapon lying on the ground. Auto-pickup (walk-over) passes
