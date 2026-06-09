@@ -18,8 +18,8 @@
 // path CVar so detonation effects can be toggled independently.
 static TAutoConsoleVariable<int32> CVarInfoGrenadeDebugDraw(
 	TEXT("pc.InfoGrenade.Debug"),
-	1,
-	TEXT("Draw info grenade detonation viz (scan dome, count text, per-target rays). 0=off, 1=on"),
+	0,
+	TEXT("Draw info grenade detonation viz (scan dome, count text, per-target rays). DEV-ONLY, off by default — too disruptive in playtests. 0=off, 1=on"),
 	ECVF_Default);
 
 AProjectCompInfoGrenade::AProjectCompInfoGrenade()

@@ -26,6 +26,10 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, VotedAbility2, COND_OwnerOnly);
 	DOREPLIFETIME(AProjectCompPlayerState, Kills);
 	DOREPLIFETIME(AProjectCompPlayerState, Deaths);
+	// Assists + revealed damage are public — the scoreboard shows everyone's. Damage
+	// only changes at round end, so replicating it to all leaks no live info.
+	DOREPLIFETIME(AProjectCompPlayerState, Assists);
+	DOREPLIFETIME(AProjectCompPlayerState, DamageDealt);
 	// Lives remaining could give opponents an info edge ("they're on last life — push them") —
 	// keep owner-only. Public-scoreboard versions can be added later via a separate replicated summary.
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, LivesRemaining, COND_OwnerOnly);
@@ -37,6 +41,10 @@ void AProjectCompPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimePropert
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, FlashFadeStartTime, COND_OwnerOnly);
 	// Tunnel-vision effect — owner-only for the same reason as the flash overlay.
 	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, TunnelVisionEndTime, COND_OwnerOnly);
+	// Line-of-sight "seen" list — owner-only is REQUIRED for anti-ESP: it carries live
+	// enemy positions, so a client must only ever receive the enemies it can actually
+	// see. Replicating to all would hand every position to a cheat client.
+	DOREPLIFETIME_CONDITION(AProjectCompPlayerState, SpottedEnemies, COND_OwnerOnly);
 
 	// Wallet is owner-only — no tactical value in leaking enemy credit totals,
 	// and tac-FPS economy convention keeps opponents guessing about buy state.
@@ -128,6 +136,41 @@ void AProjectCompPlayerState::Server_AddDeath()
 	}
 }
 
+void AProjectCompPlayerState::Server_AddAssist()
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	if (Assists < 255)
+	{
+		++Assists;
+	}
+}
+
+void AProjectCompPlayerState::Server_AddPendingDamage(float Amount)
+{
+	if (!ensure(HasAuthority()) || Amount <= 0.0f)
+	{
+		return;
+	}
+	PendingRoundDamage += Amount;
+}
+
+void AProjectCompPlayerState::Server_CommitRoundDamage()
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	if (PendingRoundDamage > 0.0f)
+	{
+		const int32 Total = static_cast<int32>(DamageDealt) + FMath::RoundToInt(PendingRoundDamage);
+		DamageDealt = static_cast<uint16>(FMath::Clamp(Total, 0, static_cast<int32>(MAX_uint16)));
+		PendingRoundDamage = 0.0f;
+	}
+}
+
 void AProjectCompPlayerState::Server_DecrementLife()
 {
 	if (!ensure(HasAuthority()))
@@ -157,6 +200,9 @@ void AProjectCompPlayerState::Server_ResetMatchStats()
 	}
 	Kills = 0;
 	Deaths = 0;
+	Assists = 0;
+	DamageDealt = 0;
+	PendingRoundDamage = 0.0f;
 }
 
 void AProjectCompPlayerState::Server_SetRespawnEndTime(float NewTime)
@@ -201,6 +247,15 @@ void AProjectCompPlayerState::Server_ApplyTunnelVision(float Duration)
 	const float NewEnd = Now + FMath::Max(0.0f, Duration);
 	// Refresh to the later end-time — overlapping casts extend, never shorten.
 	TunnelVisionEndTime = FMath::Max(TunnelVisionEndTime, NewEnd);
+}
+
+void AProjectCompPlayerState::Server_SetSpottedEnemies(const TArray<FSpottedEnemy>& InSpotted)
+{
+	if (!ensure(HasAuthority()))
+	{
+		return;
+	}
+	SpottedEnemies = InSpotted;
 }
 
 // =============================================================================

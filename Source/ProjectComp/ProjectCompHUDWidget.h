@@ -19,6 +19,8 @@ class UProjectCompHealthComponent;
 class UTextBlock;
 class UTexture2D;
 class UVerticalBox;
+class UBorder;
+class USizeBox;
 
 /**
  * Main HUD widget — built entirely in C++. No WBP required.
@@ -270,6 +272,11 @@ protected:
 	UPROPERTY() TObjectPtr<UButton>      BtnReturnToLobby;
 	UPROPERTY() TObjectPtr<UTextBlock>   ResultsWaitingText; // non-leaders
 
+	// ---- Hold-Tab scoreboard (live K/D/A + revealed match damage) ---------
+	UPROPERTY() TObjectPtr<UBorder>      ScoreboardRoot;   // dark backing panel
+	UPROPERTY() TObjectPtr<UVerticalBox> ScoreboardBox;    // header + rebuilt rows
+	bool bScoreboardOpen = false;
+
 	/** Built once when the layout is constructed. */
 	void BuildResultsPanel(UCanvasPanel* RootCanvas);
 
@@ -279,6 +286,12 @@ protected:
 	/** Rebuild the per-player scoreboard rows from GameState->PlayerArray. Called
 	 *  once on entry into MatchEnded (guarded by bResultsScoreboardBuilt). */
 	void PopulateScoreboard();
+
+	/** Build the hold-Tab scoreboard panel (hidden until shown). */
+	void BuildScoreboard(UCanvasPanel* RootCanvas);
+
+	/** Per-tick: show/hide per bScoreboardOpen; rebuild rows live while open. */
+	void RefreshScoreboard();
 
 	/** Latches true after the scoreboard is built for the current results screen;
 	 *  reset when the screen hides so a fresh match rebuilds it. */
@@ -297,6 +310,9 @@ public:
 	/** Set the buy menu's open state explicitly. Phase entry into PreRound
 	 *  also force-resets this to false so each new round starts unopened. */
 	void SetBuyMenuOpen(bool bOpen) { bBuyMenuOpen = bOpen; }
+
+	/** Show/hide the hold-Tab scoreboard. Called by the PlayerController on Tab. */
+	void SetScoreboardOpen(bool bOpen) { bScoreboardOpen = bOpen; }
 
 	bool IsBuyMenuOpen() const { return bBuyMenuOpen; }
 

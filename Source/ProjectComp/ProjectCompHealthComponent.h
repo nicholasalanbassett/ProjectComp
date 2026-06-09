@@ -61,6 +61,11 @@ public:
 	/** Heal by Amount, clamped to MaxHealth. */
 	void Server_Heal(float Amount);
 
+	/** Server-only: controllers that have damaged this owner since the last health
+	 *  reset (this life). Read on death to award assists to everyone but the killer.
+	 *  Cleared in Server_ResetHealth (respawn). */
+	const TArray<TWeakObjectPtr<AController>>& GetRecentDamagers() const { return RecentDamagers; }
+
 	// ---- Events (bindable from BP / C++) ---------------------------------
 
 	UPROPERTY(BlueprintAssignable, Category = "Health")
@@ -82,4 +87,7 @@ protected:
 
 	UFUNCTION()
 	void OnRep_CurrentHealth(uint8 OldHealth);
+
+	/** Server-only: enemy controllers who've damaged this owner this life. */
+	TArray<TWeakObjectPtr<AController>> RecentDamagers;
 };

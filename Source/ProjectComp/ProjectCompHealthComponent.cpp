@@ -6,6 +6,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "ProjectCompGameMode.h"
+#include "ProjectCompPlayerState.h"
 #include "ProjectComp.h"
 #include "Engine/World.h"
 
@@ -58,6 +59,28 @@ float UProjectCompHealthComponent::Server_TakeDamage(float Amount, AController* 
 
 	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
 
+	// Credit the damage to the (enemy) instigator's match stats + remember them for
+	// assist awarding on death. Damage goes to the PENDING (round) counter so it's
+	// hidden until round end. Self-damage and friendly fire don't count.
+	if (Applied > 0.0f && DamageInstigator)
+	{
+		APawn* OwningPawn = Cast<APawn>(GetOwner());
+		AController* VictimController = OwningPawn ? OwningPawn->GetController() : nullptr;
+		if (DamageInstigator != VictimController)
+		{
+			AProjectCompPlayerState* InstPS = DamageInstigator->GetPlayerState<AProjectCompPlayerState>();
+			const AProjectCompPlayerState* VictimPS = VictimController ? VictimController->GetPlayerState<AProjectCompPlayerState>() : nullptr;
+			const bool bEnemy = InstPS && VictimPS
+				&& InstPS->GetTeamID() != ETeamID::Spectator
+				&& InstPS->GetTeamID() != VictimPS->GetTeamID();
+			if (bEnemy)
+			{
+				InstPS->Server_AddPendingDamage(Applied);
+				RecentDamagers.AddUnique(DamageInstigator);
+			}
+		}
+	}
+
 	if (CurrentHealth == 0)
 	{
 		OnDeath.Broadcast(DamageInstigator);
@@ -85,6 +108,8 @@ void UProjectCompHealthComponent::Server_ResetHealth()
 	}
 	CurrentHealth = static_cast<uint8>(FMath::Clamp(MaxHealth, 0.0f, 255.0f));
 	OnHealthChanged.Broadcast(static_cast<float>(CurrentHealth), MaxHealth);
+	// New life — clear the assist-damager list so old damagers don't carry over.
+	RecentDamagers.Reset();
 }
 
 void UProjectCompHealthComponent::Server_Heal(float Amount)

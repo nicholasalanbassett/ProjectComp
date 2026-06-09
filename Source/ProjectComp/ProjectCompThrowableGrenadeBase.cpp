@@ -147,6 +147,9 @@ void AProjectCompThrowableGrenadeBase::Server_DeployInPlace(const FVector& Locat
 	Velocity = FVector::ZeroVector;
 	UE_LOG(LogProjectComp, Log, TEXT("[Throwable] %s global-dropped (deploy-in-place) at %s."),
 		*GetName(), *Location.ToCompactString());
+	// "From the sky" indicator: a vertical type-colored line down to the landing
+	// point, shown on every machine (global drop has no flight arc to telegraph it).
+	Multicast_DrawGlobalDropLine(Location);
 	HandleImpact(Location);
 }
 
@@ -438,12 +441,33 @@ void AProjectCompThrowableGrenadeBase::DrawTracerSegment_Local()
 		const float SegmentLengthSq = (CurLoc - LastDrawLocation).SizeSquared();
 		if (SegmentLengthSq > 1.0f)
 		{
-			DrawDebugLine(World, LastDrawLocation, CurLoc, FColor(255, 255, 80),
+			DrawDebugLine(World, LastDrawLocation, CurLoc, GetTracerColor(),
 				/*bPersistent*/ false, /*Life*/ 1.5f, 0, /*Thickness*/ 2.0f);
 		}
 	}
 	LastDrawLocation = CurLoc;
 	bHasLastDrawLocation = true;
+#endif
+}
+
+void AProjectCompThrowableGrenadeBase::Multicast_DrawGlobalDropLine_Implementation(FVector Landing)
+{
+#if !UE_BUILD_SHIPPING
+	if (CVarThrowableGrenadeDebugDraw.GetValueOnGameThread() == 0)
+	{
+		return;
+	}
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// ~40m straight up so it reads clearly as "dropped from the sky." Type-colored,
+	// ~3s lifetime — a momentary incoming indicator at the cast point.
+	constexpr float SkyHeight = 4000.0f;
+	const FVector Top = Landing + FVector(0.0f, 0.0f, SkyHeight);
+	DrawDebugLine(World, Top, Landing, GetTracerColor(),
+		/*bPersistent*/ false, /*LifeTime*/ 3.0f, 0, /*Thickness*/ 3.0f);
 #endif
 }
 

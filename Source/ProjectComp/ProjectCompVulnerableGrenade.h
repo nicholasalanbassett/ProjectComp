@@ -48,6 +48,9 @@ protected:
 	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
 
+	/** VULNERABLE tracer/drop-line color: coral orange. */
+	virtual FColor GetTracerColor() const override { return FColor(255, 90, 60); }
+
 	UFUNCTION()
 	void OnZoneBeginOverlap(UPrimitiveComponent* OverlappedComponent,
 	                        AActor* OtherActor,

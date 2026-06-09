@@ -305,11 +305,20 @@ protected:
 	UFUNCTION(NetMulticast, Unreliable)
 	void Multicast_DrawImpactMarker(FVector ImpactAt);
 
+	/** Server→all: draw a vertical "from the sky" line in the grenade's type color
+	 *  straight down to the global-drop landing point (the minimap-cast indicator). */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_DrawGlobalDropLine(FVector Landing);
+
 	/** Local-machine helper invoked from Tick on every peer. Draws a short
 	 *  tracer line from the actor's last-seen position to its current
 	 *  position — works on clients because the actor's location is
 	 *  replicated via standard movement replication. */
 	void DrawTracerSegment_Local();
+
+	/** Per-type color for the flight tracer + the global-drop sky line. Overridden
+	 *  per grenade: Flash=yellow, Info=blue, Vulnerable=coral, Smoke=white. */
+	virtual FColor GetTracerColor() const { return FColor::White; }
 
 	/** Per-machine state for the local tracer. NOT replicated. */
 	FVector LastDrawLocation = FVector::ZeroVector;

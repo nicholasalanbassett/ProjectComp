@@ -281,6 +281,15 @@ protected:
 	 */
 	void EnforceLoomingPlayerBounds();
 
+	/**
+	 * Server: recompute every live player's line-of-sight "seen" enemies and fold the
+	 * result into their PlayerState SpottedEnemies list (owner-only → anti-ESP).
+	 * In-LOS enemies become live arrow markers; an enemy that just left LOS converts to
+	 * a fading red "?" at its last-seen spot (SpotLostFadeTime); fully-faded records drop.
+	 * Throttled by SpotUpdateInterval; called from Tick during RoundActive.
+	 */
+	void UpdateLineOfSightSpotting(float DeltaSeconds);
+
 	/** Filter team-tagged PlayerStarts so attackers/defenders spawn on the right side of the map. */
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 
@@ -343,6 +352,31 @@ protected:
 	 *  value to discourage teamflashing without enabling griefing. */
 	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float FriendlyFireScalar = 0.0f;
+
+	// ---- Line-of-sight "seen" spotting (drives the minimap red markers) ----
+
+	/** How often (seconds) the server recomputes who each player can see. ~0.1 = 10 Hz;
+	 *  cost is ≤ (live players)² traces per pass — trivial at 5v5. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Spotting", meta = (ClampMin = "0.02"))
+	float SpotUpdateInterval = 0.1f;
+
+	/** Max distance (cm) an enemy can be auto-spotted at. Beyond this they don't appear. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Spotting", meta = (ClampMin = "0.0"))
+	float SpotMaxRange = 9000.0f;
+
+	/** Half-angle (degrees) of the view cone an enemy must be inside to count as "seen".
+	 *  ~60 ≈ a 120° cone — a touch wider than the screen FOV so peripheral enemies still spot. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Spotting", meta = (ClampMin = "1.0", ClampMax = "180.0"))
+	float SpotConeHalfAngleDeg = 60.0f;
+
+	/** Grace added to each in-LOS record's expiry beyond the update interval, so a single
+	 *  missed pass doesn't flicker an actively-seen enemy to the "?" state. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Spotting", meta = (ClampMin = "0.0"))
+	float SpotRefreshGrace = 0.35f;
+
+	/** Seconds the red "?" lingers and fades at the last-seen spot after LOS is lost. */
+	UPROPERTY(EditDefaultsOnly, Category = "Match Tuning|Spotting", meta = (ClampMin = "0.0"))
+	float SpotLostFadeTime = 3.0f;
 
 	// ---- Loom ability actor classes (BP subclasses hook visuals; the C++ base
 	// owns gameplay). One per in-rotation ability. CA + AC remain standby/TBD
@@ -513,6 +547,9 @@ private:
 	/** Server-only counter: the CurrentRound value that PrepareForNewRound has
 	 *  already run for. Starts at 0 so round 1's first call always prepares. */
 	int32 LastPreparedRound = 0;
+
+	/** Server-only: accumulates DeltaSeconds to throttle LOS spotting to SpotUpdateInterval. */
+	float SpotAccumulator = 0.0f;
 
 	/** Returns true if the given pair is a valid draft submission (distinct, non-None). */
 	static bool IsValidVotePair(EAbilityType First, EAbilityType Second);

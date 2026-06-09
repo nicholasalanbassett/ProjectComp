@@ -10,6 +10,7 @@
 #include "ProjectCompBomb.h"
 #include "ProjectCompBombSpawn.h"
 #include "ProjectCompCharacter.h"
+#include "ProjectCompThrowableGrenadeBase.h"
 #include "ProjectCompAcousticZone.h"
 #include "ProjectCompRevealZone.h"
 #include "ProjectCompTitanPillar.h"
@@ -162,6 +163,8 @@ void AProjectCompGameMode::Tick(float DeltaSeconds)
 		EnforceLoomingPlayerBounds();
 		// Drop expired AM/MM enemy-reveal records so the minimap/HUD stop showing them.
 		GS->Server_PurgeExpiredReveals();
+		// Recompute line-of-sight "seen" enemies for the minimap (red arrow → fading "?").
+		UpdateLineOfSightSpotting(DeltaSeconds);
 	}
 
 	// Auto-transition when timer hits zero.
@@ -737,6 +740,9 @@ void AProjectCompGameMode::PrepareForNewRound()
 				PS->Server_SetRespawnEndTime(0.0f);
 				PS->Server_ResetLoomUsage();
 				PS->Server_ClearEquippedGrenades();
+				// Drop last round's line-of-sight spots — the spotting loop doesn't run
+				// during PreRound, so stale enemy positions would otherwise linger.
+				PS->Server_SetSpottedEnemies(TArray<FSpottedEnemy>());
 				// Weapons + armour reset each round — players re-buy in PreRound.
 				// Future change (carry-weapons-on-survive CS pattern) goes here.
 				PS->Server_ClearLoadout();
@@ -747,6 +753,24 @@ void AProjectCompGameMode::PrepareForNewRound()
 	// Clear last round's litter: destroy any weapons dropped on the ground (death
 	// drops + manual G-drops). Equipped weapons have an owner and are skipped.
 	Server_CleanupGroundWeapons();
+
+	// Wipe all utility left in the world from last round — smokes still blooming,
+	// vulnerable zones, info/flash settled or mid-flight, and global-drops. Players
+	// re-buy utility each round, so nothing thrown/placed should carry over.
+	{
+		TArray<AActor*> StaleThrowables;
+		for (TActorIterator<AProjectCompThrowableGrenadeBase> It(GetWorld()); It; ++It)
+		{
+			StaleThrowables.Add(*It);
+		}
+		for (AActor* Throwable : StaleThrowables)
+		{
+			if (IsValid(Throwable))
+			{
+				Throwable->Destroy();
+			}
+		}
+	}
 
 	// Fresh round = fresh spawn allocation. Destroy + respawn every player's
 	// pawn so anyone in a frozen-corpse state from last round gets a fresh
@@ -877,6 +901,20 @@ void AProjectCompGameMode::StartPostRound()
 
 	GS->Server_SetPhase(ERoundPhase::PostRound);
 	SetPhaseTimer(PostRoundDuration);
+
+	// Reveal this round's accumulated damage now (it was hidden during the live
+	// round so players couldn't spam bullets through smoke and read the scoreboard
+	// to learn whether they hit someone). Kills/deaths/assists already updated live.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (APlayerController* PC = It->Get())
+		{
+			if (AProjectCompPlayerState* DmgPS = PC->GetPlayerState<AProjectCompPlayerState>())
+			{
+				DmgPS->Server_CommitRoundDamage();
+			}
+		}
+	}
 
 	// PostRound barrier state matches RoundActive for AttackerSpawnLock and
 	// DefenderSpawnLock (looming-safe zones still active); DefenderPreRoundLock
@@ -1430,6 +1468,146 @@ void AProjectCompGameMode::EnforceLoomingPlayerBounds()
 	}
 }
 
+void AProjectCompGameMode::UpdateLineOfSightSpotting(float DeltaSeconds)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Throttle to SpotUpdateInterval — no need to retrace every frame for a minimap.
+	SpotAccumulator += DeltaSeconds;
+	if (SpotAccumulator < SpotUpdateInterval)
+	{
+		return;
+	}
+	SpotAccumulator = 0.0f;
+
+	const AProjectCompGameState* GS = GetTypedGameState();
+	const float Now = GS ? GS->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
+	const float CosHalfCone = FMath::Cos(FMath::DegreesToRadians(SpotConeHalfAngleDeg));
+	const float MaxRangeSq = SpotMaxRange * SpotMaxRange;
+
+	// Gather the live, alive, team-assigned characters once. The same list is the
+	// trace ignore-set: only walls (ECC_Visibility) and smoke (ECC_VisionBlock) should
+	// break sight — never another body standing in the line.
+	struct FSpotCandidate
+	{
+		AProjectCompCharacter* Char = nullptr;
+		AProjectCompPlayerState* PS = nullptr;
+		ETeamID Team = ETeamID::Spectator;
+	};
+	TArray<FSpotCandidate> Candidates;
+	TArray<AActor*> IgnoreActors;
+	Candidates.Reserve(LiveCharacters.Num());
+	IgnoreActors.Reserve(LiveCharacters.Num());
+	for (const TWeakObjectPtr<AProjectCompCharacter>& WeakChar : LiveCharacters)
+	{
+		AProjectCompCharacter* Char = WeakChar.Get();
+		if (!Char)
+		{
+			continue;
+		}
+		IgnoreActors.Add(Char);  // every body is ignored by the LOS trace
+		AProjectCompPlayerState* PS = Char->GetPlayerState<AProjectCompPlayerState>();
+		if (!PS || !PS->IsAlive())
+		{
+			continue;  // ghosts/corpses neither see nor get seen
+		}
+		const ETeamID Team = PS->GetTeamID();
+		if (Team == ETeamID::Spectator)
+		{
+			continue;
+		}
+		Candidates.Add({Char, PS, Team});
+	}
+
+	// For each viewer, compute who they can see this pass, then fold it into their
+	// persistent seen-list (handling the in-LOS → fading "?" → expired transitions).
+	for (const FSpotCandidate& Viewer : Candidates)
+	{
+		FVector EyeLoc;
+		FRotator EyeRot;
+		Viewer.Char->GetActorEyesViewPoint(EyeLoc, EyeRot);
+		const FVector Forward = EyeRot.Vector();
+
+		TArray<FSpottedEnemy> SeenNow;
+		TSet<APlayerState*> SeenSet;
+		for (const FSpotCandidate& Enemy : Candidates)
+		{
+			if (Enemy.Team == Viewer.Team)
+			{
+				continue;  // teammates are drawn from live replicated pawns, not spotted
+			}
+			const FVector EnemyLoc = Enemy.Char->GetActorLocation();
+			const FVector ToEnemy = EnemyLoc - EyeLoc;
+			const float DistSq = ToEnemy.SizeSquared();
+			if (DistSq > MaxRangeSq || DistSq <= KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
+			const FVector Dir = ToEnemy * FMath::InvSqrt(DistSq);
+			if (FVector::DotProduct(Forward, Dir) < CosHalfCone)
+			{
+				continue;  // outside the view cone — not actually on screen
+			}
+			// Clear line of sight: a wall or a smoke cloud between the eyes and the
+			// enemy breaks it. Bodies are ignored (handled by IgnoreActors).
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(SpotLOS), /*bTraceComplex*/ false);
+			Params.AddIgnoredActors(IgnoreActors);
+			FHitResult Hit;
+			if (World->LineTraceSingleByChannel(Hit, EyeLoc, EnemyLoc, ECC_Visibility, Params))
+			{
+				continue;  // wall in the way
+			}
+			if (World->LineTraceSingleByChannel(Hit, EyeLoc, EnemyLoc, ECC_VisionBlock, Params))
+			{
+				continue;  // smoke in the way
+			}
+
+			FSpottedEnemy Spot;
+			Spot.Target = Enemy.PS;
+			Spot.Location = EnemyLoc;
+			Spot.Yaw = Enemy.Char->GetActorRotation().Yaw;  // body yaw ≈ where they're looking
+			Spot.bLastKnown = false;
+			Spot.ExpireServerTime = Now + SpotUpdateInterval + SpotRefreshGrace;
+			SeenNow.Add(Spot);
+			SeenSet.Add(Enemy.PS);
+		}
+
+		// Merge with the previous list: enemies still seen overwrite live (added above);
+		// ones that just dropped out convert to a fading "?"; already-fading ones keep
+		// counting down; fully-faded records fall off.
+		TArray<FSpottedEnemy> NewList = MoveTemp(SeenNow);
+		for (const FSpottedEnemy& Prev : Viewer.PS->GetSpottedEnemies())
+		{
+			if (!Prev.Target || SeenSet.Contains(Prev.Target))
+			{
+				continue;  // target gone, or already re-added as a live spot
+			}
+			if (!Prev.bLastKnown)
+			{
+				FSpottedEnemy Lost = Prev;          // just lost sight → start the "?" timer
+				Lost.bLastKnown = true;
+				Lost.ExpireServerTime = Now + SpotLostFadeTime;
+				NewList.Add(Lost);
+			}
+			else if (Prev.ExpireServerTime > Now)
+			{
+				NewList.Add(Prev);                   // still within the fade window
+			}
+			// else: faded out — drop it
+		}
+
+		// Skip the write (and its replication) when nothing is, or was, spotted.
+		if (NewList.Num() > 0 || Viewer.PS->GetSpottedEnemies().Num() > 0)
+		{
+			Viewer.PS->Server_SetSpottedEnemies(NewList);
+		}
+	}
+}
+
 void AProjectCompGameMode::CheckRoundEndCondition()
 {
 	AProjectCompGameState* GS = GetTypedGameState();
@@ -1662,6 +1840,30 @@ void AProjectCompGameMode::HandlePlayerDeath(APlayerController* Victim, AControl
 	{
 		KillerPS->Server_AddKill();
 		KillerPS->Server_AddCredits(KillCreditBonus);
+	}
+
+	// Assists: every enemy who damaged the victim this life, except the killer.
+	if (const AProjectCompCharacter* VictimChar = Cast<AProjectCompCharacter>(Victim->GetPawn()))
+	{
+		if (const UProjectCompHealthComponent* VictimHealth = VictimChar->GetHealthComponent())
+		{
+			const ETeamID VictimTeam = PS ? PS->GetTeamID() : ETeamID::Spectator;
+			for (const TWeakObjectPtr<AController>& DamagerPtr : VictimHealth->GetRecentDamagers())
+			{
+				AController* Damager = DamagerPtr.Get();
+				if (!Damager || Damager == Killer)
+				{
+					continue;
+				}
+				if (AProjectCompPlayerState* DamagerPS = Damager->GetPlayerState<AProjectCompPlayerState>())
+				{
+					if (DamagerPS->GetTeamID() != ETeamID::Spectator && DamagerPS->GetTeamID() != VictimTeam)
+					{
+						DamagerPS->Server_AddAssist();
+					}
+				}
+			}
+		}
 	}
 
 	// Drop the bomb where the carrier fell, so other attackers can pick it up.

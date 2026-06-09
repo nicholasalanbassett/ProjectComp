@@ -19,8 +19,8 @@
 // independently from the flight tracer.
 static TAutoConsoleVariable<int32> CVarFlashGrenadeDebugDraw(
 	TEXT("pc.FlashGrenade.Debug"),
-	1,
-	TEXT("Draw flash grenade detonation viz (radius sphere, per-target rays). 0=off, 1=on"),
+	0,
+	TEXT("Draw flash grenade detonation viz (radius sphere, per-target rays). DEV-ONLY, off by default — too disruptive in playtests. 0=off, 1=on"),
 	ECVF_Default);
 
 AProjectCompFlashGrenade::AProjectCompFlashGrenade()
@@ -60,10 +60,17 @@ void AProjectCompFlashGrenade::BeginPlay()
 
 void AProjectCompFlashGrenade::OnEnterActivePhase()
 {
-	// No-op: FLASH detonation is throw-fuse driven (see Server_InitializeExtra),
-	// not settle driven. The grenade just rests at its landing point until the
-	// fuse timer fires Server_Detonate (it may also pop mid-air if the fuse
-	// elapses before it lands).
+	// Thrown flashes detonate on a throw-time fuse (set in Server_InitializeExtra),
+	// so reaching the Active phase on landing is normally a no-op. But a GLOBAL DROP
+	// (Server_DeployInPlace) never runs Server_InitializeExtra, so no fuse was ever
+	// started — without this a dropped flash rests inertly and never blinds anyone.
+	// Start the fuse here if one isn't already counting: this covers the global-drop
+	// path while leaving thrown flashes (whose timer is already active) untouched.
+	if (HasAuthority() && !IsDetonated() && !GetWorldTimerManager().IsTimerActive(FlashFuseTimer))
+	{
+		const float Fuse = FMath::Max(PrimaryFuseTime, 0.01f);
+		GetWorldTimerManager().SetTimer(FlashFuseTimer, [this]() { Server_Detonate(); }, Fuse, /*bLoop*/ false);
+	}
 }
 
 void AProjectCompFlashGrenade::HandleDetonationGameplay()

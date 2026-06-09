@@ -37,6 +37,9 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
+
+	/** FLASH tracer/drop-line color: yellow. */
+	virtual FColor GetTracerColor() const override { return FColor(255, 255, 80); }
 	/** Launches via the base throw, then starts the throw-fuse timer (length
 	 *  depends on LMB vs RMB) that drives detonation. */
 	virtual void Server_InitializeExtra(bool bAltFire, const FVector& AimDirection) override;

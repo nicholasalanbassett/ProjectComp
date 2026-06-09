@@ -29,6 +29,9 @@ public:
 protected:
 	virtual void OnEnterActivePhase() override;
 
+	/** INFO tracer/drop-line color: blue. */
+	virtual FColor GetTracerColor() const override { return FColor(60, 140, 255); }
+
 	/** Multicast: every machine draws the scan-completion viz (dome + center
 	 *  marker + count text) at the supplied center. Server fires it from
 	 *  OnEnterActivePhase so clients see the visualization too. */

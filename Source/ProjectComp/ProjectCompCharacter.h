@@ -423,6 +423,11 @@ public:
 	int32 GetEquippedGrenadeSlot() const { return EquippedGrenadeSlot; }
 	AProjectCompHitscanWeapon* GetCurrentWeapon() const { return CurrentWeapon; }
 
+	/** Owning-client: un-equip any held grenade/bomb and return to the primary weapon.
+	 *  Same effect as the SwitchToWeapon input, exposed so non-input paths (e.g. the
+	 *  minimap global-drop placement) can auto-swap back just like a normal throw. */
+	void SwitchToPrimaryWeapon();
+
 	/** Cosmetic: fired when CurrentWeapon changes (equip / draw / swap; NewWeapon
 	 *  null on holster/drop). FP + TP draw montages hook this. Fires on the owning
 	 *  client + remotes via OnRep_CurrentWeapon, and on the authority from the

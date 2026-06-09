@@ -13,13 +13,13 @@
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
 
-// Toggle for the neon coral zone visualization. Default ON in non-shipping
-// builds so the zone is visible in PIE without setup. Independent from the
-// throwable base's projectile-path CVar.
+// Toggle for the neon coral zone visualization. DEV-ONLY, OFF by default — the
+// detonation/zone wireframe is too disruptive during playtests. Flip to 1 in the
+// console to debug the zone. Independent from the throwable base's projectile CVar.
 static TAutoConsoleVariable<int32> CVarVulnerableGrenadeDebugDraw(
 	TEXT("pc.VulnerableGrenade.Debug"),
-	1,
-	TEXT("Draw vulnerable grenade zone viz (neon coral sphere while active). 0=off, 1=on"),
+	0,
+	TEXT("Draw vulnerable grenade zone viz (neon coral sphere while active). DEV-ONLY, off by default — too disruptive in playtests. 0=off, 1=on"),
 	ECVF_Default);
 
 // Design palette: neon coral. Saturated pinkish-orange, distinct from

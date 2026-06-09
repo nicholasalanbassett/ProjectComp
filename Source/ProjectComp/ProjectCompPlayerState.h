@@ -43,6 +43,14 @@ public:
 	int32 GetDeaths() const { return Deaths; }
 
 	UFUNCTION(BlueprintPure, Category = "Player")
+	int32 GetAssists() const { return Assists; }
+
+	/** Match-total damage dealt to enemies, REVEALED. Committed at each round end —
+	 *  hidden during the live round so you can't shoot through smoke and read it. */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	int32 GetDamageDealt() const { return DamageDealt; }
+
+	UFUNCTION(BlueprintPure, Category = "Player")
 	int32 GetLivesRemaining() const { return LivesRemaining; }
 
 	UFUNCTION(BlueprintPure, Category = "Player")
@@ -70,6 +78,11 @@ public:
 	 *  affected. HUD reads this to drive the vignette overlay (owner-only). */
 	UFUNCTION(BlueprintPure, Category = "Player")
 	float GetTunnelVisionEndTime() const { return TunnelVisionEndTime; }
+
+	/** Enemies this player currently sees / recently saw via line of sight. Owner-only
+	 *  on the wire (anti-ESP), so reading it on a remote client returns that client's
+	 *  own spots only. Drives the minimap "seen" markers (red arrow → fading red "?"). */
+	const TArray<FSpottedEnemy>& GetSpottedEnemies() const { return SpottedEnemies; }
 
 	// ---- Loom + Economy accessors ---------------------------------------
 
@@ -144,6 +157,17 @@ public:
 	/** Server: increment death count. */
 	void Server_AddDeath();
 
+	/** Server: increment assist count (damaged a victim someone else killed). */
+	void Server_AddAssist();
+
+	/** Server: add to this round's PENDING damage. Accumulates server-side and is
+	 *  NOT replicated, so it stays invisible until committed at round end. */
+	void Server_AddPendingDamage(float Amount);
+
+	/** Server: fold this round's pending damage into the replicated match total and
+	 *  reset the pending counter. Called at round end (StartPostRound). */
+	void Server_CommitRoundDamage();
+
 	/** Server: subtract 1 life. Floors at 0. */
 	void Server_DecrementLife();
 
@@ -165,6 +189,11 @@ public:
 	 *  Stamps TunnelVisionEndTime in absolute server-time. Re-applying refreshes to
 	 *  the later end-time so overlapping casts don't cut the effect short. */
 	void Server_ApplyTunnelVision(float Duration);
+
+	/** Server: replace this player's line-of-sight "seen" list. Called each spotting
+	 *  pass by the GameMode (UpdateLineOfSightSpotting). Pass an empty array to clear
+	 *  (e.g. at round start). Owner-only replication keeps it anti-ESP-safe. */
+	void Server_SetSpottedEnemies(const TArray<FSpottedEnemy>& InSpotted);
 
 	// ---- Server: Economy -------------------------------------------------
 
@@ -263,6 +292,20 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	uint8 Deaths = 0;
 
+	/** Match-total assists. Replicated to all (scoreboard). */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
+	uint8 Assists = 0;
+
+	/** Match-total damage dealt, REVEALED. Replicated to all (scoreboard). uint16
+	 *  isn't BP-readable directly — read via GetDamageDealt(). Updated only at round
+	 *  end (Server_CommitRoundDamage). */
+	UPROPERTY(Replicated)
+	uint16 DamageDealt = 0;
+
+	/** This round's damage so far — server-only, NOT replicated (anti-smoke-probe).
+	 *  Folded into DamageDealt at round end. */
+	float PendingRoundDamage = 0.0f;
+
 	/** Lives remaining in the current round. Reset to MaxLives at PreRound start. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	uint8 LivesRemaining = 2;
@@ -288,6 +331,12 @@ protected:
 	 *  "who's tunnel-visioned" to opponents would be an info edge. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Player")
 	float TunnelVisionEndTime = 0.0f;
+
+	/** Line-of-sight "seen" enemies — owner-only on the wire (anti-ESP: a client only
+	 *  ever receives the enemies IT can actually see). Server-filled each spotting pass
+	 *  by AProjectCompGameMode::UpdateLineOfSightSpotting. */
+	UPROPERTY(Replicated)
+	TArray<FSpottedEnemy> SpottedEnemies;
 
 	// ---- Economy --------------------------------------------------------
 

@@ -22,6 +22,8 @@
 #include "Components/VerticalBoxSlot.h"
 #include "Components/TextBlock.h"
 #include "Components/Image.h"
+#include "Components/Border.h"
+#include "Components/SizeBox.h"
 #include "Engine/Texture2D.h"
 #include "Fonts/SlateFontInfo.h"
 #include "GameFramework/GameStateBase.h"
@@ -87,6 +89,7 @@ void UProjectCompHUDWidget::NativeTick(const FGeometry& MyGeometry, float InDelt
 	RefreshTunnelVisionOverlay();
 	RefreshRevealPanel();
 	RefreshResultsScreen();
+	RefreshScoreboard();
 }
 
 // =====================================================================
@@ -419,6 +422,9 @@ void UProjectCompHUDWidget::BuildLayout()
 
 	// ---- End-of-match results screen (centered overlay) -------------------
 	BuildResultsPanel(RootCanvas);
+
+	// ---- Hold-Tab scoreboard (centered overlay; hidden until Tab held) ----
+	BuildScoreboard(RootCanvas);
 
 	// ---- Tunnel-vision overlay (MA) — peripheral blackout vignette ---------
 	// Added before the flash overlay so a flash still renders on top. The radial
@@ -1363,6 +1369,126 @@ void UProjectCompHUDWidget::PopulateScoreboard()
 
 	AddTeamSection(ETeamID::Attackers, TEXT("ATTACKERS      K / D"));
 	AddTeamSection(ETeamID::Defenders, TEXT("DEFENDERS      K / D"));
+}
+
+// =====================================================================
+// Hold-Tab scoreboard (live K/D/A + revealed match damage)
+// =====================================================================
+
+void UProjectCompHUDWidget::BuildScoreboard(UCanvasPanel* RootCanvas)
+{
+	if (!WidgetTree || !RootCanvas)
+	{
+		return;
+	}
+
+	// Dark translucent backing, centered on screen.
+	ScoreboardRoot = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("ScoreboardRoot"));
+	ScoreboardRoot->SetBrushColor(FLinearColor(0.02f, 0.02f, 0.03f, 0.85f));
+	ScoreboardRoot->SetPadding(FMargin(24.0f, 16.0f));
+	{
+		UCanvasPanelSlot* RootSlot = RootCanvas->AddChildToCanvas(ScoreboardRoot);
+		RootSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+		RootSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		RootSlot->SetPosition(FVector2D(0.0f, 0.0f));
+		RootSlot->SetAutoSize(true);
+	}
+
+	ScoreboardBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("ScoreboardBox"));
+	ScoreboardRoot->SetContent(ScoreboardBox);
+
+	ScoreboardRoot->SetVisibility(ESlateVisibility::Collapsed);
+}
+
+void UProjectCompHUDWidget::RefreshScoreboard()
+{
+	if (!ScoreboardRoot || !ScoreboardBox || !WidgetTree)
+	{
+		return;
+	}
+
+	const AProjectCompGameState* GS = GetTypedGameState();
+	// Hidden unless Tab is held — and never over the end-match results screen,
+	// which shows its own scoreboard.
+	const bool bShow = bScoreboardOpen && GS && GS->GetCurrentPhase() != ERoundPhase::MatchEnded;
+	if (!bShow)
+	{
+		if (ScoreboardRoot->GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			ScoreboardRoot->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		return;
+	}
+	ScoreboardRoot->SetVisibility(ESlateVisibility::HitTestInvisible);
+
+	// Rebuild rows each frame while held so K/D/A/DMG update live.
+	ScoreboardBox->ClearChildren();
+
+	const float WName = 240.0f;
+	const float WStat = 64.0f;
+	const float WDmg  = 90.0f;
+
+	auto AddRow = [&](const FString& Name, const FString& K, const FString& D,
+		const FString& A, const FString& Dmg, FLinearColor Color, int32 FontSize)
+	{
+		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
+		auto AddCell = [&](const FString& Txt, float Width, ETextJustify::Type Just)
+		{
+			UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+			T->SetText(FText::FromString(Txt));
+			T->SetFont(MakeFont(FontSize));
+			T->SetColorAndOpacity(Color);
+			T->SetJustification(Just);
+			ApplyTextShadow(T);
+			USizeBox* Cell = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+			Cell->SetWidthOverride(Width);
+			Cell->AddChild(T);
+			Row->AddChildToHorizontalBox(Cell);
+		};
+		AddCell(Name, WName, ETextJustify::Left);
+		AddCell(K,   WStat, ETextJustify::Center);
+		AddCell(D,   WStat, ETextJustify::Center);
+		AddCell(A,   WStat, ETextJustify::Center);
+		AddCell(Dmg, WDmg,  ETextJustify::Center);
+		ScoreboardBox->AddChildToVerticalBox(Row);
+	};
+
+	// Column header.
+	AddRow(TEXT("PLAYER"), TEXT("K"), TEXT("D"), TEXT("A"), TEXT("DMG"), LabelTextColor, 16);
+
+	auto AddTeam = [&](ETeamID Team, const TCHAR* TeamName)
+	{
+		AddRow(TeamName, TEXT(""), TEXT(""), TEXT(""), TEXT(""), GetTeamColor(Team), 15);
+
+		// Collect this team's players, sort by kills desc then revealed damage desc.
+		TArray<const AProjectCompPlayerState*> Players;
+		for (const TObjectPtr<APlayerState>& PSPtr : GS->PlayerArray)
+		{
+			const AProjectCompPlayerState* PS = Cast<AProjectCompPlayerState>(PSPtr.Get());
+			if (PS && PS->GetTeamID() == Team)
+			{
+				Players.Add(PS);
+			}
+		}
+		Players.Sort([](const AProjectCompPlayerState& A, const AProjectCompPlayerState& B)
+		{
+			if (A.GetKills() != B.GetKills()) { return A.GetKills() > B.GetKills(); }
+			return A.GetDamageDealt() > B.GetDamageDealt();
+		});
+
+		for (const AProjectCompPlayerState* PS : Players)
+		{
+			AddRow(PS->GetPlayerName(),
+				FString::FromInt(PS->GetKills()),
+				FString::FromInt(PS->GetDeaths()),
+				FString::FromInt(PS->GetAssists()),
+				FString::FromInt(PS->GetDamageDealt()),
+				PrimaryTextColor, 15);
+		}
+	};
+
+	AddTeam(ETeamID::Attackers, TEXT("ATTACKERS"));
+	AddTeam(ETeamID::Defenders, TEXT("DEFENDERS"));
 }
 
 void UProjectCompHUDWidget::OnClickReturnToLobby()

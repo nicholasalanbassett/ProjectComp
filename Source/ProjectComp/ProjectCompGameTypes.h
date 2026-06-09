@@ -193,6 +193,49 @@ struct FEnemyRevealEntry
 	TArray<EGrenadeType> RevealedLoadout;
 };
 
+/**
+ * One line-of-sight "seen" record. Lives as a COND_OwnerOnly array on each
+ * PlayerState (SpottedEnemies) — the server fills it per-viewer and replicates
+ * ONLY to that viewer's connection, so a cheating client can never read the
+ * positions of enemies it can't actually see (unlike the all-clients reveal
+ * array, this is anti-ESP-safe for live, continuous positions).
+ *
+ * Lifecycle the server drives (AProjectCompGameMode::UpdateLineOfSightSpotting):
+ *   - In LOS (cone + clear trace): bLastKnown = false, Location/Yaw track the
+ *     enemy live, ExpireServerTime refreshed each pass. Minimap = solid arrow.
+ *   - LOS lost: bLastKnown = true, Location/Yaw frozen at last-seen,
+ *     ExpireServerTime = now + 3s. Minimap = red "?", fading out over the window.
+ *   - Past ExpireServerTime: dropped.
+ *
+ * Used for both enemies (red) and is NOT used for teammates (those read live
+ * replicated pawns directly on the minimap).
+ */
+USTRUCT()
+struct FSpottedEnemy
+{
+	GENERATED_BODY()
+
+	/** The seen enemy. */
+	UPROPERTY()
+	TObjectPtr<APlayerState> Target = nullptr;
+
+	/** Live world location while seen; frozen last-seen location once LOS is lost. */
+	UPROPERTY()
+	FVector Location = FVector::ZeroVector;
+
+	/** Enemy facing yaw (degrees) for the minimap "looking" arrow. Frozen on loss. */
+	UPROPERTY()
+	float Yaw = 0.0f;
+
+	/** False = currently in line of sight (solid arrow). True = LOS lost (red "?", fading). */
+	UPROPERTY()
+	bool bLastKnown = false;
+
+	/** Absolute server-time this record is removed. Also drives the lost-LOS fade. */
+	UPROPERTY()
+	float ExpireServerTime = 0.0f;
+};
+
 /** Hit-zone classification used by hitscan weapons to scale damage per body region. */
 UENUM(BlueprintType)
 enum class EHitZone : uint8

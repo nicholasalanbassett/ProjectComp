@@ -7,6 +7,7 @@
 #include "ProjectCompSmokeGrenade.generated.h"
 
 class USphereComponent;
+class UStaticMeshComponent;
 
 /**
  * Smoke grenade (vision-denial util). Thrown with the standardized base
@@ -48,10 +49,20 @@ protected:
 	virtual void OnEnterActivePhase() override;
 	virtual void HandleDetonationGameplay() override;
 
+	/** SMOKE tracer/drop-line color: white. */
+	virtual FColor GetTracerColor() const override { return FColor::White; }
+
 	/** Spherical vision-block volume. NoCollision during flight; OnEnterActivePhase
 	 *  enables it as a QueryOnly blocker on ECC_VisionBlock only. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	USphereComponent* SmokeVolume;
+
+	/** Cosmetic smoke dome — a sphere shown while the smoke is active. NoCollision
+	 *  (the real vision block is SmokeVolume). Assign a TWO-SIDED material on the BP
+	 *  so it's opaque from both outside AND inside — the default single-sided
+	 *  material is see-through from within. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	UStaticMeshComponent* SmokeDomeMesh;
 
 	/** Radius (cm) of the smoke cloud / vision block. */
 	UPROPERTY(EditDefaultsOnly, Category = "Smoke", meta = (ClampMin = "100.0"))
@@ -61,9 +72,17 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Smoke", meta = (ClampMin = "0.5"))
 	float SmokeDuration = 15.0f;
 
-	/** Replicated active flag — clients draw the cloud viz / play VFX while set. */
-	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Smoke")
+	/** Replicated active flag — RepNotify shows/hides the dome on clients. */
+	UPROPERTY(ReplicatedUsing = OnRep_SmokeActive, BlueprintReadOnly, Category = "Smoke")
 	bool bIsSmokeActive = false;
+
+	/** RepNotify: show/hide the smoke dome on clients when bIsSmokeActive changes. */
+	UFUNCTION()
+	void OnRep_SmokeActive();
+
+	/** Sync the dome's scale (to SmokeRadius) + visibility (to bIsSmokeActive).
+	 *  Server calls it on activate/detonate; clients via OnRep_SmokeActive. */
+	void UpdateSmokeDomeVisual();
 
 private:
 	/** Server handle for the dissipation (Active → Detonate) timer. */

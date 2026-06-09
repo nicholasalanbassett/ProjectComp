@@ -1008,6 +1008,11 @@ void AProjectCompCharacter::HandleGrenadeSlotReleased(int32 Slot)
 
 void AProjectCompCharacter::DoSwitchToWeapon()
 {
+    SwitchToPrimaryWeapon();
+}
+
+void AProjectCompCharacter::SwitchToPrimaryWeapon()
+{
     if (EquippedGrenadeSlot == -1 && !bBombEquipped)
     {
         return;  // already on weapon

@@ -16,6 +16,7 @@
 #include "ProjectCompHUDWidget.h"
 #include "ProjectCompLobbyWidget.h"
 #include "ProjectCompMinimapWidget.h"
+#include "ProjectCompCornerMinimapWidget.h"
 #include "ProjectCompPlayerState.h"
 #include "ProjectCompSettingsWidget.h"
 #include "Camera/CameraComponent.h"
@@ -80,6 +81,9 @@ void AProjectCompPlayerController::SetupInputComponent()
 		InputComponent->BindKey(EKeys::B, IE_Pressed, this, &AProjectCompPlayerController::ToggleBuyMenu);
 		// Raw-key binding for P = toggle perf settings overlay. Always available.
 		InputComponent->BindKey(EKeys::P, IE_Pressed, this, &AProjectCompPlayerController::ToggleSettings);
+		// Tab = HOLD to view the scoreboard (show on press, hide on release).
+		InputComponent->BindKey(EKeys::Tab, IE_Pressed,  this, &AProjectCompPlayerController::ShowScoreboard);
+		InputComponent->BindKey(EKeys::Tab, IE_Released, this, &AProjectCompPlayerController::HideScoreboard);
 	}
 }
 
@@ -101,6 +105,39 @@ void AProjectCompPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 	UpdateInputModeForPhase();
+	EnsureCornerMinimap();
+}
+
+void AProjectCompPlayerController::EnsureCornerMinimap()
+{
+	// Create the always-on corner minimap once, on the local client. It self-manages
+	// its own visibility (hides while the full-screen map is open / out of gameplay).
+	if (CornerMinimapInstance || !IsLocalPlayerController())
+	{
+		return;
+	}
+	UClass* Class = CornerMinimapClass
+		? CornerMinimapClass.Get()
+		: UProjectCompCornerMinimapWidget::StaticClass();  // fall back to the C++ widget
+	if (!Class)
+	{
+		return;
+	}
+	CornerMinimapInstance = CreateWidget<UProjectCompCornerMinimapWidget>(this, Class);
+	if (CornerMinimapInstance)
+	{
+		// Use the SAME map art + world bounds as the full-screen Loom/grenade map so
+		// the two line up and the designer only configures one place (BP_MinimapWidget).
+		// Read straight from the full-screen widget's class defaults (CDO).
+		if (MinimapWidgetClass)
+		{
+			if (const UProjectCompMinimapWidget* MapCDO = MinimapWidgetClass.GetDefaultObject())
+			{
+				CornerMinimapInstance->ApplyMapConfig(MapCDO->MapTexture, MapCDO->MapWorldMin, MapCDO->MapWorldMax);
+			}
+		}
+		CornerMinimapInstance->AddToViewport(0);
+	}
 }
 
 void AProjectCompPlayerController::UpdateInputModeForPhase()
@@ -248,6 +285,30 @@ void AProjectCompPlayerController::ToggleBuyMenu()
 	// Also notify any designer WBP HUD bound to the delegate (GetHUDWidget()
 	// returns null above when a DesignerHUDWidgetClass is in use).
 	OnBuyMenuToggled.Broadcast();
+}
+
+void AProjectCompPlayerController::ShowScoreboard()
+{
+	if (AProjectCompHUD* H = Cast<AProjectCompHUD>(GetHUD()))
+	{
+		if (UProjectCompHUDWidget* W = H->GetHUDWidget())
+		{
+			W->SetScoreboardOpen(true);
+		}
+	}
+	OnScoreboardToggled.Broadcast(true);
+}
+
+void AProjectCompPlayerController::HideScoreboard()
+{
+	if (AProjectCompHUD* H = Cast<AProjectCompHUD>(GetHUD()))
+	{
+		if (UProjectCompHUDWidget* W = H->GetHUDWidget())
+		{
+			W->SetScoreboardOpen(false);
+		}
+	}
+	OnScoreboardToggled.Broadcast(false);
 }
 
 UProjectCompSettingsWidget* AProjectCompPlayerController::EnsureSettingsWidget()
@@ -507,6 +568,15 @@ void AProjectCompPlayerController::RequestGlobalDrop(int32 SlotIndex, FVector Ta
 		return;
 	}
 	Server_GlobalDropGrenade(Type, Target);
+
+	// Auto-swap back to the primary weapon, exactly like a normal throw does — a
+	// minimap placement consumes the grenade, so the player shouldn't be left
+	// "holding" it. Optimistic + client-local (same as the thrown path), so it
+	// happens regardless of any server-side cooldown/phase rejection.
+	if (AProjectCompCharacter* Char = Cast<AProjectCompCharacter>(GetPawn()))
+	{
+		Char->SwitchToPrimaryWeapon();
+	}
 }
 
 void AProjectCompPlayerController::OpenGrenadePlacement(int32 SlotIndex, const TArray<FKey>& CloseKeys)

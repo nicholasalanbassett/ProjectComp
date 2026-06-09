@@ -9,14 +9,15 @@
 #include "HAL/IConsoleManager.h"
 #include "Net/UnrealNetwork.h"
 #include "TimerManager.h"
+#include "UObject/ConstructorHelpers.h"
 
-// Toggle for the smoke cloud viz (grey wireframe sphere while active).
-// Independent from the throwable base's projectile-path CVar so the cloud and
-// the flight tracer can be toggled separately.
+// Dev-only wireframe overlay for the smoke radius. The real visual is now the
+// SmokeDomeMesh (an opaque sphere), so this defaults OFF — flip to 1 to debug
+// the exact radius. Independent from the throwable base's projectile-path CVar.
 static TAutoConsoleVariable<int32> CVarSmokeGrenadeDebugDraw(
 	TEXT("pc.SmokeGrenade.Debug"),
-	1,
-	TEXT("Draw smoke grenade cloud viz (grey sphere while active). 0=off, 1=on"),
+	0,
+	TEXT("Draw smoke grenade radius wireframe (dev overlay; the dome mesh is the real visual). 0=off, 1=on"),
 	ECVF_Default);
 
 // Smoke palette: desaturated grey, clearly distinct from FLASH cyan, INFO cyan,
@@ -44,6 +45,22 @@ AProjectCompSmokeGrenade::AProjectCompSmokeGrenade()
 	SmokeVolume->SetCollisionResponseToAllChannels(ECR_Ignore);
 	SmokeVolume->SetCollisionResponseToChannel(ECC_VisionBlock, ECR_Block);
 	SmokeVolume->SetGenerateOverlapEvents(false);
+
+	// Cosmetic dome — an opaque sphere shown while active. Engine sphere is 50cm
+	// radius at scale 1 and single-sided, so it's solid from outside but "open"
+	// (see-through) from inside. NoCollision; SmokeVolume does the real vision
+	// block. Hidden during flight; UpdateSmokeDomeVisual() shows it on Active.
+	// BP can swap the material for a proper translucent smoke look.
+	SmokeDomeMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SmokeDomeMesh"));
+	SmokeDomeMesh->SetupAttachment(GetRootComponent());
+	SmokeDomeMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SmokeDomeMesh->SetVisibility(false);
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereFinder(TEXT("/Engine/BasicShapes/Sphere"));
+	if (SphereFinder.Succeeded())
+	{
+		SmokeDomeMesh->SetStaticMesh(SphereFinder.Object);
+	}
+	SmokeDomeMesh->SetRelativeScale3D(FVector(SmokeRadius / 50.0f));
 
 	SetReplicateMovement(true);  // matters during flight; harmless once stationary
 }
@@ -103,9 +120,10 @@ void AProjectCompSmokeGrenade::OnEnterActivePhase()
 		SmokeVolume->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	}
 
-	// Flip the replicated flag so every client's Tick draws the cloud (and a
-	// future BP VFX hook can key off it). DrawDebug* doesn't replicate.
+	// Flip the replicated flag — RepNotify shows the dome on clients. Set the
+	// dome scale from the (possibly BP-overridden) radius before showing it.
 	bIsSmokeActive = true;
+	UpdateSmokeDomeVisual();  // authority: OnRep won't fire on the server
 
 	// Re-enable Tick on the server (the throwable base disabled it in
 	// HandleImpact before the fuse). Clients keep tick on from BeginPlay.
@@ -125,11 +143,29 @@ void AProjectCompSmokeGrenade::OnEnterActivePhase()
 
 void AProjectCompSmokeGrenade::HandleDetonationGameplay()
 {
-	// Clear the vision block + flag so sight returns and clients stop drawing
-	// the cloud. The base schedules Destroy() after CleanupDelay.
+	// Clear the vision block + flag so sight returns and the dome hides. The base
+	// schedules Destroy() after CleanupDelay.
 	bIsSmokeActive = false;
+	UpdateSmokeDomeVisual();  // authority: OnRep won't fire on the server
 	if (SmokeVolume)
 	{
 		SmokeVolume->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	}
+}
+
+void AProjectCompSmokeGrenade::OnRep_SmokeActive()
+{
+	// Clients: show/hide the dome to match the replicated active flag.
+	UpdateSmokeDomeVisual();
+}
+
+void AProjectCompSmokeGrenade::UpdateSmokeDomeVisual()
+{
+	if (!SmokeDomeMesh)
+	{
+		return;
+	}
+	// Engine sphere is 50cm radius at scale 1 — match the (BP-overridable) radius.
+	SmokeDomeMesh->SetRelativeScale3D(FVector(SmokeRadius / 50.0f));
+	SmokeDomeMesh->SetVisibility(bIsSmokeActive);
 }

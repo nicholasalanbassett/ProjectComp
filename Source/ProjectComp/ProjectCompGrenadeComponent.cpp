@@ -60,12 +60,14 @@ AProjectCompGrenadeBase* UProjectCompGrenadeComponent::Server_UseGrenade(EGrenad
 		return nullptr;
 	}
 
-	// Phase gate: RoundActive only. PreRound is for buying + Loom draft, not throws.
+	// Phase gate: RoundActive + PostRound (mirrors weapon fire — post-round throws
+	// are intentional). Still blocked in PreRound (buy + Loom draft) and LoomSelection.
 	const AProjectCompGameState* GS = World->GetGameState<AProjectCompGameState>();
-	if (!GS || GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+	const ERoundPhase Phase = GS ? GS->GetCurrentPhase() : ERoundPhase::None;
+	if (!GS || (Phase != ERoundPhase::RoundActive && Phase != ERoundPhase::PostRound))
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("[Grenade use] Rejected: phase=%d (must be RoundActive)."),
-			GS ? static_cast<int32>(GS->GetCurrentPhase()) : -1);
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Grenade use] Rejected: phase=%d (need RoundActive/PostRound)."),
+			static_cast<int32>(Phase));
 		return nullptr;
 	}
 
@@ -162,11 +164,13 @@ AProjectCompGrenadeBase* UProjectCompGrenadeComponent::Server_GlobalDropGrenade(
 		return nullptr;
 	}
 
-	// Phase gate: RoundActive only (same as a thrown use).
+	// Phase gate: RoundActive + PostRound (same as a thrown use).
 	const AProjectCompGameState* GS = World->GetGameState<AProjectCompGameState>();
-	if (!GS || GS->GetCurrentPhase() != ERoundPhase::RoundActive)
+	const ERoundPhase Phase = GS ? GS->GetCurrentPhase() : ERoundPhase::None;
+	if (!GS || (Phase != ERoundPhase::RoundActive && Phase != ERoundPhase::PostRound))
 	{
-		UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Rejected: not RoundActive."));
+		UE_LOG(LogProjectComp, Verbose, TEXT("[Global drop] Rejected: phase=%d (need RoundActive/PostRound)."),
+			static_cast<int32>(Phase));
 		return nullptr;
 	}
 

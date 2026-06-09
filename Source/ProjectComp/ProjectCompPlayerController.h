@@ -10,6 +10,7 @@
 class UInputAction;
 class UInputMappingContext;
 class UProjectCompMinimapWidget;
+class UProjectCompCornerMinimapWidget;
 class UProjectCompSettingsWidget;
 class UProjectCompLobbyWidget;
 class APlayerState;
@@ -18,6 +19,10 @@ class APlayerState;
  *  binds to this to flip its own buy-panel visibility (the C++ HUD path uses its
  *  own internal toggle). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBuyMenuToggled);
+
+/** Fired when the hold-Tab scoreboard is shown/hidden (true = shown). A WBP HUD
+ *  binds this; the C++ HUD is poked directly. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnScoreboardToggled, bool, bOpen);
 
 /**
  *  Player controller for the tac-FPS character.
@@ -128,6 +133,10 @@ public:
 	/** True while the grenade global-placement overlay is up. */
 	bool IsGrenadePlacementOpen() const { return bGrenadePlacementMode; }
 
+	/** True while EITHER full-screen map is up (Loom cast or grenade placement).
+	 *  The always-on corner minimap hides itself while this is true. */
+	bool IsFullscreenMapOpen() const { return bMinimapOpen || bGrenadePlacementMode; }
+
 	// ---- Dev/test console hooks (PIE listen-server convenience) -----------
 	// Use the UE console (~) and call e.g. `BuyNade 1` to buy a Flash.
 	// Indices for BuyNade: 1=Flash 2=Info 3=Vulnerable 4=Smoke.
@@ -214,6 +223,14 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "HUD")
 	FOnBuyMenuToggled OnBuyMenuToggled;
 
+	/** Hold-Tab scoreboard: show on Tab press, hide on release. Bound via BindKey. */
+	void ShowScoreboard();
+	void HideScoreboard();
+
+	/** Broadcast when the scoreboard shows/hides (true = shown). WBP HUDs bind here. */
+	UPROPERTY(BlueprintAssignable, Category = "HUD")
+	FOnScoreboardToggled OnScoreboardToggled;
+
 	/** Owning-client entry point: open/close the performance settings overlay.
 	 *  Bound to the P key. Game continues running behind it; input mode goes
 	 *  to mouse-locked GameAndUI while open so clicks land on the buttons. */
@@ -239,6 +256,11 @@ protected:
 	 *  can per-level swap textures + world bounds without touching C++. */
 	UPROPERTY(EditDefaultsOnly, Category="Loom")
 	TSubclassOf<UProjectCompMinimapWidget> MinimapWidgetClass;
+
+	/** Always-on top-left HUD minimap. Assign a BP_CornerMinimap (same MapTexture +
+	 *  bounds as BP_MinimapWidget); falls back to the C++ class if left unset. */
+	UPROPERTY(EditDefaultsOnly, Category="HUD")
+	TSubclassOf<UProjectCompCornerMinimapWidget> CornerMinimapClass;
 
 	/** Subclass of the team-select lobby widget, shown during the pre-match None
 	 *  phase. Assign BP_LobbyWidget in defaults. */
@@ -279,6 +301,9 @@ protected:
 
 	/** Lazily create the widget instance on first open. Returns null on failure. */
 	UProjectCompMinimapWidget* EnsureMinimapWidget();
+
+	/** Lazily create + show the always-on corner minimap (once, local player). */
+	void EnsureCornerMinimap();
 
 	/** Show/hide the pre-match team-select lobby overlay (driven by the None phase). */
 	void SetLobbyOpen(bool bOpen);
@@ -375,6 +400,10 @@ private:
 	 *  by default, added/removed from viewport via SetMinimapOpen. */
 	UPROPERTY()
 	TObjectPtr<UProjectCompMinimapWidget> MinimapInstance;
+
+	/** Lazily-created always-on corner minimap (top-left HUD). */
+	UPROPERTY()
+	TObjectPtr<UProjectCompCornerMinimapWidget> CornerMinimapInstance;
 
 	/** True while MinimapInstance is on the viewport. */
 	bool bMinimapOpen = false;
