@@ -122,7 +122,7 @@ AProjectCompCharacter::AProjectCompCharacter(const FObjectInitializer& ObjectIni
     // Engine-driven crouch: bIsCrouched is replicated, ceiling-aware on uncrouch.
     GetCharacterMovement()->NavAgentProps.bCanCrouch = true;
     GetCharacterMovement()->SetCrouchedHalfHeight(48.0f);       // 96 -> 48 = capsule drops 48 cm.
-    GetCharacterMovement()->MaxWalkSpeedCrouched = 200.0f;
+    GetCharacterMovement()->MaxWalkSpeedCrouched = 150.0f;
 
     MovementState = EMovementState::Walking;
     CrouchEyeHeight = 40.0f;
@@ -266,14 +266,14 @@ void AProjectCompCharacter::DoMove(float Right, float Forward)
 
 void AProjectCompCharacter::DoJumpStart()
 {
-    // Request uncrouch alongside the jump so the capsule expands on the next
-    // movement tick. CanJumpInternal_Implementation lets the jump through even
-    // while bIsCrouched is still true (the engine default would refuse it).
-    if (bIsCrouched)
-    {
-        UnCrouch();
-    }
-
+    // Deliberately do NOT uncrouch here. Crouch intent lives in bWantsToCrouch,
+    // driven by the held crouch key (DoCrouchStart/End). Calling UnCrouch() would
+    // zero bWantsToCrouch, and Enhanced Input's edge-triggered crouch press never
+    // re-fires while the key stays held — so the player would land standing even
+    // while still holding crouch. Leaving the intent set keeps the player crouched
+    // through the whole jump and on landing (a crouch-jump stays tucked). The jump
+    // is allowed while crouched by CanJumpInternal_Implementation, and the CMC
+    // scales the impulse by CrouchJumpZScale.
     MovementState = EMovementState::Airborne;
     UpdateAnimationState();
 
@@ -282,8 +282,8 @@ void AProjectCompCharacter::DoJumpStart()
 
 // Allow jump-from-crouch. Both Super::CanJumpInternal_Implementation and
 // JumpIsAllowedInternal refuse while bIsCrouched is set, so we replicate the
-// same gates here minus the crouch check. DoJumpStart has already requested
-// the uncrouch — the capsule resizes on the next movement tick.
+// same gates here minus the crouch check. The player stays crouched through the
+// jump (we never force an uncrouch); the CMC scales the impulse by CrouchJumpZScale.
 bool AProjectCompCharacter::CanJumpInternal_Implementation() const
 {
     UCharacterMovementComponent* CharMov = GetCharacterMovement();

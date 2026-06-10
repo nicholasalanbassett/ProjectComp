@@ -28,7 +28,7 @@ override wins and persists across recompiles.
 |---|---|---|---|
 | `MaxWalkSpeed` | 560 | CMC comp → *Walking* | Run speed. ↑ faster base movement. |
 | `TacticalWalkSpeed` | 320 | CMC comp → *Character Movement: Walking* | Speed while **Shift** held (silent walk). Only applies on ground, standing. |
-| `MaxWalkSpeedCrouched` | 200 | CMC comp → *Walking* | Crouch-move speed. |
+| `MaxWalkSpeedCrouched` | 150 | CMC comp → *Walking* | Crouch-move speed. |
 | `MaxAcceleration` | 6000 | CMC comp → *Walking* | How fast you reach top speed (~0.1s now). ↑ snappier starts/counter-strafe; ↓ floatier ramp-up. |
 
 ## B. Stopping / counter-strafe (braking)
@@ -61,10 +61,11 @@ velocity; they cannot push past that cap.
 | `AirSteerStrength` | 1.0 | CMC comp → *Jumping / Falling* | Fraction of mouse-yaw applied to velocity mid-air. 0 = no mouse airstrafe; 1.0 = full CS-style curve. |
 | `StandstillAirSpeedCap` | 250 | CMC comp → *Jumping / Falling* | Lateral drift floor on a standstill jump (lets you WASD-drift to jump-peek). 0 = fully committed standstill jumps. |
 | `MinAirControl` | 0.1 | CMC comp → *Jumping / Falling* | WASD steering authority for a **standstill** jump. |
-| `MaxAirControl` | 1.0 | CMC comp → *Jumping / Falling* | WASD steering authority for a **full-run** jump. |
+| `MaxAirControl` | 0.6 | CMC comp → *Jumping / Falling* | WASD steering authority for a **full-run** jump. Lower = more committed air jumps (less mid-air WASD redirect). |
 | `AirControlFullMovementSpeed` | 500 | CMC comp → *Jumping / Falling* | Launch speed at which air control reaches `MaxAirControl`; below it lerps toward `MinAirControl`. |
 | `ApexAirControlFraction` | 0.7 | CMC comp → *Jumping / Falling* | Air control **at the apex** (once the upward impulse is spent). The rise fades from full (1.0) down to this; the fall continues from this down to `FallAirControlFraction`. |
 | `FallAirControlFraction` | 0.5 | CMC comp → *Jumping / Falling* | WASD control once **falling**: fades from `ApexAirControlFraction` at the apex down to this by the time drop speed reaches `JumpZVelocity` (a same-level landing), clamped lower for longer drops off ledges. ↓ = more committed fall, rise untouched. Set equal to `ApexAirControlFraction` for the old flat-descent behavior. |
+| `CrouchJumpAirControlScale` | 0.5 | CMC comp → *Jumping / Falling* | Multiplier on WASD air control **while crouched in the air** (crouch-jump). 0.5 = half a standing jump's air authority (more committed hop); 1.0 = no difference. Does not touch mouse airstrafe (`AirSteerStrength`). |
 | `AirControl` *(engine)* | 0.35 | CMC comp → *Jumping / Falling* | **Mostly inert** — `CalcVelocity` overwrites this every falling frame from the Min/Max system above. Tune the custom knobs, not this. |
 | `AirControlBoostMultiplier` | 1.0 | CMC comp → *Jumping / Falling* | Engine low-speed steering boost; 1.0 disables it. Leave at 1.0 unless you want the engine boost back. |
 
@@ -74,10 +75,25 @@ For a short window after landing from the air, **`MaxAcceleration`** (not max sp
 
 | Knob | Value | Where to edit | Effect |
 |---|---|---|---|
-| `LandingRecoveryDuration` | 0.25 | CMC comp → *Jumping / Falling* | Length of the throttle window (s). ↑ longer spool-up after landing. **0 disables the mechanic.** |
+| `LandingRecoveryDuration` | 0 (off) | CMC comp → *Jumping / Falling* | Length of the throttle window (s). ↑ longer spool-up after landing. **Ships at 0 (disabled) for smooth momentum bhop** — raise (~0.25) to re-enable. |
 | `LandingAccelScale` | 0.4 | CMC comp → *Jumping / Falling* | `MaxAcceleration` multiplier at the instant of landing, ramping to 1.0 over the window. ↓ = heavier/longer penalty (slower to rebuild speed); 1.0 = no penalty. |
 
 > Triggers on **any** air→ground landing, including stepping off a small ledge. Defaults are short/slight so curb-steps are barely noticeable; gating it to real jumps only is a small follow-up code change.
+
+## D3. Jump fatigue (Valorant-style anti-bhop)
+
+Consecutive jumps get **progressively lower AND slower** until you recover on the ground. `JumpFatigue` is a 0..1 accumulator: each jump adds `JumpFatiguePerJump` (capped at 1), and while **grounded** it bleeds off over `JumpFatigueRecoverySeconds`. Two penalties read it: **jump height** scales from full (fatigue 0) down to `JumpFatigueMinScale` (fatigue 1), and **ground speed** scales toward `JumpFatigueSpeedScale` for fatigue accumulated **beyond a single jump** (so a lone jump keeps full speed, but sustained mini-jump/bhop spam bleeds your run speed — no full-speed "bouncing head" site entries). Recovery is ground-only, so bunny-hops (almost no ground contact) keep stacking → each hop is lower *and* slower. Together with the landing-recovery accel throttle (D2), this is the full Valorant fatigue model (height + speed).
+
+| Knob | Value | Where to edit | Effect |
+|---|---|---|---|
+| `JumpFatiguePerJump` | 0 (off) | CMC comp → *Jumping / Falling* | Fatigue added per jump (0..1). The penalty uses fatigue from **prior** jumps, so the 1st jump is full height/speed. **Ships at 0 (disabled) for smooth momentum bhop** — raise (~0.45) to re-enable both height & speed fatigue. Also acts as the "one jump's worth" threshold below which there is no speed penalty. |
+| `JumpFatigueMinScale` | 0.5 | CMC comp → *Jumping / Falling* | Jump-**height** multiplier at full fatigue. 1.0 = no penalty; 0.5 ≈ half-height hop when spammed. |
+| `JumpFatigueSpeedScale` | 0.8 | CMC comp → *Jumping / Falling* | Ground-**speed** multiplier at full fatigue, applied only to fatigue **beyond one jump**. 0.8 ≈ Valorant's gentle ~20% per-landing loss — sustained spam bleeds to ~80% (low+slightly-slow hops), but a quick bhop keeps near-full momentum. 1.0 = no speed penalty; lower = stricter. |
+| `JumpFatigueRecoverySeconds` | 0.4 | CMC comp → *Jumping / Falling* | Grounded seconds to bleed off 1.0 of fatigue (both penalties). 0.4 = fast "resume full speed" recovery, and fast enough that the between-hop decay drops you back under the speed threshold so a quick 1–2-hop bhop maintains momentum. ↑ = harsher / less momentum-friendly. |
+
+> **Ships DISABLED** (`JumpFatiguePerJump = 0`, `LandingRecoveryDuration = 0`): bhop is smooth and momentum-preserving — jumps keep full height and horizontal speed is maintained, but the air-speed cap still holds you at launch speed so there is **no CS-style speed gain**.
+>
+> To re-enable anti-bhop fatigue, raise `JumpFatiguePerJump` (~0.45): jumps then shrink, and (above one jump's worth of fatigue) speed bleeds toward `JumpFatigueSpeedScale`, recovering over `JumpFatigueRecoverySeconds`. **To shrink the bounce height without slowing momentum** (kill the "bouncing head" look while keeping a fluid bhop), raise `JumpFatiguePerJump` but set `JumpFatigueSpeedScale = 1.0`.
 
 ## E. Crouch capsule & crouch-camera feel
 

@@ -66,7 +66,7 @@ public:
     float MinAirControl = 0.1f;
 
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
-    float MaxAirControl = 1.0f;
+    float MaxAirControl = 0.6f;
 
     /** Launch ground speed (cm/s) at which air control reaches MaxAirControl;
      *  below this it lerps down toward MinAirControl. Roughly run speed. */
@@ -98,6 +98,17 @@ public:
     float FallAirControlFraction = 0.5f;
 
     /**
+     * Air-control multiplier applied while CROUCHED in the air — i.e. a crouch-jump
+     * (the player stays crouched through the jump). 0.5 = half the WASD air authority
+     * of a standing jump at the same launch speed, making a crouch-jump a more
+     * committed hop; 1.0 = no difference. Multiplies the speed-scaled / inertia-decayed
+     * AirControl in CalcVelocity and reads the predicted bIsCrouched, so it stays
+     * replay-safe. Does NOT affect mouse airstrafe (see AirSteerStrength).
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float CrouchJumpAirControlScale = 0.5f;
+
+    /**
      * Scale applied to JumpZVelocity when jumping from a crouched state.
      * 0.7 ≈ a noticeably shorter hop while still clearing low cover.
      */
@@ -115,7 +126,7 @@ public:
      * Duration of the throttle window (seconds). 0 disables the mechanic.
      */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0"))
-    float LandingRecoveryDuration = 0.25f;
+    float LandingRecoveryDuration = 0.0f;   // 0 = landing accel throttle OFF (smooth bhop). Raise to re-enable.
 
     /**
      * MaxAcceleration multiplier at the instant of landing; ramps linearly back to
@@ -124,6 +135,39 @@ public:
      */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
     float LandingAccelScale = 0.4f;
+
+    // ---- Jump fatigue (Valorant-style anti-bhop) --------------------------
+    // Consecutive jumps get progressively LOWER until you recover on the ground.
+    // JumpFatigue is a 0..1 accumulator: each jump adds JumpFatiguePerJump (capped
+    // at 1), and while grounded it bleeds off over JumpFatigueRecoverySeconds. Jump
+    // height is scaled from full (fatigue 0) down to JumpFatigueMinScale (fatigue 1).
+    // The accumulator is predicted + save/restored, so it is replay-safe. This is the
+    // jump-height half of Valorant's fatigue; the speed half is the LandingRecovery
+    // accel throttle above.
+
+    /** Fatigue added per jump (0..1). Each jump's height penalty uses the fatigue
+     *  accumulated from PRIOR jumps, so the first jump is full height. 0 disables. */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float JumpFatiguePerJump = 0.0f;   // 0 = jump fatigue OFF (smooth momentum bhop). Raise to re-enable height+speed fatigue.
+
+    /** Jump-height multiplier at full fatigue (JumpFatigue == 1). 1.0 = no penalty;
+     *  0.5 ≈ a half-height hop when spammed. Lerped from 1.0 by the fatigue level. */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float JumpFatigueMinScale = 0.5f;
+
+    /** Seconds of GROUNDED time to bleed off 1.0 of fatigue. Recovery happens only
+     *  on the ground, so bunny-hops (almost no ground contact) keep stacking. */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.01", UIMin = "0.01"))
+    float JumpFatigueRecoverySeconds = 0.4f;
+
+    /** Max-ground-speed multiplier at full fatigue. Applied (in GetMaxSpeed) only to
+     *  fatigue accumulated BEYOND a single jump's worth (JumpFatiguePerJump), so a lone
+     *  jump keeps full speed while sustained mini-jump / bhop spam bleeds your run speed
+     *  — you can't bounce into a site at full tilt. The reduced ground speed carries into
+     *  the air via the launch-speed air cap. 1.0 = no speed penalty; 0.5 ≈ half speed
+     *  when spammed. Recovers as fatigue bleeds off on the ground. */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float JumpFatigueSpeedScale = 0.8f;
 
     virtual float GetMaxSpeed() const override;
     virtual float GetMaxAcceleration() const override;
@@ -146,6 +190,12 @@ public:
      *  UpdateCharacterStateBeforeMovement and saved/restored for prediction replay. */
     float LandingRecoveryRemaining = 0.0f;
 
+    /** Consecutive-jump fatigue accumulator [0..1]. Each jump adds JumpFatiguePerJump
+     *  (DoJump); bleeds off while grounded over JumpFatigueRecoverySeconds
+     *  (UpdateCharacterStateBeforeMovement). Scales jump height in DoJump. Saved/
+     *  restored for prediction replay. */
+    float JumpFatigue = 0.0f;
+
 private:
     /**
      * Snapshot of PreviousControlYaw as it was at the START of the current move.
@@ -158,6 +208,11 @@ private:
      *  before it is decremented, so FSavedMove can record the pre-state needed for
      *  deterministic replay (mirrors LastMoveStartPreviousControlYaw). */
     float LastMoveStartLandingRecovery = 0.0f;
+
+    /** Snapshot of JumpFatigue at the START of the current move (before this move's
+     *  grounded decay and any jump increment), so FSavedMove records the pre-state
+     *  for deterministic replay. */
+    float LastMoveStartJumpFatigue = 0.0f;
 
     /** Cached typed GameState, lazily resolved, so the per-move phase check in
      *  GetMaxSpeed / DoJump doesn't Cast<> every call. */
@@ -187,6 +242,9 @@ public:
 
     /** Pre-state of CMC->LandingRecoveryRemaining at the start of this move (drives the landing accel throttle on replay). */
     float SavedLandingRecoveryRemaining = 0.0f;
+
+    /** Pre-state of CMC->JumpFatigue at the start of this move (drives jump-height fatigue on replay). */
+    float SavedJumpFatigue = 0.0f;
 
     FSavedMove_ProjectComp();
 

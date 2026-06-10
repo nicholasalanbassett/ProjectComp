@@ -44,14 +44,28 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
         return 0.0f;
     }
 
-    const float BaseMax = Super::GetMaxSpeed();
+    float MaxSpeed = Super::GetMaxSpeed();
 
     if (bWantsToWalk && MovementMode == MOVE_Walking && !IsCrouching())
     {
-        return FMath::Min(BaseMax, TacticalWalkSpeed);
+        MaxSpeed = FMath::Min(MaxSpeed, TacticalWalkSpeed);
     }
 
-    return BaseMax;
+    // Jump-fatigue SPEED penalty (ground only): sustained mini-jumping bleeds max
+    // ground speed toward JumpFatigueSpeedScale, so a player can't bhop-spam into a
+    // site at full run speed (the "bouncing head" entry). Only fatigue ABOVE a single
+    // jump's worth (JumpFatiguePerJump) counts, so a lone jump keeps full speed; the
+    // penalty grows as fatigue stacks and recovers as it bleeds off on the ground. The
+    // reduced ground speed carries into the air via the launch-speed cap (JumpedGroundSpeed
+    // is sampled at takeoff). Reads the predicted JumpFatigue, so it's replay-safe.
+    if (MovementMode == MOVE_Walking && JumpFatigueSpeedScale < 1.0f && JumpFatigue > JumpFatiguePerJump)
+    {
+        const float Denom = FMath::Max(1.0f - JumpFatiguePerJump, KINDA_SMALL_NUMBER);
+        const float SpeedFatigue = FMath::Clamp((JumpFatigue - JumpFatiguePerJump) / Denom, 0.0f, 1.0f);
+        MaxSpeed *= FMath::Lerp(1.0f, JumpFatigueSpeedScale, SpeedFatigue);
+    }
+
+    return MaxSpeed;
 }
 
 // Landing recovery: throttle ground acceleration for a short window after touching
@@ -85,6 +99,15 @@ void UProjectCompCharacterMovementComponent::UpdateCharacterStateBeforeMovement(
         LandingRecoveryRemaining = FMath::Max(0.0f, LandingRecoveryRemaining - DeltaSeconds);
     }
 
+    // Jump fatigue bleeds off ONLY while on the ground — bunny-hops spend almost no
+    // time grounded, so they keep stacking fatigue (lower and lower jumps). Snapshot
+    // before the decay so the move's pre-state is recorded for prediction replay.
+    LastMoveStartJumpFatigue = JumpFatigue;
+    if (JumpFatigue > 0.0f && IsMovingOnGround() && JumpFatigueRecoverySeconds > KINDA_SMALL_NUMBER)
+    {
+        JumpFatigue = FMath::Max(0.0f, JumpFatigue - DeltaSeconds / JumpFatigueRecoverySeconds);
+    }
+
     Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
 }
 
@@ -100,15 +123,38 @@ bool UProjectCompCharacterMovementComponent::DoJump(bool bReplayingMoves, float 
         return false;
     }
 
-    if (CharacterOwner && CharacterOwner->bIsCrouched && CrouchJumpZScale < 1.0f)
+    // Combined jump-height scale: crouch-jump shrink × consecutive-jump fatigue.
+    // Fatigue uses the level accumulated from PRIOR jumps, so the first jump of a
+    // sequence is full height and rapid re-jumps (before recovering on the ground)
+    // get progressively lower — Valorant-style anti-bhop. Both inputs are predicted
+    // / replay-restored (bIsCrouched, JumpFatigue), so this stays deterministic.
+    float Scale = 1.0f;
+    if (CharacterOwner && CharacterOwner->bIsCrouched)
+    {
+        Scale *= CrouchJumpZScale;
+    }
+    Scale *= FMath::Lerp(1.0f, JumpFatigueMinScale, FMath::Clamp(JumpFatigue, 0.0f, 1.0f));
+
+    bool bJumped;
+    if (Scale < 1.0f)
     {
         const float SavedZ = JumpZVelocity;
-        JumpZVelocity = SavedZ * CrouchJumpZScale;
-        const bool bJumped = Super::DoJump(bReplayingMoves, DeltaTime);
+        JumpZVelocity = SavedZ * Scale;
+        bJumped = Super::DoJump(bReplayingMoves, DeltaTime);
         JumpZVelocity = SavedZ;
-        return bJumped;
     }
-    return Super::DoJump(bReplayingMoves, DeltaTime);
+    else
+    {
+        bJumped = Super::DoJump(bReplayingMoves, DeltaTime);
+    }
+
+    // Bank this jump's fatigue only if it actually fired. Bleeds off on the ground
+    // (UpdateCharacterStateBeforeMovement).
+    if (bJumped)
+    {
+        JumpFatigue = FMath::Min(JumpFatigue + JumpFatiguePerJump, 1.0f);
+    }
+    return bJumped;
 }
 
 // No crouching during the LoomSelection draft — players must be completely still.
@@ -204,6 +250,15 @@ void UProjectCompCharacterMovementComponent::CalcVelocity(float DeltaTime, float
         }
 
         AirControl = SpeedScaled * InertiaDecay;
+
+        // Crouch-jump is a more committed hop: scale down (CrouchJumpAirControlScale)
+        // the WASD air authority while crouched in the air. The player stays crouched
+        // through a crouch-jump, so bIsCrouched marks it; it's predicted/replicated,
+        // keeping this replay-safe. Mouse airstrafe (AirSteerStrength) is unaffected.
+        if (CharacterOwner && CharacterOwner->bIsCrouched && CrouchJumpAirControlScale < 1.0f)
+        {
+            AirControl *= CrouchJumpAirControlScale;
+        }
     }
 
     Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
@@ -291,6 +346,7 @@ void FSavedMove_ProjectComp::Clear()
     SavedPreviousControlYaw = 0.0f;
     SavedJumpedGroundSpeed = 0.0f;
     SavedLandingRecoveryRemaining = 0.0f;
+    SavedJumpFatigue = 0.0f;
 }
 
 // Packs bWantsToWalk into FLAG_Custom_0 for transport.
@@ -327,6 +383,12 @@ bool FSavedMove_ProjectComp::CanCombineWith(const FSavedMovePtr& NewMove, AChara
     {
         return false;
     }
+    // Likewise don't merge across a change in jump fatigue — a combined move could
+    // replay a different jump height.
+    if (!FMath::IsNearlyEqual(SavedJumpFatigue, Other->SavedJumpFatigue, 0.01f))
+    {
+        return false;
+    }
     return Super::CanCombineWith(NewMove, InCharacter, MaxDelta);
 }
 
@@ -345,6 +407,7 @@ void FSavedMove_ProjectComp::SetMoveFor(ACharacter* C, float InDeltaTime, FVecto
         SavedJumpedGroundSpeed = CharMov->JumpedGroundSpeed;
         SavedPreviousControlYaw = CharMov->LastMoveStartPreviousControlYaw;
         SavedLandingRecoveryRemaining = CharMov->LastMoveStartLandingRecovery;
+        SavedJumpFatigue = CharMov->LastMoveStartJumpFatigue;
     }
 }
 
@@ -361,6 +424,7 @@ void FSavedMove_ProjectComp::PrepMoveFor(ACharacter* C)
         CharMov->JumpedGroundSpeed = SavedJumpedGroundSpeed;
         CharMov->PreviousControlYaw = SavedPreviousControlYaw;
         CharMov->LandingRecoveryRemaining = SavedLandingRecoveryRemaining;
+        CharMov->JumpFatigue = SavedJumpFatigue;
     }
 }
 
