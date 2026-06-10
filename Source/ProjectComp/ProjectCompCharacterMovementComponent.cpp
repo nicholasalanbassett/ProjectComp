@@ -54,6 +54,40 @@ float UProjectCompCharacterMovementComponent::GetMaxSpeed() const
     return BaseMax;
 }
 
+// Landing recovery: throttle ground acceleration for a short window after touching
+// down, ramping from LandingAccelScale back to full over LandingRecoveryDuration.
+// Only acceleration is cut (NOT max speed), so jump momentum carries through a
+// bunny-hop while a fresh standstill landing has to spool back up to full speed.
+// Reads the predicted, save/restored LandingRecoveryRemaining → replay-deterministic.
+float UProjectCompCharacterMovementComponent::GetMaxAcceleration() const
+{
+    const float BaseAccel = Super::GetMaxAcceleration();
+
+    if (MovementMode == MOVE_Walking && LandingRecoveryRemaining > 0.0f && LandingRecoveryDuration > 0.0f)
+    {
+        const float ElapsedFrac = 1.0f - FMath::Clamp(LandingRecoveryRemaining / LandingRecoveryDuration, 0.0f, 1.0f);
+        const float Scale = FMath::Lerp(LandingAccelScale, 1.0f, ElapsedFrac);
+        return BaseAccel * Scale;
+    }
+
+    return BaseAccel;
+}
+
+// Tick the landing-recovery countdown once per move, BEFORE physics — so it's
+// independent of CalcVelocity sub-stepping (which can run multiple times per move
+// under heavy frame drops). Snapshot the pre-decrement value first so FSavedMove
+// records the start-of-move state for a deterministic prediction replay.
+void UProjectCompCharacterMovementComponent::UpdateCharacterStateBeforeMovement(float DeltaSeconds)
+{
+    LastMoveStartLandingRecovery = LandingRecoveryRemaining;
+    if (LandingRecoveryRemaining > 0.0f)
+    {
+        LandingRecoveryRemaining = FMath::Max(0.0f, LandingRecoveryRemaining - DeltaSeconds);
+    }
+
+    Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
+}
+
 // Crouch-jump impulse is a scaled version of the standing jump. The base
 // implementation does `Velocity.Z = max(Velocity.Z, JumpZVelocity)`; we
 // temporarily lower JumpZVelocity so the same prediction path runs on owning
@@ -142,15 +176,32 @@ void UProjectCompCharacterMovementComponent::CalcVelocity(float DeltaTime, float
         const float SpeedAlpha = FMath::Clamp(JumpedGroundSpeed / AirControlFullMovementSpeed, 0.0f, 1.0f);
         const float SpeedScaled = FMath::Lerp(MinAirControl, MaxAirControl, SpeedAlpha);
 
-        // (2) Inertia decay: full authority right after launch (still rising
-        //     hard), fading to ApexAirControlFraction once the upward impulse is
-        //     spent (apex + descent). RiseFrac = remaining fraction of the launch
-        //     up-velocity; it falls ~linearly with time during the ascent, so
-        //     control "decays as time passes" but stays physically grounded and
-        //     prediction-safe (reads Velocity.Z, not a synced timer).
-        const float RiseFrac = (JumpZVelocity > KINDA_SMALL_NUMBER)
-            ? FMath::Clamp(Velocity.Z / JumpZVelocity, 0.0f, 1.0f) : 0.0f;
-        const float InertiaDecay = FMath::Lerp(ApexAirControlFraction, 1.0f, RiseFrac);
+        // (2) Inertia decay, in two halves around the apex (both keyed off the
+        //     remaining/incoming vertical speed vs JumpZVelocity, so the curve is
+        //     symmetric and prediction-safe — reads Velocity.Z, not a synced timer):
+        //       Rising  (Velocity.Z >= 0): full authority right after launch,
+        //         fading DOWN to ApexAirControlFraction as the upward impulse is spent.
+        //       Falling (Velocity.Z <  0): continues fading from ApexAirControlFraction
+        //         down to FallAirControlFraction as downward speed builds, so the
+        //         fall is more committed than the rise — without touching the rise.
+        //     Both branches meet at ApexAirControlFraction when Velocity.Z == 0.
+        float InertiaDecay;
+        if (Velocity.Z >= 0.0f)
+        {
+            // RiseFrac = remaining fraction of the launch up-velocity (1 at launch
+            // -> 0 at apex). Falls ~linearly with time during the ascent.
+            const float RiseFrac = (JumpZVelocity > KINDA_SMALL_NUMBER)
+                ? FMath::Clamp(Velocity.Z / JumpZVelocity, 0.0f, 1.0f) : 0.0f;
+            InertiaDecay = FMath::Lerp(ApexAirControlFraction, 1.0f, RiseFrac);
+        }
+        else
+        {
+            // FallFrac = how far into the committed fall we are (0 at apex -> 1 once
+            // downward speed reaches JumpZVelocity, i.e. a same-level landing).
+            const float FallFrac = (JumpZVelocity > KINDA_SMALL_NUMBER)
+                ? FMath::Clamp(-Velocity.Z / JumpZVelocity, 0.0f, 1.0f) : 0.0f;
+            InertiaDecay = FMath::Lerp(ApexAirControlFraction, FallAirControlFraction, FallFrac);
+        }
 
         AirControl = SpeedScaled * InertiaDecay;
     }
@@ -200,6 +251,15 @@ void UProjectCompCharacterMovementComponent::OnMovementModeChanged(EMovementMode
     else if (MovementMode == MOVE_Walking)
     {
         JumpedGroundSpeed = 0.0f;
+
+        // Landing from the air: arm the brief ground-accel throttle so the player
+        // can't instantly resume full-speed running/strafing. Only MaxAcceleration
+        // is affected (see GetMaxAcceleration), so bunny-hop momentum is preserved.
+        // OnMovementModeChanged replays deterministically, so server + client agree.
+        if (PreviousMovementMode == MOVE_Falling && LandingRecoveryDuration > 0.0f)
+        {
+            LandingRecoveryRemaining = LandingRecoveryDuration;
+        }
     }
 }
 
@@ -230,6 +290,7 @@ void FSavedMove_ProjectComp::Clear()
     bSavedWantsToWalk = 0;
     SavedPreviousControlYaw = 0.0f;
     SavedJumpedGroundSpeed = 0.0f;
+    SavedLandingRecoveryRemaining = 0.0f;
 }
 
 // Packs bWantsToWalk into FLAG_Custom_0 for transport.
@@ -260,6 +321,12 @@ bool FSavedMove_ProjectComp::CanCombineWith(const FSavedMovePtr& NewMove, AChara
     {
         return false;
     }
+    // Don't merge across a change in the landing-recovery countdown — the accel
+    // throttle differs, so a combined move would replay a different velocity.
+    if (!FMath::IsNearlyEqual(SavedLandingRecoveryRemaining, Other->SavedLandingRecoveryRemaining, 0.01f))
+    {
+        return false;
+    }
     return Super::CanCombineWith(NewMove, InCharacter, MaxDelta);
 }
 
@@ -277,6 +344,7 @@ void FSavedMove_ProjectComp::SetMoveFor(ACharacter* C, float InDeltaTime, FVecto
         bSavedWantsToWalk = CharMov->bWantsToWalk;
         SavedJumpedGroundSpeed = CharMov->JumpedGroundSpeed;
         SavedPreviousControlYaw = CharMov->LastMoveStartPreviousControlYaw;
+        SavedLandingRecoveryRemaining = CharMov->LastMoveStartLandingRecovery;
     }
 }
 
@@ -292,6 +360,7 @@ void FSavedMove_ProjectComp::PrepMoveFor(ACharacter* C)
         CharMov->bWantsToWalk = bSavedWantsToWalk;
         CharMov->JumpedGroundSpeed = SavedJumpedGroundSpeed;
         CharMov->PreviousControlYaw = SavedPreviousControlYaw;
+        CharMov->LandingRecoveryRemaining = SavedLandingRecoveryRemaining;
     }
 }
 

@@ -16,6 +16,9 @@
  *      speed you launched with — air control redirects, never gains speed).
  *
  * Crouch is already prediction-safe in the base class (FLAG_WantsToCrouch).
+ *
+ * Tuning reference (every tweakable movement knob + where to edit it live):
+ * Docs/MovementTuning.md
  */
 UCLASS()
 class UProjectCompCharacterMovementComponent : public UCharacterMovementComponent
@@ -82,13 +85,49 @@ public:
     float ApexAirControlFraction = 0.7f;
 
     /**
+     * Descent-only air-control decay. Once past the apex and falling, WASD air
+     * control fades a SECOND time — from ApexAirControlFraction (at the apex)
+     * down to this fraction by the time downward speed reaches JumpZVelocity (a
+     * symmetric same-level landing); clamped here for longer drops off ledges.
+     * Lets the fall feel more committed than the rise WITHOUT touching the rise.
+     * Normally <= ApexAirControlFraction (set equal for the old flat-descent
+     * behavior; higher would give MORE control while falling). Driven by
+     * Velocity.Z, so it's replay-safe with no extra synced state.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float FallAirControlFraction = 0.5f;
+
+    /**
      * Scale applied to JumpZVelocity when jumping from a crouched state.
      * 0.7 ≈ a noticeably shorter hop while still clearing low cover.
      */
     UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
     float CrouchJumpZScale = 0.7f;
 
+    /**
+     * Landing recovery — for a short window after touching down from the air, WASD
+     * ground ACCELERATION is throttled so you can't instantly snap back to full
+     * run/strafe speed on landing; it "spools up" over the window instead. Only
+     * MaxAcceleration is cut — MaxWalkSpeed is untouched — so incoming jump momentum
+     * is preserved and bunny-hopping still chains; a fresh standstill landing has to
+     * rebuild speed. Re-armed on every landing.
+     *
+     * Duration of the throttle window (seconds). 0 disables the mechanic.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0"))
+    float LandingRecoveryDuration = 0.25f;
+
+    /**
+     * MaxAcceleration multiplier at the instant of landing; ramps linearly back to
+     * 1.0 over LandingRecoveryDuration. 1.0 = no penalty; lower = a longer, heavier
+     * "spool up" before you can accelerate / change direction at full responsiveness.
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Character Movement: Jumping / Falling", meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "1.0", UIMax = "1.0"))
+    float LandingAccelScale = 0.4f;
+
     virtual float GetMaxSpeed() const override;
+    virtual float GetMaxAcceleration() const override;
+    virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
     virtual bool DoJump(bool bReplayingMoves, float DeltaTime) override;
     virtual bool CanCrouchInCurrentState() const override;
     virtual void UpdateFromCompressedFlags(uint8 Flags) override;
@@ -102,6 +141,11 @@ public:
     /** Horizontal ground speed sampled the instant the character entered MOVE_Falling. Used as the in-air horizontal speed cap. */
     float JumpedGroundSpeed = 0.0f;
 
+    /** Counts down from LandingRecoveryDuration after a landing; while > 0, ground
+     *  acceleration is throttled (see GetMaxAcceleration). Ticked once per move in
+     *  UpdateCharacterStateBeforeMovement and saved/restored for prediction replay. */
+    float LandingRecoveryRemaining = 0.0f;
+
 private:
     /**
      * Snapshot of PreviousControlYaw as it was at the START of the current move.
@@ -109,6 +153,11 @@ private:
      * so FSavedMove can record the pre-state needed for deterministic replay.
      */
     float LastMoveStartPreviousControlYaw = 0.0f;
+
+    /** Snapshot of LandingRecoveryRemaining at the START of the current move, taken
+     *  before it is decremented, so FSavedMove can record the pre-state needed for
+     *  deterministic replay (mirrors LastMoveStartPreviousControlYaw). */
+    float LastMoveStartLandingRecovery = 0.0f;
 
     /** Cached typed GameState, lazily resolved, so the per-move phase check in
      *  GetMaxSpeed / DoJump doesn't Cast<> every call. */
@@ -135,6 +184,9 @@ public:
 
     /** CMC->JumpedGroundSpeed at the time this move was recorded (drives the air-speed cap on replay). */
     float SavedJumpedGroundSpeed = 0.0f;
+
+    /** Pre-state of CMC->LandingRecoveryRemaining at the start of this move (drives the landing accel throttle on replay). */
+    float SavedLandingRecoveryRemaining = 0.0f;
 
     FSavedMove_ProjectComp();
 
