@@ -1336,39 +1336,75 @@ void UProjectCompHUDWidget::PopulateScoreboard()
 		return;
 	}
 
-	auto AddTeamSection = [&](ETeamID Team, const TCHAR* Header)
-	{
-		UTextBlock* HeaderText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		HeaderText->SetText(FText::FromString(Header));
-		HeaderText->SetFont(MakeFont(18));
-		HeaderText->SetColorAndOpacity(GetTeamColor(Team));
-		HeaderText->SetJustification(ETextJustify::Center);
-		ApplyTextShadow(HeaderText);
-		UVerticalBoxSlot* HS = ResultsScoreboardBox->AddChildToVerticalBox(HeaderText);
-		HS->SetHorizontalAlignment(HAlign_Center);
-		HS->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 2.0f));
+	const float WName = 260.0f;
+	const float WStat = 56.0f;
 
+	// One tabular row. Column width is set directly on each text block via
+	// SetMinDesiredWidth — NOT a USizeBox wrapper, which contributed zero height
+	// when built per frame and collapsed every row onto the same Y.
+	auto AddRow = [&](const FString& Name, const FString& K, const FString& D,
+		const FString& A, FLinearColor Color, int32 FontSize)
+	{
+		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
+		auto AddCell = [&](const FString& Txt, float MinWidth, ETextJustify::Type Just)
+		{
+			UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
+			T->SetText(FText::FromString(Txt));
+			T->SetFont(MakeFont(FontSize));
+			T->SetColorAndOpacity(Color);
+			T->SetJustification(Just);
+			T->SetMinDesiredWidth(MinWidth);
+			ApplyTextShadow(T);
+			UHorizontalBoxSlot* CS = Row->AddChildToHorizontalBox(T);
+			CS->SetVerticalAlignment(VAlign_Center);
+			CS->SetPadding(FMargin(0.0f, 2.0f));
+		};
+		AddCell(Name, WName, ETextJustify::Left);
+		AddCell(K,    WStat, ETextJustify::Center);
+		AddCell(D,    WStat, ETextJustify::Center);
+		AddCell(A,    WStat, ETextJustify::Center);
+		UVerticalBoxSlot* RS = ResultsScoreboardBox->AddChildToVerticalBox(Row);
+		RS->SetHorizontalAlignment(HAlign_Center);
+		RS->SetPadding(FMargin(0.0f, 1.0f));
+	};
+
+	// Column header.
+	AddRow(TEXT("PLAYER"), TEXT("K"), TEXT("D"), TEXT("A"), LabelTextColor, 16);
+
+	auto AddTeamSection = [&](ETeamID Team, const TCHAR* TeamName)
+	{
+		// Team banner row: name in team color, stat columns left blank.
+		AddRow(TeamName, TEXT(""), TEXT(""), TEXT(""), GetTeamColor(Team), 17);
+
+		// Collect this team's players, sort by kills desc then damage desc —
+		// same ordering as the live hold-Tab board so the two agree.
+		TArray<const AProjectCompPlayerState*> Players;
 		for (const TObjectPtr<APlayerState>& PSPtr : GS->PlayerArray)
 		{
 			const AProjectCompPlayerState* PS = Cast<AProjectCompPlayerState>(PSPtr.Get());
-			if (!PS || PS->GetTeamID() != Team)
+			if (PS && PS->GetTeamID() == Team)
 			{
-				continue;
+				Players.Add(PS);
 			}
-			UTextBlock* Row = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-			Row->SetText(FText::FromString(FString::Printf(TEXT("%s      %d / %d"),
-				*PS->GetPlayerName(), PS->GetKills(), PS->GetDeaths())));
-			Row->SetFont(MakeFont(16));
-			Row->SetColorAndOpacity(PrimaryTextColor);
-			Row->SetJustification(ETextJustify::Center);
-			ApplyTextShadow(Row);
-			UVerticalBoxSlot* RS = ResultsScoreboardBox->AddChildToVerticalBox(Row);
-			RS->SetHorizontalAlignment(HAlign_Center);
+		}
+		Players.Sort([](const AProjectCompPlayerState& A, const AProjectCompPlayerState& B)
+		{
+			if (A.GetKills() != B.GetKills()) { return A.GetKills() > B.GetKills(); }
+			return A.GetDamageDealt() > B.GetDamageDealt();
+		});
+
+		for (const AProjectCompPlayerState* PS : Players)
+		{
+			AddRow(PS->GetPlayerName(),
+				FString::FromInt(PS->GetKills()),
+				FString::FromInt(PS->GetDeaths()),
+				FString::FromInt(PS->GetAssists()),
+				PrimaryTextColor, 16);
 		}
 	};
 
-	AddTeamSection(ETeamID::Attackers, TEXT("ATTACKERS      K / D"));
-	AddTeamSection(ETeamID::Defenders, TEXT("DEFENDERS      K / D"));
+	AddTeamSection(ETeamID::Attackers, TEXT("ATTACKERS"));
+	AddTeamSection(ETeamID::Defenders, TEXT("DEFENDERS"));
 }
 
 // =====================================================================
@@ -1400,6 +1436,20 @@ void UProjectCompHUDWidget::BuildScoreboard(UCanvasPanel* RootCanvas)
 	ScoreboardRoot->SetVisibility(ESlateVisibility::Collapsed);
 }
 
+// KNOWN BUG (2026-06-11, PARKED for the next HUD pass): every player name renders
+// bunched onto a single line, overlapping vertically — the rows collapse onto the
+// same Y and the board is unreadable. The end-of-match results board
+// (PopulateScoreboard) builds rows the same way and almost certainly shares it.
+// Ruled OUT: stale build (a temporary "PLAYER (v2)" header probe rendered live
+// while rows still overlapped) and any Blueprint/WBP scoreboard (this C++ widget
+// is the only HUD — BP_HUD points HUDWidgetClass here, DesignerHUDWidgetClass is
+// unset). Tried and did NOT fix: cells were USizeBox(WidthOverride) which appeared
+// to give rows zero height -> switched both boards to UTextBlock::SetMinDesiredWidth
+// (the exact row pattern the killfeed uses without issue) -> STILL overlaps. Root
+// cause unknown; the structure (UVerticalBox of UHorizontalBox rows) reads correct.
+// Next ideas: inspect the live tree in Widget Reflector to read actual row geometry;
+// check MakeFont/DPI scaling; try a UGridPanel; verify the Border/Canvas parent
+// isn't handing ScoreboardBox a zero-height slot.
 void UProjectCompHUDWidget::RefreshScoreboard()
 {
 	if (!ScoreboardRoot || !ScoreboardBox || !WidgetTree)
@@ -1432,25 +1482,31 @@ void UProjectCompHUDWidget::RefreshScoreboard()
 		const FString& A, const FString& Dmg, FLinearColor Color, int32 FontSize)
 	{
 		UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
-		auto AddCell = [&](const FString& Txt, float Width, ETextJustify::Type Just)
+		auto AddCell = [&](const FString& Txt, float MinWidth, ETextJustify::Type Just)
 		{
+			// Column width is set DIRECTLY on the text block via SetMinDesiredWidth.
+			// The previous USizeBox wrapper contributed zero height when built per
+			// frame, collapsing every row onto the same Y (names piled up). A plain
+			// text block reports its real glyph height, so rows stack correctly.
 			UTextBlock* T = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
 			T->SetText(FText::FromString(Txt));
 			T->SetFont(MakeFont(FontSize));
 			T->SetColorAndOpacity(Color);
 			T->SetJustification(Just);
+			T->SetMinDesiredWidth(MinWidth);
 			ApplyTextShadow(T);
-			USizeBox* Cell = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-			Cell->SetWidthOverride(Width);
-			Cell->AddChild(T);
-			Row->AddChildToHorizontalBox(Cell);
+			UHorizontalBoxSlot* CS = Row->AddChildToHorizontalBox(T);
+			CS->SetVerticalAlignment(VAlign_Center);
+			CS->SetPadding(FMargin(0.0f, 2.0f));
 		};
 		AddCell(Name, WName, ETextJustify::Left);
 		AddCell(K,   WStat, ETextJustify::Center);
 		AddCell(D,   WStat, ETextJustify::Center);
 		AddCell(A,   WStat, ETextJustify::Center);
 		AddCell(Dmg, WDmg,  ETextJustify::Center);
-		ScoreboardBox->AddChildToVerticalBox(Row);
+		UVerticalBoxSlot* RowSlot = ScoreboardBox->AddChildToVerticalBox(Row);
+		RowSlot->SetHorizontalAlignment(HAlign_Left);
+		RowSlot->SetPadding(FMargin(0.0f, 1.0f));
 	};
 
 	// Column header.

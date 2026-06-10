@@ -97,11 +97,12 @@ public:
 
 	/** Thickness of each tick (pixels). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.5"))
-	float CrosshairLineThickness = 2.0f;
+	float CrosshairLineThickness = 3.0f;
 
-	/** Pixel gap between the screen-center and the inner edge of each tick. */
+	/** Pixel gap between the screen-center and the inner edge of each tick.
+	 *  0 = the four ticks meet at center, forming a gapless cross (plus). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair", meta = (ClampMin = "0.0"))
-	float CrosshairGap = 4.0f;
+	float CrosshairGap = 0.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Crosshair")
 	bool bShowCenterDot = true;

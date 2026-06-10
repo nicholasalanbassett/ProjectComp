@@ -102,47 +102,39 @@ AProjectCompHitscanWeapon::AProjectCompHitscanWeapon()
 	// No random spread is added on top — what you see here is what fires.
 	// Movement/air/crouch spread adds a random cone on top of this base direction.
 	// Per-shot camera kick (degrees). X = pitch up this shot, Y = yaw right this shot.
-	// CS2 AK-47 style: strong vertical climb early, yaw kicks left then right, settles late.
+	// Strong vertical climb early; yaw sweeps left, recovers right, then drifts
+	// back left. Vertical kick flattens after bullet 14 once the gun has climbed.
 	RecoilPattern = {
-		{ 0.20f,  0.00f },  //  1 — straight up
-		{ 0.30f,  0.00f },  //  2
-		{ 0.40f,  0.00f },  //  3
-		// 4-14: light zigzag — peak excursion ~±0.43°.
-		{ 0.55f, -0.15f },  //  4 — drift left
-		{ 0.50f, -0.28f },  //  5 (peak left ~-0.43)
-		{ 0.45f,  0.00f },  //  6 — sweep toward right
-		{ 0.40f,  0.28f },  //  7
-		{ 0.38f,  0.15f },  //  8 — back left
-		{ 0.35f, -0.15f },  //  9
-		{ 0.33f, -0.28f },  // 10 (peak left ~-0.43)
-		{ 0.30f,  0.00f },  // 11 — sweep toward right
-		{ 0.28f,  0.28f },  // 12
-		{ 0.25f,  0.15f },  // 13 — back left
-		{ 0.23f, -0.15f },  // 14
-		// 15-30: two full sweep cycles. Each cycle = right→center→left→center
-		// (8 shots = 4 shots per half). Per-shot kick of ±0.43° gives ~±0.85°
-		// peak excursion in each direction. Vertical kick is held near-flat —
-		// the gun's already climbed its full height by bullet 14.
-		// Cycle 1 — right half (peak around bullet 16)
-		{ 0.05f,  0.43f },  // 15 → pos +0.43
-		{ 0.05f,  0.43f },  // 16 → pos +0.85 (peak right)
-		{ 0.05f, -0.43f },  // 17 → pos +0.43
-		{ 0.05f, -0.43f },  // 18 → pos  0    (center)
-		// Cycle 1 — left half (peak around bullet 20)
-		{ 0.05f, -0.43f },  // 19 → pos -0.43
-		{ 0.05f, -0.43f },  // 20 → pos -0.85 (peak left)
-		{ 0.05f,  0.43f },  // 21 → pos -0.43
-		{ 0.05f,  0.43f },  // 22 → pos  0    (center, end cycle 1)
-		// Cycle 2 — right half (peak around bullet 24)
-		{ 0.05f,  0.43f },  // 23 → pos +0.43
-		{ 0.05f,  0.43f },  // 24 → pos +0.85 (peak right)
-		{ 0.05f, -0.43f },  // 25 → pos +0.43
-		{ 0.05f, -0.43f },  // 26 → pos  0
-		// Cycle 2 — left half (peak around bullet 28)
-		{ 0.05f, -0.43f },  // 27 → pos -0.43
-		{ 0.05f, -0.43f },  // 28 → pos -0.85 (peak left)
-		{ 0.05f,  0.43f },  // 29 → pos -0.43
-		{ 0.05f,  0.43f },  // 30 → pos  0    (center, end cycle 2)
+		{ 0.20f,  0.00f },  //  1
+		{ 0.30f,  0.02f },  //  2
+		{ 0.40f, -0.05f },  //  3
+		{ 0.55f, -0.15f },  //  4
+		{ 0.50f, -0.28f },  //  5
+		{ 0.45f, -0.10f },  //  6
+		{ 0.40f,  0.15f },  //  7
+		{ 0.38f,  0.25f },  //  8
+		{ 0.35f,  0.20f },  //  9
+		{ 0.33f,  0.05f },  // 10
+		{ 0.30f, -0.10f },  // 11
+		{ 0.28f, -0.25f },  // 12
+		{ 0.25f, -0.35f },  // 13
+		{ 0.23f, -0.40f },  // 14
+		{ 0.05f, -0.30f },  // 15
+		{ 0.06f, -0.15f },  // 16
+		{ 0.04f,  0.05f },  // 17
+		{ 0.05f,  0.25f },  // 18
+		{ 0.05f,  0.35f },  // 19
+		{ 0.04f,  0.40f },  // 20
+		{ 0.06f,  0.35f },  // 21
+		{ 0.05f,  0.20f },  // 22
+		{ 0.05f,  0.00f },  // 23
+		{ 0.04f, -0.20f },  // 24
+		{ 0.05f, -0.35f },  // 25
+		{ 0.06f, -0.40f },  // 26
+		{ 0.05f, -0.35f },  // 27
+		{ 0.04f, -0.20f },  // 28
+		{ 0.05f, -0.05f },  // 29
+		{ 0.05f,  0.10f },  // 30
 	};
 }
 
