@@ -32,7 +32,7 @@ In VS Code: `Ctrl+Shift+P` → **Git: Clone** → paste the URL → pick a folde
 
 Or CLI:
 ```
-git clone https://github.com/spoonstrats/ProjectComp.git
+git clone https://github.com/nicholasalanbassett/ProjectComp.git
 cd ProjectComp
 git lfs pull          # only needed if LFS wasn't installed before cloning
 ```
